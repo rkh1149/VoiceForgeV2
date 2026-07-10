@@ -2,7 +2,11 @@
 
 A voice-controlled app builder for family and friends. Describe an app in plain language; VoiceForge plans it with you, builds it, tests it, and deploys it.
 
-This is **Stage 0**: the application shell — auth, database schema, and dashboard. The planning conversation (Stage 1), build pipeline (Stage 2), and deployment (Stage 3) come next.
+Current progress: **Stage 1** — sign in, describe an app in the Create page, answer the planner's questions, and approve a build plan. The plan is stored as a versioned spec; the build pipeline (Stage 2) and deployment (Stage 3) come next.
+
+## How the planning conversation works
+
+The Create page runs a planning agent (OpenAI Agents SDK). It asks non-technical questions, suggests an app name, then records a structured spec via a `propose_spec` tool call. That writes three database rows: the `apps` entry, a versioned `requirements` spec, and a **pending `approvals` row** — nothing will ever build without you pressing Approve. Set `OPENAI_API_KEY` in `.env.local`; the model is `OPENAI_PLANNER_MODEL` (default `gpt-5.4-mini`, roughly a cent or two per planning conversation).
 
 ## Stack
 
