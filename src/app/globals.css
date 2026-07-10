@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+@theme {
+  --color-forge-50: #f4f6fb;
+  --color-forge-100: #e8ecf6;
+  --color-forge-500: #4f5dd3;
+  --color-forge-600: #4049b8;
+  --color-forge-700: #363d96;
+  --color-forge-900: #1e2147;
+}
+
+body {
+  @apply bg-forge-50 text-slate-900 antialiased;
+}
