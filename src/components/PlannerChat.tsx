@@ -71,8 +71,8 @@ export default function PlannerChat() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Something went wrong.");
       setDecision(d);
-      if (d === "approved") {
-        setTimeout(() => router.push("/dashboard"), 1800);
+      if (d === "approved" && proposal) {
+        setTimeout(() => router.push(`/dashboard/apps/${proposal.appId}`), 1500);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
@@ -155,8 +155,8 @@ export default function PlannerChat() {
       )}
       {decision === "approved" && (
         <div className="border-t border-green-200 bg-green-50 p-4 text-sm font-medium text-green-800">
-          Approved! Your app is queued for building (coming in Stage 2).
-          Taking you to your dashboard…
+          Approved! VoiceForge is building your app — taking you to the build
+          page so you can watch…
         </div>
       )}
 

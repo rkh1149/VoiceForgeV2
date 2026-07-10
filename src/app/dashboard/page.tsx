@@ -10,7 +10,7 @@ const statusLabels: Record<string, { label: string; className: string }> = {
   draft: { label: "Draft", className: "bg-slate-100 text-slate-600" },
   spec_approved: { label: "Approved", className: "bg-blue-100 text-blue-700" },
   building: { label: "Building", className: "bg-amber-100 text-amber-700" },
-  testing: { label: "Testing", className: "bg-amber-100 text-amber-700" },
+  testing: { label: "Built & tested", className: "bg-blue-100 text-blue-700" },
   deployed: { label: "Live", className: "bg-green-100 text-green-700" },
   failed: { label: "Failed", className: "bg-red-100 text-red-700" },
   archived: { label: "Archived", className: "bg-slate-100 text-slate-500" },
@@ -73,7 +73,12 @@ export default async function MyAppsPage() {
                 className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
               >
                 <div className="flex items-start justify-between">
-                  <h3 className="font-semibold text-slate-900">{app.name}</h3>
+                  <Link
+                    href={`/dashboard/apps/${app.id}`}
+                    className="font-semibold text-slate-900 hover:text-forge-600 hover:underline"
+                  >
+                    {app.name}
+                  </Link>
                   <span
                     className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${status.className}`}
                   >

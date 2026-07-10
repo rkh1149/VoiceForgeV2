@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { approvals, apps } from "@/db/schema";
+import { approvals, apps, buildRuns } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import { audit } from "@/lib/audit";
+import { startBuildPipeline } from "@/lib/build/pipeline";
 
 const bodySchema = z.object({
   decision: z.enum(["approved", "rejected"]),
@@ -54,19 +55,56 @@ export async function POST(
     .set({ status: decision, decidedAt: new Date() })
     .where(eq(approvals.id, approvalId));
 
+  let buildRunId: string | null = null;
+
   if (decision === "approved" && approval.type === "build") {
     await db
       .update(apps)
       .set({ status: "spec_approved", updatedAt: new Date() })
       .where(eq(apps.id, approval.appId));
+
+    // Queue the build unless one is already active for this app.
+    const active = await db
+      .select({ id: buildRuns.id })
+      .from(buildRuns)
+      .where(
+        and(
+          eq(buildRuns.appId, approval.appId),
+          inArray(buildRuns.status, [
+            "queued",
+            "generating",
+            "testing",
+            "debugging",
+            "deploying",
+          ]),
+        ),
+      )
+      .limit(1);
+
+    if (active.length === 0) {
+      const [run] = await db
+        .insert(buildRuns)
+        .values({
+          appId: approval.appId,
+          requirementId: approval.requirementId,
+          approvalId: approval.id,
+          status: "queued",
+        })
+        .returning();
+      buildRunId = run.id;
+      // Fire and forget — the pipeline persists all progress to the DB.
+      void startBuildPipeline(run.id).catch((err) =>
+        console.error(`Build pipeline crashed for ${run.id}:`, err),
+      );
+    }
   }
 
   await audit({
     userId: user.id,
     appId: approval.appId,
     action: "approval.decided",
-    payload: { approvalId, type: approval.type, decision },
+    payload: { approvalId, type: approval.type, decision, buildRunId },
   });
 
-  return NextResponse.json({ ok: true, decision });
+  return NextResponse.json({ ok: true, decision, buildRunId });
 }

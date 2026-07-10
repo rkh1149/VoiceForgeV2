@@ -2,7 +2,11 @@
 
 A voice-controlled app builder for family and friends. Describe an app in plain language; VoiceForge plans it with you, builds it, tests it, and deploys it.
 
-Current progress: **Stage 1** — sign in, describe an app in the Create page, answer the planner's questions, and approve a build plan. The plan is stored as a versioned spec; the build pipeline (Stage 2) and deployment (Stage 3) come next.
+Current progress: **Stage 2** — approving a build plan now triggers the full build pipeline: the Code Agent writes a Next.js app from your spec, it's tested locally (install → typecheck → lint → unit tests → production build) with a Debug Agent fixing failures (up to 3 rounds), and the passing code is pushed to a private GitHub repo (`voiceforge-<app-slug>`). Watch it live on the app's page. Deployment (Stage 3) comes next.
+
+## How builds work (Stage 2)
+
+Generated apps start from a locked template (`templates/nextjs-base`): the AI can only write `.ts`/`.tsx` files under `src/`, never `package.json`, configs, or global styles — so dependencies are pinned and installs run with scripts disabled. Generated apps are client-side only for now (localStorage persistence). Every pipeline step is recorded in `build_runs`, `test_results`, and `audit_logs`. Requires `GITHUB_TOKEN` + `GITHUB_OWNER` in `.env.local` (see `.env.example` for exact token permissions). A typical build costs roughly $0.10–0.50 in OpenAI tokens with the default `gpt-5.4` coder model.
 
 ## How the planning conversation works
 
