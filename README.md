@@ -2,7 +2,7 @@
 
 A voice-controlled app builder for family and friends. Describe an app in plain language; VoiceForge plans it with you, builds it, tests it, and deploys it.
 
-Current progress: **Stage 2** — approving a build plan now triggers the full build pipeline: the Code Agent writes a Next.js app from your spec, it's tested locally (install → typecheck → lint → unit tests → production build) with a Debug Agent fixing failures (up to 3 rounds), and the passing code is pushed to a private GitHub repo (`voiceforge-<app-slug>`). Watch it live on the app's page. Deployment (Stage 3) comes next.
+Current progress: **Stage 3** — the full idea-to-live-app loop works: approve a plan and the pipeline generates the code, tests it (with a Debug Agent fixing failures), pushes it to a build branch on GitHub, deploys a **preview** to Vercel, and smoke-tests it. You try the preview, press **Publish**, and VoiceForge merges to main and deploys to a permanent production URL. Production never happens without that second approval.
 
 ## How builds work (Stage 2)
 

@@ -55,6 +55,22 @@ export default function BuildStatus({ appId }: { appId: string }) {
   const [data, setData] = useState<StatusPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+
+  async function publish() {
+    if (publishing) return;
+    setPublishing(true);
+    try {
+      const res = await fetch(`/api/apps/${appId}/publish`, { method: "POST" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Could not publish");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not publish");
+    } finally {
+      setPublishing(false);
+    }
+  }
 
   async function rebuild() {
     if (rebuilding) return;
@@ -143,13 +159,18 @@ export default function BuildStatus({ appId }: { appId: string }) {
         {buildRun?.errorMessage && (
           <p className="mt-2 text-sm text-red-600">{buildRun.errorMessage}</p>
         )}
-        {buildRun?.status === "failed" && (
+        {(buildRun?.status === "failed" ||
+          (buildRun?.status === "complete" && !data.app.previewUrl)) && (
           <button
             onClick={rebuild}
             disabled={rebuilding}
             className="mt-3 rounded-xl bg-forge-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-forge-700 disabled:opacity-50"
           >
-            {rebuilding ? "Restarting…" : "↻ Try building again"}
+            {rebuilding
+              ? "Restarting…"
+              : buildRun?.status === "failed"
+                ? "↻ Try building again"
+                : "↻ Rebuild & deploy"}
           </button>
         )}
         {data.app.githubRepoUrl && (
@@ -165,6 +186,58 @@ export default function BuildStatus({ appId }: { appId: string }) {
           </p>
         )}
       </div>
+
+      {/* Live app */}
+      {data.app.productionUrl && data.app.status === "deployed" && (
+        <div className="rounded-2xl border border-green-200 bg-green-50 p-5 shadow-sm">
+          <p className="font-semibold text-green-900">
+            🎉 {data.app.name} is live!
+          </p>
+          <a
+            href={data.app.productionUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-2 inline-block rounded-xl bg-green-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-green-700"
+          >
+            Open your app ↗
+          </a>
+          <p className="mt-2 text-xs text-green-800">
+            Share this link with anyone: {data.app.productionUrl}
+          </p>
+        </div>
+      )}
+
+      {/* Preview + publish */}
+      {data.app.previewUrl &&
+        buildRun?.status === "awaiting_user_test" && (
+          <div className="rounded-2xl border border-forge-100 bg-forge-50 p-5 shadow-sm">
+            <p className="font-semibold text-forge-900">
+              Your app is ready to try
+            </p>
+            <p className="mt-1 text-sm text-slate-600">
+              Open the preview and test it. If you&rsquo;re happy, publish it
+              to get a permanent link you can share. If something&rsquo;s
+              wrong, tell VoiceForge what to change.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <a
+                href={data.app.previewUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-xl border border-forge-600 px-5 py-2 text-sm font-semibold text-forge-700 transition hover:bg-forge-100"
+              >
+                Try the preview ↗
+              </a>
+              <button
+                onClick={publish}
+                disabled={publishing}
+                className="rounded-xl bg-forge-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-forge-700 disabled:opacity-50"
+              >
+                {publishing ? "Publishing…" : "✓ Publish — put it online"}
+              </button>
+            </div>
+          </div>
+        )}
 
       {/* Test results */}
       {testResults.length > 0 && (

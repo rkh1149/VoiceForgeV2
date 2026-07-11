@@ -3,13 +3,20 @@ import { getDb } from "@/db";
 import {
   apps,
   buildRuns,
+  deployments,
   requirements,
   testResults,
 } from "@/db/schema";
 import type { AppSpec } from "@/lib/spec";
 import { audit } from "@/lib/audit";
 import { runCodeAgent, runDebugAgent } from "@/lib/agents/coder";
-import { createRepoIfMissing, commitFiles } from "@/lib/github";
+import { createRepoIfMissing, createBranch, commitFiles } from "@/lib/github";
+import {
+  ensureProject,
+  createDeployment,
+  waitForDeployment,
+  smokeTest,
+} from "@/lib/vercel";
 import { loadTemplate, type FileMap } from "./template";
 import { runStep, workspaceDir, writeWorkspace, type StepName } from "./runner";
 
@@ -55,6 +62,8 @@ async function setStatus(
     | "generating"
     | "testing"
     | "debugging"
+    | "deploying"
+    | "awaiting_user_test"
     | "complete"
     | "failed",
   extra: Partial<{
@@ -206,7 +215,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       if (step === "install") stepIdx = 0;
     }
 
-    // 3. Push the passing code to GitHub.
+    // 3. Push the passing code to a build branch on GitHub.
     await log(buildRunId, "All checks passed. Creating GitHub repo…");
     const repoName = `voiceforge-${app.slug}`;
     const repo = await createRepoIfMissing({
@@ -216,37 +225,108 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       appId: app.id,
     });
 
+    const branch = `build-${buildRunId.slice(0, 8)}`;
+    await createBranch({
+      repo: repo.repo,
+      branch,
+      fromBranch: repo.defaultBranch,
+    });
     const { commitSha } = await commitFiles({
       repo: repo.repo,
-      branch: repo.defaultBranch,
+      branch,
       files,
       message: `VoiceForge build (spec v${requirement.version}): ${app.name}`,
       userId: app.ownerId,
       appId: app.id,
     });
-    await log(buildRunId, `Committed ${commitSha.slice(0, 7)} to ${repo.htmlUrl}`);
-
+    await log(
+      buildRunId,
+      `Committed ${commitSha.slice(0, 7)} to branch ${branch} (${repo.htmlUrl})`,
+    );
     await db
       .update(apps)
-      .set({
-        githubRepoUrl: repo.htmlUrl,
-        status: "testing",
-        updatedAt: new Date(),
-      })
+      .set({ githubRepoUrl: repo.htmlUrl, updatedAt: new Date() })
       .where(eq(apps.id, app.id));
-    await setStatus(buildRunId, "complete", {
-      commitSha,
-      branch: repo.defaultBranch,
-      finishedAt: new Date(),
+
+    // 4. Preview deployment on Vercel + smoke test.
+    await setStatus(buildRunId, "deploying", { commitSha, branch });
+    await log(buildRunId, "Creating preview deployment on Vercel…");
+    const project = await ensureProject({
+      name: repoName,
+      githubRepo: `${repo.owner}/${repo.repo}`,
+      userId: app.ownerId,
+      appId: app.id,
     });
+    await db
+      .update(apps)
+      .set({ vercelProjectId: project.id, updatedAt: new Date() })
+      .where(eq(apps.id, app.id));
+
+    const deployment = await createDeployment({
+      projectName: repoName,
+      githubRepoId: repo.repoId,
+      ref: branch,
+      production: false,
+      userId: app.ownerId,
+      appId: app.id,
+    });
+    const [depRow] = await db
+      .insert(deployments)
+      .values({
+        appId: app.id,
+        buildRunId,
+        environment: "preview",
+        vercelDeploymentId: deployment.id,
+        status: "building",
+      })
+      .returning();
+
+    await log(buildRunId, "Waiting for Vercel to build the preview…");
+    const finished = await waitForDeployment(deployment.id);
+    const previewUrl = `https://${finished.url}`;
+    await db
+      .update(deployments)
+      .set({
+        status: finished.readyState === "READY" ? "ready" : "error",
+        url: previewUrl,
+      })
+      .where(eq(deployments.id, depRow.id));
+    if (finished.readyState !== "READY") {
+      throw new Error(
+        `Vercel preview deployment ended in state ${finished.readyState}`,
+      );
+    }
+
+    const smoke = await smokeTest(finished.url);
+    await db.insert(testResults).values({
+      buildRunId,
+      suite: "smoke",
+      status: smoke.ok ? "passed" : "failed",
+      summary: `smoke test against preview`,
+      details: { output: smoke.detail },
+    });
+    if (!smoke.ok) {
+      throw new Error(`Smoke test failed: ${smoke.detail}`);
+    }
+    await log(buildRunId, `Smoke test passed: ${smoke.detail}`);
+
+    // 5. Hand over to the user for testing; production needs their approval.
+    await db
+      .update(apps)
+      .set({ previewUrl, status: "testing", updatedAt: new Date() })
+      .where(eq(apps.id, app.id));
+    await setStatus(buildRunId, "awaiting_user_test");
     await audit({
       userId: app.ownerId,
       appId: app.id,
       buildRunId,
-      action: "build.completed",
-      payload: { commitSha, repo: repo.htmlUrl },
+      action: "build.previewReady",
+      payload: { commitSha, previewUrl, branch },
     });
-    await log(buildRunId, "Build complete. Deployment comes in Stage 3.");
+    await log(
+      buildRunId,
+      `Preview is live: ${previewUrl} — try the app, then press Publish to put it online for real.`,
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await log(buildRunId, `Build failed: ${message}`);

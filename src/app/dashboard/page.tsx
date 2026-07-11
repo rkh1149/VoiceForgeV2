@@ -10,7 +10,7 @@ const statusLabels: Record<string, { label: string; className: string }> = {
   draft: { label: "Draft", className: "bg-slate-100 text-slate-600" },
   spec_approved: { label: "Approved", className: "bg-blue-100 text-blue-700" },
   building: { label: "Building", className: "bg-amber-100 text-amber-700" },
-  testing: { label: "Built & tested", className: "bg-blue-100 text-blue-700" },
+  testing: { label: "Preview ready", className: "bg-blue-100 text-blue-700" },
   deployed: { label: "Live", className: "bg-green-100 text-green-700" },
   failed: { label: "Failed", className: "bg-red-100 text-red-700" },
   archived: { label: "Archived", className: "bg-slate-100 text-slate-500" },

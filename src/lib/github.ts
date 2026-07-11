@@ -28,6 +28,7 @@ function getOwner(): string {
 export type RepoInfo = {
   owner: string;
   repo: string;
+  repoId: number; // numeric GitHub id (needed by Vercel's gitSource)
   htmlUrl: string;
   defaultBranch: string;
 };
@@ -47,6 +48,7 @@ export async function createRepoIfMissing(opts: {
     return {
       owner,
       repo: data.name,
+      repoId: data.id,
       htmlUrl: data.html_url,
       defaultBranch: data.default_branch,
     };
@@ -72,9 +74,76 @@ export async function createRepoIfMissing(opts: {
   return {
     owner,
     repo: data.name,
+    repoId: data.id,
     htmlUrl: data.html_url,
     defaultBranch: data.default_branch ?? "main",
   };
+}
+
+/** Create a branch pointing at the current head of the default branch. */
+export async function createBranch(opts: {
+  repo: string;
+  branch: string;
+  fromBranch: string;
+}): Promise<void> {
+  const octokit = getOctokit();
+  const owner = getOwner();
+  const base = await octokit.git.getRef({
+    owner,
+    repo: opts.repo,
+    ref: `heads/${opts.fromBranch}`,
+  });
+  try {
+    await octokit.git.createRef({
+      owner,
+      repo: opts.repo,
+      ref: `refs/heads/${opts.branch}`,
+      sha: base.data.object.sha,
+    });
+  } catch (err) {
+    // 422 = ref already exists (retried build) — reset it to base instead.
+    if ((err as { status?: number }).status !== 422) throw err;
+    await octokit.git.updateRef({
+      owner,
+      repo: opts.repo,
+      ref: `heads/${opts.branch}`,
+      sha: base.data.object.sha,
+      force: true,
+    });
+  }
+}
+
+/** Merge a build branch into the default branch (production promote). */
+export async function mergeToDefault(opts: {
+  repo: string;
+  branch: string;
+  defaultBranch: string;
+  message: string;
+  userId?: string;
+  appId?: string;
+}): Promise<{ mergeSha: string | null }> {
+  const octokit = getOctokit();
+  const owner = getOwner();
+  const { data } = await octokit.repos.merge({
+    owner,
+    repo: opts.repo,
+    base: opts.defaultBranch,
+    head: opts.branch,
+    commit_message: opts.message,
+  });
+
+  await audit({
+    userId: opts.userId,
+    appId: opts.appId,
+    action: "github.mergedToDefault",
+    payload: {
+      repo: `${owner}/${opts.repo}`,
+      branch: opts.branch,
+      mergeSha: data?.sha ?? null,
+    },
+  });
+
+  return { mergeSha: data?.sha ?? null };
 }
 
 /** Commit a set of files as a single commit on a branch (git data API). */
@@ -92,16 +161,13 @@ export async function commitFiles(opts: {
 
   const ref = await octokit.git.getRef({ owner, repo, ref: `heads/${branch}` });
   const parentSha = ref.data.object.sha;
-  const parentCommit = await octokit.git.getCommit({
-    owner,
-    repo,
-    commit_sha: parentSha,
-  });
 
+  // No base_tree: each build commit is a COMPLETE snapshot of the app.
+  // Overlaying on the previous tree would leave stale files from earlier
+  // generations in the repo, breaking deployment builds.
   const tree = await octokit.git.createTree({
     owner,
     repo,
-    base_tree: parentCommit.data.tree.sha,
     tree: Object.entries(files).map(([path, content]) => ({
       path,
       mode: "100644" as const,
