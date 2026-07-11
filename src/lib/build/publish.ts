@@ -3,7 +3,7 @@ import { getDb } from "@/db";
 import { apps, buildRuns, deployments } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { createRepoIfMissing, mergeToDefault } from "@/lib/github";
-import { createDeployment, waitForDeployment } from "@/lib/vercel";
+import { createDeployment } from "@/lib/vercel";
 
 /**
  * Production publish (Stage 3): merge the approved build branch to main and
@@ -64,51 +64,19 @@ export async function publishToProduction(opts: {
       userId,
       appId,
     });
-    const [depRow] = await db
-      .insert(deployments)
-      .values({
-        appId,
-        buildRunId,
-        environment: "production",
-        vercelDeploymentId: deployment.id,
-        status: "building",
-      })
-      .returning();
-
-    const finished = await waitForDeployment(deployment.id);
-    if (finished.readyState !== "READY") {
-      throw new Error(
-        `Production deployment ended in state ${finished.readyState}`,
-      );
-    }
-
-    // Prefer the stable project alias if Vercel reports one.
-    const alias = (finished as { alias?: string[] }).alias?.find((a) =>
-      a.endsWith(".vercel.app"),
-    );
-    const productionUrl = `https://${alias ?? finished.url}`;
-
-    await db
-      .update(deployments)
-      .set({ status: "ready", url: productionUrl })
-      .where(eq(deployments.id, depRow.id));
-    await db
-      .update(apps)
-      .set({ productionUrl, status: "deployed", updatedAt: new Date() })
-      .where(eq(apps.id, appId));
-    await db
-      .update(buildRuns)
-      .set({ status: "complete", finishedAt: new Date() })
-      .where(eq(buildRuns.id, buildRunId));
-
-    await audit({
-      userId,
+    await db.insert(deployments).values({
       appId,
       buildRunId,
-      action: "app.published",
-      payload: { productionUrl },
+      environment: "production",
+      vercelDeploymentId: deployment.id,
+      status: "building",
     });
-    await logLine(`Your app is live: ${productionUrl}`);
+
+    // The run stays in "deploying"; the status endpoint finalizes it
+    // (live URL + "deployed") once Vercel reports READY.
+    await logLine(
+      "Vercel is building the production version — this page will update when it's live.",
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await logLine(`Publish failed: ${message}`);

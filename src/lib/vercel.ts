@@ -149,27 +149,52 @@ export async function createDeployment(opts: {
   return res.data;
 }
 
-/** Poll a deployment until READY / ERROR / CANCELED (or timeout). */
-export async function waitForDeployment(
+/** Which deployment does production currently point at? (null if unknown) */
+export async function getCurrentProductionDeploymentId(
+  projectId: string,
+): Promise<string | null> {
+  const res = await vercelFetch<{
+    targets?: { production?: { id?: string } };
+  }>(`/v9/projects/${projectId}${teamQuery()}`);
+  return res.ok ? (res.data.targets?.production?.id ?? null) : null;
+}
+
+/** One-shot deployment status check (null on fetch failure). */
+export async function getDeployment(
   deploymentId: string,
-  timeoutMs = 8 * 60_000,
-): Promise<DeploymentInfo> {
-  const started = Date.now();
-  for (;;) {
-    const res = await vercelFetch<DeploymentInfo>(
-      `/v13/deployments/${deploymentId}${teamQuery()}`,
+): Promise<(DeploymentInfo & { alias?: string[] }) | null> {
+  const res = await vercelFetch<DeploymentInfo & { alias?: string[] }>(
+    `/v13/deployments/${deploymentId}${teamQuery()}`,
+  );
+  return res.ok ? res.data : null;
+}
+
+/** Point all production domains of a project at an existing deployment
+ * (used for rollback; does not rebuild). */
+export async function promoteDeployment(opts: {
+  projectId: string;
+  deploymentId: string;
+  userId?: string;
+  appId?: string;
+}): Promise<void> {
+  const res = await fetch(
+    `${API}/v10/projects/${opts.projectId}/promote/${opts.deploymentId}${teamQuery()}`,
+    { method: "POST", headers: authHeaders() },
+  );
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as {
+      error?: { message?: string };
+    };
+    throw new Error(
+      `Rollback failed (${res.status}): ${data.error?.message ?? "unknown error"}`,
     );
-    if (res.ok) {
-      const state = res.data.readyState;
-      if (state === "READY" || state === "ERROR" || state === "CANCELED") {
-        return res.data;
-      }
-    }
-    if (Date.now() - started > timeoutMs) {
-      throw new Error(`Deployment timed out after ${timeoutMs / 60000} minutes`);
-    }
-    await new Promise((r) => setTimeout(r, 5000));
   }
+  await audit({
+    userId: opts.userId,
+    appId: opts.appId,
+    action: "vercel.deploymentPromoted",
+    payload: { deploymentId: opts.deploymentId },
+  });
 }
 
 /** Simple smoke test: the deployed URL responds with an HTML page. */

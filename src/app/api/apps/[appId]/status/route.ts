@@ -4,8 +4,12 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import { apps, buildRuns, testResults } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
+import { failStaleRuns } from "@/lib/quota";
+import { finalizePendingDeployment } from "@/lib/build/finalize";
 
-/** Poll endpoint for the app detail page: latest build run + test results. */
+/** Poll endpoint for the app detail page: latest build run + test results.
+ * Also advances pending deployments and reaps stale runs (the UI polls this
+ * while builds are active, making it a cheap heartbeat). */
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ appId: string }> },
@@ -34,6 +38,22 @@ export async function GET(
   if (!app) {
     return NextResponse.json({ error: "App not found" }, { status: 404 });
   }
+
+  // Heartbeat duties: reap dead runs, advance pending deployments.
+  try {
+    await failStaleRuns(appId);
+    await finalizePendingDeployment(appId);
+  } catch (err) {
+    console.error("Status heartbeat error:", err);
+  }
+
+  // Re-read the app: the finalizer may have just updated it.
+  const [freshApp] = await db
+    .select()
+    .from(apps)
+    .where(eq(apps.id, appId))
+    .limit(1);
+  const currentApp = freshApp ?? app;
 
   const runs = await db
     .select()
@@ -66,13 +86,13 @@ export async function GET(
 
   return NextResponse.json({
     app: {
-      id: app.id,
-      name: app.name,
-      description: app.description,
-      status: app.status,
-      githubRepoUrl: app.githubRepoUrl,
-      previewUrl: app.previewUrl,
-      productionUrl: app.productionUrl,
+      id: currentApp.id,
+      name: currentApp.name,
+      description: currentApp.description,
+      status: currentApp.status,
+      githubRepoUrl: currentApp.githubRepoUrl,
+      previewUrl: currentApp.previewUrl,
+      productionUrl: currentApp.productionUrl,
     },
     buildRun: latestRun
       ? {

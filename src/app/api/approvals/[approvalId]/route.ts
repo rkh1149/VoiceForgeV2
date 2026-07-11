@@ -6,6 +6,10 @@ import { approvals, apps, buildRuns, changeRequests } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import { audit } from "@/lib/audit";
 import { startBuildPipeline } from "@/lib/build/pipeline";
+import { checkBuildQuota } from "@/lib/quota";
+import { runInBackground } from "@/lib/background";
+
+export const maxDuration = 300;
 
 const bodySchema = z.object({
   decision: z.enum(["approved", "rejected"]),
@@ -92,6 +96,16 @@ export async function POST(
       )
       .limit(1);
 
+    const quota = await checkBuildQuota(user);
+    if (!quota.allowed) {
+      return NextResponse.json(
+        {
+          error: `You've used all ${quota.limit} builds for this month. Ask Richard if you need more.`,
+        },
+        { status: 429 },
+      );
+    }
+
     if (active.length === 0) {
       const [run] = await db
         .insert(buildRuns)
@@ -103,10 +117,8 @@ export async function POST(
         })
         .returning();
       buildRunId = run.id;
-      // Fire and forget — the pipeline persists all progress to the DB.
-      void startBuildPipeline(run.id).catch((err) =>
-        console.error(`Build pipeline crashed for ${run.id}:`, err),
-      );
+      // The pipeline persists all progress to the DB.
+      runInBackground(() => startBuildPipeline(run.id), `build ${run.id}`);
     }
   }
 

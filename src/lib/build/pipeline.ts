@@ -21,14 +21,9 @@ import {
   commitFiles,
   getRepoSrcFiles,
 } from "@/lib/github";
-import {
-  ensureProject,
-  createDeployment,
-  waitForDeployment,
-  smokeTest,
-} from "@/lib/vercel";
+import { ensureProject, createDeployment } from "@/lib/vercel";
 import { loadTemplate, type FileMap } from "./template";
-import { runStep, workspaceDir, writeWorkspace, type StepName } from "./runner";
+import { createRunner, type Runner, type StepName } from "./runner";
 
 /**
  * Build pipeline (Stage 2): approved spec -> generated code -> local test
@@ -103,17 +98,7 @@ function srcOnly(files: FileMap): FileMap {
  */
 export async function startBuildPipeline(buildRunId: string): Promise<void> {
   const db = getDb();
-
-  // Serverless functions can't run npm or long jobs. Until the pipeline
-  // moves to Vercel Sandbox (planned), builds run from the local server.
-  if (process.env.VERCEL) {
-    await setStatus(buildRunId, "failed", {
-      errorMessage:
-        "Builds can't run on the hosted VoiceForge yet — ask Richard to run this build from the VoiceForge computer.",
-      finishedAt: new Date(),
-    });
-    return;
-  }
+  let runner: Runner | null = null;
 
   const [run] = await db
     .select()
@@ -214,8 +199,14 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     }
 
     // 2. Test gauntlet with bounded debug loop.
-    const dir = workspaceDir(buildRunId);
-    await writeWorkspace(dir, files);
+    runner = await createRunner(buildRunId);
+    await log(
+      buildRunId,
+      runner.kind === "sandbox"
+        ? "Testing in an isolated cloud sandbox…"
+        : "Testing on the local build machine…",
+    );
+    await runner.writeFiles(files);
     await setStatus(buildRunId, "testing");
 
     let debugRounds = 0;
@@ -224,7 +215,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     while (stepIdx < STEP_ORDER.length) {
       const step = STEP_ORDER[stepIdx];
       await log(buildRunId, `Running ${step}…`);
-      const result = await runStep(dir, step);
+      const result = await runner.run(step);
 
       await db.insert(testResults).values({
         buildRunId,
@@ -264,7 +255,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       }
       debugNotes.push(fix.notes || `(rewrote ${fix.filesWritten.join(", ")})`);
       Object.assign(files, fix.files);
-      await writeWorkspace(dir, fix.files);
+      await runner.writeFiles(fix.files);
       await log(
         buildRunId,
         `Debug agent rewrote: ${fix.filesWritten.join(", ")}. ${fix.notes}`,
@@ -330,68 +321,19 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       userId: app.ownerId,
       appId: app.id,
     });
-    const [depRow] = await db
-      .insert(deployments)
-      .values({
-        appId: app.id,
-        buildRunId,
-        environment: "preview",
-        vercelDeploymentId: deployment.id,
-        status: "building",
-      })
-      .returning();
-
-    await log(buildRunId, "Waiting for Vercel to build the preview…");
-    const finished = await waitForDeployment(deployment.id);
-    const previewUrl = `https://${finished.url}`;
-    await db
-      .update(deployments)
-      .set({
-        status: finished.readyState === "READY" ? "ready" : "error",
-        url: previewUrl,
-      })
-      .where(eq(deployments.id, depRow.id));
-    if (finished.readyState !== "READY") {
-      throw new Error(
-        `Vercel preview deployment ended in state ${finished.readyState}`,
-      );
-    }
-
-    const smoke = await smokeTest(finished.url);
-    await db.insert(testResults).values({
-      buildRunId,
-      suite: "smoke",
-      status: smoke.ok ? "passed" : "failed",
-      summary: `smoke test against preview`,
-      details: { output: smoke.detail },
-    });
-    if (!smoke.ok) {
-      throw new Error(`Smoke test failed: ${smoke.detail}`);
-    }
-    await log(buildRunId, `Smoke test passed: ${smoke.detail}`);
-
-    // 5. Hand over to the user for testing; production needs their approval.
-    await db
-      .update(apps)
-      .set({ previewUrl, status: "testing", updatedAt: new Date() })
-      .where(eq(apps.id, app.id));
-    await setStatus(buildRunId, "awaiting_user_test");
-    if (changeRequest) {
-      await db
-        .update(changeRequests)
-        .set({ status: "complete", updatedAt: new Date() })
-        .where(eq(changeRequests.id, changeRequest.id));
-    }
-    await audit({
-      userId: app.ownerId,
+    await db.insert(deployments).values({
       appId: app.id,
       buildRunId,
-      action: "build.previewReady",
-      payload: { commitSha, previewUrl, branch, changeMode },
+      environment: "preview",
+      vercelDeploymentId: deployment.id,
+      status: "building",
     });
+
+    // The run stays in "deploying"; the status endpoint finalizes it
+    // (smoke test + awaiting_user_test) once Vercel reports READY.
     await log(
       buildRunId,
-      `Preview is live: ${previewUrl} — try the app, then press Publish to put it online for real.`,
+      "Vercel is building the preview — this page will update when it's ready.",
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -421,5 +363,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       action: "build.failed",
       payload: { error: message },
     });
+  } finally {
+    await runner?.dispose();
   }
 }

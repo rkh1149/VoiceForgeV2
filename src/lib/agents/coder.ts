@@ -17,10 +17,12 @@ const SHARED_RULES = `Rules for all files you write:
 - The app must work entirely in the browser: no databases, no API keys, no external services. If data must persist, use localStorage inside client components ("use client") with a typed wrapper in src/lib/storage.ts.
 - CRITICAL: every page is prerendered on the server at build time, where window/localStorage do not exist. Never touch window or localStorage at module scope, in useState initializers, or during render — ONLY inside useEffect. Initialize state to defaults, then load saved data in a useEffect after mount.
 - Do not create pages/, src/pages/, 404.tsx, 500.tsx, _document, or _app files — this is App Router only (use not-found.tsx / error.tsx if genuinely needed).
+- NEVER reference static asset files (mp3, images, fonts, videos) — you cannot create them, so any such path will 404. For sound, synthesize it with the Web Audio API. For graphics, use inline SVG, CSS, or emoji. For images the user mentions, build an upload feature (stored in localStorage as data URLs) instead of assuming files exist.
 - Style with Tailwind utility classes only. Mobile-first, readable, generous touch targets. The app is used by non-technical family members.
 - Accessibility: semantic HTML, labels on inputs, alt text, keyboard operability.
 - Write tests: for each main feature, add a *.test.tsx or *.test.ts file under src/ using vitest + @testing-library/react (both installed; jest-dom matchers like toBeInTheDocument are set up). Tests must not rely on localStorage persisting between tests.
-- Tests must be deterministic: NEVER use vi.useFakeTimers, real delays, or arbitrary waits. Never use setTimeout/setInterval in components for game or app logic — apply state updates synchronously (skip artificial "thinking" pauses; they break tests and add nothing). In tests prefer userEvent/fireEvent then findBy*/waitFor.
+- Tests must be deterministic: NEVER use vi.useFakeTimers, real delays, or arbitrary waits. Never use setTimeout/setInterval in components for game or app logic — apply state updates synchronously (skip artificial "thinking" pauses; they break tests and add nothing). In tests use fireEvent from @testing-library/react (@testing-library/user-event is NOT installed) then findBy*/waitFor.
+- Write robust test assertions: query by role or aria-label on unique interactive elements, never by text that appears in more than one place or is split across elements (e.g. "0:13 / 0:37" rendered from multiple spans). Fewer, stronger assertions beat many brittle ones. Don't assert on intermediate states that depend on effect timing.
 - Do not overwrite src/lib/template.test.ts.
 - src/app/layout.tsx already exists with correct metadata; only rewrite it if the app truly needs a different shell, and keep the import of "./globals.css".
 - Every page must compile under strict TypeScript and pass eslint (next/core-web-vitals). No unused variables, no explicit any.`;
@@ -143,6 +145,8 @@ export async function runDebugAgent(input: {
 
 Known failure signatures:
 - "next build" failing while prerendering /404, /500, or /_error with "<Html> should not be imported outside of pages/_document": a component threw during server prerendering — almost always window or localStorage accessed at module scope, in a useState initializer, or during render. Find that component and move the access into useEffect. Do NOT create 404.tsx/500.tsx/_document/_error files; they are not valid in the App Router and will not fix this.
+
+Escalation rule: if an earlier attempt this build already rewrote the SAME test file for the same failing test, do not rewrite it again with cleverer queries — that strategy has failed. Instead either (a) fix the COMPONENT: races between effects and assertions, duplicated text without distinguishing roles/labels, state that briefly flickers through wrong values on mount — these are component bugs even when the error appears in a test; or (b) SIMPLIFY the test: delete the brittle assertions and keep only robust role/label-based checks of core behavior. A shorter passing test beats a thorough flaky one.
 
 ${SHARED_RULES}`,
     tools: [makeWriteFileTool(files, log)],

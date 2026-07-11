@@ -1,15 +1,21 @@
 import Link from "next/link";
 import { UserButton } from "@clerk/nextjs";
+import { getOrCreateCurrentUser } from "@/lib/users";
 
-const navItems = [
+const baseNavItems = [
   { href: "/dashboard", label: "My Apps" },
   { href: "/dashboard/create", label: "Create New App" },
   { href: "/dashboard/change", label: "Change an App" },
 ];
 
-export default function DashboardLayout({
+export default async function DashboardLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  const user = await getOrCreateCurrentUser().catch(() => null);
+  const navItems =
+    user?.role === "admin"
+      ? [...baseNavItems, { href: "/dashboard/admin", label: "Admin" }]
+      : baseNavItems;
   return (
     <div className="min-h-screen">
       <header className="border-b border-slate-200 bg-white">

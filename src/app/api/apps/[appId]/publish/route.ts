@@ -6,6 +6,9 @@ import { apps, approvals, buildRuns } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import { audit } from "@/lib/audit";
 import { publishToProduction } from "@/lib/build/publish";
+import { runInBackground } from "@/lib/background";
+
+export const maxDuration = 300;
 
 /**
  * The owner pressed "Publish": record a deploy_production approval, then
@@ -77,12 +80,16 @@ export async function POST(
     .set({ status: "deploying" })
     .where(eq(buildRuns.id, latestRun.id));
 
-  void publishToProduction({
-    appId,
-    buildRunId: latestRun.id,
-    branch: latestRun.branch,
-    userId: user.id,
-  }).catch((err) => console.error(`Publish crashed for ${appId}:`, err));
+  runInBackground(
+    () =>
+      publishToProduction({
+        appId,
+        buildRunId: latestRun.id,
+        branch: latestRun.branch!,
+        userId: user.id,
+      }),
+    `publish ${appId}`,
+  );
 
   return NextResponse.json({ ok: true });
 }

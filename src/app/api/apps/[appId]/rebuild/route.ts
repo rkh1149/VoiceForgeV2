@@ -6,6 +6,10 @@ import { apps, approvals, buildRuns, requirements } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import { audit } from "@/lib/audit";
 import { startBuildPipeline } from "@/lib/build/pipeline";
+import { checkBuildQuota } from "@/lib/quota";
+import { runInBackground } from "@/lib/background";
+
+export const maxDuration = 300;
 
 /** Retry a failed build using the latest approved spec. */
 export async function POST(
@@ -46,14 +50,14 @@ export async function POST(
     );
   }
 
-  // …which must have an approved build approval (no approval, no build).
+  // …which must have an approved build/change approval (no approval, no build).
   const [approval] = await db
     .select()
     .from(approvals)
     .where(
       and(
         eq(approvals.requirementId, latestRequirement.id),
-        eq(approvals.type, "build"),
+        inArray(approvals.type, ["build", "change"]),
         eq(approvals.status, "approved"),
       ),
     )
@@ -89,6 +93,16 @@ export async function POST(
     );
   }
 
+  const quota = await checkBuildQuota(user);
+  if (!quota.allowed) {
+    return NextResponse.json(
+      {
+        error: `You've used all ${quota.limit} builds for this month. Ask Richard if you need more.`,
+      },
+      { status: 429 },
+    );
+  }
+
   const [run] = await db
     .insert(buildRuns)
     .values({
@@ -107,9 +121,7 @@ export async function POST(
     payload: { requirementVersion: latestRequirement.version },
   });
 
-  void startBuildPipeline(run.id).catch((err) =>
-    console.error(`Build pipeline crashed for ${run.id}:`, err),
-  );
+  runInBackground(() => startBuildPipeline(run.id), `build ${run.id}`);
 
   return NextResponse.json({ ok: true, buildRunId: run.id });
 }
