@@ -31,7 +31,13 @@ export default async function ChangeAppChatPage({
       </h1>
       <p className="mt-1 mb-6 text-sm text-slate-500">
         Describe what you&rsquo;d like different. VoiceForge will confirm the
-        change, then rebuild and give you a preview before anything goes live.
+        change, then rebuild and give you a preview before anything goes live.{" "}
+        <a
+          href={`/dashboard/voice?app=${app.id}`}
+          className="font-medium text-forge-600 hover:underline"
+        >
+          🎤 Prefer talking? Change it by voice
+        </a>
       </p>
       <PlannerChat appId={app.id} appName={app.name} />
     </div>

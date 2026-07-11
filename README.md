@@ -2,7 +2,9 @@
 
 A voice-controlled app builder for family and friends. Describe an app in plain language; VoiceForge plans it with you, builds it, tests it, and deploys it.
 
-Current progress: **Stage 4** — the full loop works for both new apps and changes. Create: describe an idea → approve the plan → pipeline generates, tests, previews → you Publish → live URL. Change: pick a built app on the Change page, describe the change → approve → the Change Agent modifies the app's *current* code (fetched from GitHub, preserving saved user data) → full re-test → new preview → Publish. Every spec is versioned in `requirements`; every change is tracked in `change_requests`; production always requires your explicit approval.
+Current progress: **Stage 5** — you can now plan apps and changes **by voice**: the browser talks to OpenAI Realtime over WebRTC using a short-lived key minted by the backend (the real API key never reaches the browser), the assistant asks clarifying questions out loud, transcripts are saved, and the proposed plan lands in the same approval → build → preview → publish pipeline as text. Voice costs roughly $0.05–0.15 per planning conversation; sessions auto-stop at 10 minutes.
+
+Stage 4 recap — the full loop works for both new apps and changes. Create: describe an idea → approve the plan → pipeline generates, tests, previews → you Publish → live URL. Change: pick a built app on the Change page, describe the change → approve → the Change Agent modifies the app's *current* code (fetched from GitHub, preserving saved user data) → full re-test → new preview → Publish. Every spec is versioned in `requirements`; every change is tracked in `change_requests`; production always requires your explicit approval.
 
 ## How builds work (Stage 2)
 

@@ -1,20 +1,18 @@
 import { NextResponse } from "next/server";
-import { and, eq, desc } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { AgentInputItem } from "@openai/agents";
 import { getDb } from "@/db";
-import {
-  apps,
-  approvals,
-  changeRequests,
-  conversations,
-  requirements,
-} from "@/db/schema";
+import { apps, conversations } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import { audit } from "@/lib/audit";
 import { runPlanner, runChangePlanner } from "@/lib/agents/planner";
 import type { AppSpec } from "@/lib/spec";
-import { uniqueSlugForOwner } from "@/lib/slug";
+import {
+  persistProposal,
+  getLatestSpec,
+  type ProposalPayload,
+} from "@/lib/proposals";
 
 // Planning turns can take a while (model + tool call).
 export const maxDuration = 60;
@@ -95,7 +93,10 @@ export async function POST(req: Request) {
       userId: user.id,
       appId: requestedAppId ?? undefined,
       action: "conversation.started",
-      payload: { conversationId: convo.id, mode: requestedAppId ? "change" : "create" },
+      payload: {
+        conversationId: convo.id,
+        mode: requestedAppId ? "change" : "create",
+      },
     });
   }
 
@@ -120,16 +121,8 @@ export async function POST(req: Request) {
       .where(eq(apps.id, convo.appId))
       .limit(1);
     if (targetApp?.githubRepoUrl) {
-      const [latest] = await db
-        .select()
-        .from(requirements)
-        .where(eq(requirements.appId, convo.appId))
-        .orderBy(desc(requirements.version))
-        .limit(1);
-      if (latest) {
-        changeMode = true;
-        currentSpec = latest.spec as AppSpec;
-      }
+      currentSpec = await getLatestSpec(convo.appId);
+      changeMode = currentSpec !== null;
     }
   }
 
@@ -162,115 +155,16 @@ export async function POST(req: Request) {
     .set({ transcript: result.history, updatedAt: new Date() })
     .where(eq(conversations.id, convo.id));
 
-  // If the model recorded a spec this turn, persist app + requirement +
-  // pending approval, all owned by this user.
-  let proposalPayload: {
-    appId: string;
-    appName: string;
-    requirementId: string;
-    approvalId: string;
-    version: number;
-  } | null = null;
-
+  let proposalPayload: ProposalPayload | null = null;
   if (result.proposal) {
-    const spec = result.proposal;
-
-    // Reuse the app row if this conversation already proposed one (revision).
-    let appId = convo.appId;
-    let version = 1;
-    if (appId) {
-      const prev = await db
-        .select({ version: requirements.version })
-        .from(requirements)
-        .where(eq(requirements.appId, appId))
-        .orderBy(desc(requirements.version))
-        .limit(1);
-      version = (prev[0]?.version ?? 0) + 1;
-      await db
-        .update(apps)
-        .set({
-          name: spec.appName,
-          description: spec.purpose,
-          updatedAt: new Date(),
-        })
-        .where(eq(apps.id, appId));
-    } else {
-      const slug = await uniqueSlugForOwner(user.id, spec.appName);
-      const inserted = await db
-        .insert(apps)
-        .values({
-          ownerId: user.id,
-          name: spec.appName,
-          slug,
-          description: spec.purpose,
-          status: "draft",
-        })
-        .returning();
-      appId = inserted[0].id;
-      await db
-        .update(conversations)
-        .set({ appId })
-        .where(eq(conversations.id, convo.id));
-    }
-
-    // Supersede any earlier pending build/change approval for this app.
-    await db
-      .update(approvals)
-      .set({ status: "rejected", decidedAt: new Date() })
-      .where(
-        and(
-          eq(approvals.appId, appId),
-          eq(approvals.type, changeMode ? "change" : "build"),
-          eq(approvals.status, "pending"),
-        ),
-      );
-
-    const [requirement] = await db
-      .insert(requirements)
-      .values({
-        appId,
-        version,
-        spec,
-        plainSummary: result.reply,
-        createdBy: user.id,
-      })
-      .returning();
-
-    const [approval] = await db
-      .insert(approvals)
-      .values({
-        appId,
-        requirementId: requirement.id,
-        userId: user.id,
-        type: changeMode ? "change" : "build",
-        status: "pending",
-      })
-      .returning();
-
-    if (changeMode && changeSummary) {
-      await db.insert(changeRequests).values({
-        appId,
-        userId: user.id,
-        description: changeSummary,
-        status: "awaiting_approval",
-        requirementId: requirement.id,
-      });
-    }
-
-    await audit({
-      userId: user.id,
-      appId,
-      action: changeMode ? "change.proposed" : "spec.proposed",
-      payload: { requirementId: requirement.id, version, appName: spec.appName },
+    proposalPayload = await persistProposal({
+      user,
+      conversationId: convo.id,
+      spec: result.proposal,
+      plainSummary: result.reply,
+      changeMode,
+      changeSummary,
     });
-
-    proposalPayload = {
-      appId,
-      appName: spec.appName,
-      requirementId: requirement.id,
-      approvalId: approval.id,
-      version,
-    };
   }
 
   return NextResponse.json({
