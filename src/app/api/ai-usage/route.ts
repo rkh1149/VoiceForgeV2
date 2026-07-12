@@ -15,6 +15,7 @@ import { aiUsage, apps } from "@/db/schema";
 const bodySchema = z.object({
   token: z.string().min(20).max(200),
   phase: z.enum(["gate", "report"]),
+  kind: z.enum(["text", "image"]).default("text"),
   usageId: z.string().uuid().nullish(),
   model: z.string().max(80).nullish(),
   inputTokens: z.number().int().min(0).max(10_000_000).nullish(),
@@ -26,7 +27,7 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
-  const { token, phase, usageId, model, inputTokens, outputTokens } =
+  const { token, phase, kind, usageId, model, inputTokens, outputTokens } =
     parsed.data;
 
   const db = getDb();
@@ -34,6 +35,7 @@ export async function POST(req: Request) {
     .select({
       id: apps.id,
       limit: apps.aiDailyRequestLimit,
+      imageLimit: apps.aiDailyImageLimit,
       status: apps.status,
     })
     .from(apps)
@@ -46,27 +48,35 @@ export async function POST(req: Request) {
   if (phase === "gate") {
     const dayStart = new Date();
     dayStart.setUTCHours(0, 0, 0, 0);
+    const limit = kind === "image" ? app.imageLimit : app.limit;
     const [row] = await db
       .select({ used: count() })
       .from(aiUsage)
       .where(
-        and(eq(aiUsage.appId, app.id), gte(aiUsage.createdAt, dayStart)),
+        and(
+          eq(aiUsage.appId, app.id),
+          eq(aiUsage.kind, kind),
+          gte(aiUsage.createdAt, dayStart),
+        ),
       );
     const used = row?.used ?? 0;
-    if (used >= app.limit) {
+    if (used >= limit) {
       return NextResponse.json({
         allowed: false,
-        reason: `This app has reached its daily AI limit (${app.limit} requests). It resets at midnight UTC.`,
+        reason:
+          kind === "image"
+            ? `This app has reached its daily image limit (${limit} images). It resets at midnight UTC.`
+            : `This app has reached its daily AI limit (${limit} requests). It resets at midnight UTC.`,
       });
     }
     const [inserted] = await db
       .insert(aiUsage)
-      .values({ appId: app.id })
+      .values({ appId: app.id, kind })
       .returning({ id: aiUsage.id });
     return NextResponse.json({
       allowed: true,
       usageId: inserted.id,
-      remainingToday: app.limit - used - 1,
+      remainingToday: limit - used - 1,
     });
   }
 

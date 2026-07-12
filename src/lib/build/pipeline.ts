@@ -36,17 +36,27 @@ import { createRunner, type Runner, type StepName } from "./runner";
  * All state lives in the database so the UI can poll it.
  */
 
-const STEP_ORDER: StepName[] = ["install", "typecheck", "lint", "test", "build"];
+const STEP_ORDER: StepName[] = [
+  "install",
+  "typecheck",
+  "lint",
+  "test",
+  "build",
+  "e2e",
+];
 const MAX_DEBUG_ROUNDS = 5;
 
-const SUITE_FOR_STEP: Record<StepName, "typecheck" | "lint" | "unit" | "build"> =
-  {
-    install: "build",
-    typecheck: "typecheck",
-    lint: "lint",
-    test: "unit",
-    build: "build",
-  };
+const SUITE_FOR_STEP: Record<
+  StepName,
+  "typecheck" | "lint" | "unit" | "build" | "e2e"
+> = {
+  install: "build",
+  typecheck: "typecheck",
+  lint: "lint",
+  test: "unit",
+  build: "build",
+  e2e: "e2e",
+};
 
 type LogEntry = { ts: string; message: string };
 
@@ -219,6 +229,21 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     const debugNotes: string[] = [];
     while (stepIdx < STEP_ORDER.length) {
       const step = STEP_ORDER[stepIdx];
+
+      // Browser tests need Chromium, which isn't available in the cloud
+      // sandbox image yet — record as skipped there rather than failing.
+      if (step === "e2e" && runner.kind === "sandbox") {
+        await db.insert(testResults).values({
+          buildRunId,
+          suite: "e2e",
+          status: "skipped",
+          summary: "browser tests (skipped on cloud builds)",
+        });
+        await log(buildRunId, "Skipping browser tests on cloud build.");
+        stepIdx++;
+        continue;
+      }
+
       await log(buildRunId, `Running ${step}…`);
       const result = await runner.run(step);
 
@@ -335,6 +360,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         vars: {
           OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
           AI_MODEL: process.env.OPENAI_GENAPP_MODEL ?? "gpt-5.4-mini",
+          AI_IMAGE_MODEL: process.env.OPENAI_GENAPP_IMAGE_MODEL ?? "gpt-image-1",
           VOICEFORGE_APP_TOKEN: aiToken,
           ...(publicUrl ? { VOICEFORGE_PUBLIC_URL: publicUrl } : {}),
         },

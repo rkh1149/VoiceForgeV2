@@ -13,8 +13,12 @@ const MAX_PROMPT_CHARS = 4000;
 const MAX_SYSTEM_CHARS = 1000;
 const MAX_OUTPUT_TOKENS = 1000;
 
-type AiRequestBody = { prompt?: unknown; system?: unknown };
+type AiRequestBody = { prompt?: unknown; system?: unknown; mode?: unknown };
 type GateResponse = { allowed?: boolean; reason?: string; usageId?: string };
+type ImagesBody = {
+  data?: Array<{ b64_json?: string }>;
+  usage?: ResponsesUsage;
+};
 type ResponsesUsage = { input_tokens?: number; output_tokens?: number };
 type ResponsesContent = { type?: string; text?: string };
 type ResponsesOutputItem = { content?: ResponsesContent[] };
@@ -39,6 +43,7 @@ export async function POST(req: Request) {
     typeof body?.system === "string"
       ? body.system.slice(0, MAX_SYSTEM_CHARS)
       : undefined;
+  const mode = body?.mode === "image" ? "image" : "text";
   if (!prompt || prompt.length > MAX_PROMPT_CHARS) {
     return NextResponse.json(
       { error: `Prompt must be 1–${MAX_PROMPT_CHARS} characters.` },
@@ -57,7 +62,7 @@ export async function POST(req: Request) {
       const res = await fetch(`${gateBase}/api/ai-usage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: gateToken, phase: "gate" }),
+        body: JSON.stringify({ token: gateToken, phase: "gate", kind: mode }),
       });
       gate = (await res.json()) as GateResponse;
     } catch {
@@ -76,6 +81,49 @@ export async function POST(req: Request) {
     usageId = gate.usageId ?? null;
   }
 
+  // ---- image mode -----------------------------------------------------
+  if (mode === "image") {
+    const imageModel = process.env.AI_IMAGE_MODEL ?? "gpt-image-1";
+    const imgRes = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: imageModel,
+        prompt,
+        n: 1,
+        size: "1024x1024",
+        quality: "low",
+      }),
+    });
+    const imgData = (await imgRes.json().catch(() => ({}))) as ImagesBody;
+    const imageBase64 = imgData.data?.[0]?.b64_json;
+    if (!imgRes.ok || !imageBase64) {
+      return NextResponse.json(
+        { error: "The image maker hit a problem. Please try again." },
+        { status: 502 },
+      );
+    }
+    if (gateBase && gateToken && usageId) {
+      void fetch(`${gateBase}/api/ai-usage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: gateToken,
+          phase: "report",
+          usageId,
+          model: imageModel,
+          inputTokens: imgData.usage?.input_tokens ?? 0,
+          outputTokens: imgData.usage?.output_tokens ?? 0,
+        }),
+      }).catch(() => {});
+    }
+    return NextResponse.json({ imageBase64 });
+  }
+
+  // ---- text mode -------------------------------------------------------
   const model = process.env.AI_MODEL ?? "gpt-5.4-mini";
   const aiRes = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",

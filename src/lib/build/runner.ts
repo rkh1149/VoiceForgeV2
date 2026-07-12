@@ -12,7 +12,13 @@ import type { FileMap } from "./template";
  * package.json or configs, and installs run with scripts disabled.
  */
 
-export type StepName = "install" | "typecheck" | "lint" | "test" | "build";
+export type StepName =
+  | "install"
+  | "typecheck"
+  | "lint"
+  | "test"
+  | "build"
+  | "e2e";
 
 export type StepResult = {
   step: StepName;
@@ -43,6 +49,9 @@ const STEPS: Record<
   lint: { cmd: "npm", args: ["run", "lint"], timeoutMs: 3 * 60_000 },
   test: { cmd: "npm", args: ["run", "test"], timeoutMs: 5 * 60_000 },
   build: { cmd: "npm", args: ["run", "build"], timeoutMs: 8 * 60_000 },
+  // Installs Chromium on first run (cached in ~/Library/Caches thereafter),
+  // starts the production build on port 4321, runs browser + axe checks.
+  e2e: { cmd: "npm", args: ["run", "test:e2e"], timeoutMs: 10 * 60_000 },
 };
 
 export async function createRunner(buildRunId: string): Promise<Runner> {

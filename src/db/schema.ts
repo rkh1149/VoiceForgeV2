@@ -139,6 +139,7 @@ export const apps = pgTable(
     // AI-enabled generated apps (Stage 7)
     aiToken: text("ai_token"), // secret the app uses to report/gate AI usage
     aiDailyRequestLimit: integer("ai_daily_request_limit").notNull().default(50),
+    aiDailyImageLimit: integer("ai_daily_image_limit").notNull().default(10),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -312,6 +313,7 @@ export const aiUsage = pgTable(
     appId: uuid("app_id")
       .notNull()
       .references(() => apps.id),
+    kind: text("kind").notNull().default("text"), // text | image
     model: text("model"),
     inputTokens: integer("input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),

@@ -91,7 +91,9 @@ export default async function BuildRunPage({
           <ul className="mt-2 space-y-1">
             {results.map((t) => (
               <li key={t.id} className="flex items-center gap-2 text-sm">
-                <span>{t.status === "passed" ? "✅" : "❌"}</span>
+                <span>
+                  {t.status === "passed" ? "✅" : t.status === "skipped" ? "⏭️" : "❌"}
+                </span>
                 <span className="text-slate-600">{t.summary ?? t.suite}</span>
               </li>
             ))}

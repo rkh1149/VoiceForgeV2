@@ -259,7 +259,9 @@ export default function BuildStatus({ appId }: { appId: string }) {
           <ul className="mt-2 space-y-1">
             {testResults.map((t, i) => (
               <li key={i} className="flex items-center gap-2 text-sm">
-                <span>{t.status === "passed" ? "✅" : "❌"}</span>
+                <span>
+                  {t.status === "passed" ? "✅" : t.status === "skipped" ? "⏭️" : "❌"}
+                </span>
                 <span className="text-slate-600">{t.summary ?? t.suite}</span>
               </li>
             ))}

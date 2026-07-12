@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright install chromium && playwright test"
   },
   "dependencies": {
     "next": "^15.5.18",
@@ -16,7 +17,9 @@
     "react-dom": "~19.2.3"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@eslint/eslintrc": "^3",
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4.3.0",
     "@testing-library/jest-dom": "^6",
     "@testing-library/react": "^16.3.2",

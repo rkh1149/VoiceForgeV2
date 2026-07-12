@@ -24,6 +24,7 @@ const SHARED_RULES = `Rules for all files you write:
 - Write tests: for each main feature, add a *.test.tsx or *.test.ts file under src/ using vitest + @testing-library/react (both installed; jest-dom matchers like toBeInTheDocument are set up). Tests must not rely on localStorage persisting between tests.
 - Tests must be deterministic: NEVER use vi.useFakeTimers, real delays, or arbitrary waits. Never use setTimeout/setInterval in components for game or app logic — apply state updates synchronously (skip artificial "thinking" pauses; they break tests and add nothing). In tests use fireEvent from @testing-library/react (@testing-library/user-event is NOT installed) then findBy*/waitFor.
 - Write robust test assertions: query by role or aria-label on unique interactive elements, never by text that appears in more than one place or is split across elements (e.g. "0:13 / 0:37" rendered from multiple spans). Fewer, stronger assertions beat many brittle ones. Don't assert on intermediate states that depend on effect timing.
+- A locked BROWSER TEST runs against every build: it loads /, presses visible buttons, and fails on any JavaScript error, any 404'd resource, or any serious axe accessibility violation. Therefore: the home page must render standalone with sensible defaults, every button must be safe to press in any order without crashing, and accessibility must be real — labels on all inputs and icon-only buttons (aria-label), alt text, sufficient color contrast (no light gray on white; Tailwind *-400 or lighter text on white backgrounds usually fails), and one h1 per page.
 - Do not overwrite src/lib/template.test.ts.
 - src/app/layout.tsx already exists with correct metadata; only rewrite it if the app truly needs a different shell, and keep the import of "./globals.css".
 - Every page must compile under strict TypeScript and pass eslint (next/core-web-vitals). No unused variables, no explicit any.`;
@@ -57,10 +58,13 @@ export function aiUsageNote(spec: AppSpec): string {
   return `
 
 THIS APP HAS AI FEATURES. Use the locked platform endpoint for ALL of them:
-- POST /api/ai with JSON {prompt: string, system?: string} → responds {text: string}, or {error: string} with status 400/429/502/503.
-- Call it with fetch from client components; always show a loading state while waiting.
-- If the response is not ok, display the error message to the user politely (a daily AI limit exists — 429 means "come back tomorrow").
-- Keep prompts under 4000 characters. Craft a good "system" string so answers fit this app's purpose and audience.
+- TEXT: POST /api/ai with JSON {prompt: string, system?: string} → responds {text: string}, or {error: string} with status 400/429/502/503.
+- IMAGES: POST /api/ai with JSON {mode: "image", prompt: string} → responds {imageBase64: string} — a REAL PNG. Render it as <img src={\`data:image/png;base64,\${imageBase64}\`} alt="…" />. Image generation takes 5–20 seconds: show a clear loading state. Images have a SMALLER daily limit than text.
+- NEVER ask the text mode to produce an image, base64, SVG-as-text, or any binary data — language models cannot generate valid images; always use mode:"image" for pictures.
+- Do NOT store generated images in localStorage (a few images exceed the 5 MB quota and break the app) — keep at most the latest image in component state, and offer a download link (anchor with the data URL and a download attribute) if the user should keep it.
+- Call the endpoint with fetch from client components; always show a loading state while waiting.
+- If the response is not ok, display the error message to the user politely (daily limits exist — 429 means "come back tomorrow").
+- Keep prompts under 4000 characters. Craft a good "system" string so text answers fit this app's purpose and audience.
 - NEVER call OpenAI or any external AI service directly, never reference API keys, and never modify src/app/api/ai/route.ts.
 - In tests, mock global.fetch for /api/ai calls — never let tests hit the network.`;
 }
@@ -160,6 +164,8 @@ export async function runDebugAgent(input: {
 
 Known failure signatures:
 - "next build" failing while prerendering /404, /500, or /_error with "<Html> should not be imported outside of pages/_document": a component threw during server prerendering — almost always window or localStorage accessed at module scope, in a useState initializer, or during render. Find that component and move the access into useEffect. Do NOT create 404.tsx/500.tsx/_document/_error files; they are not valid in the App Router and will not fix this.
+
+- The "e2e" step failing: this is the locked browser test (e2e/smoke.spec.ts, NOT editable). Its failure messages name the exact problem: "JavaScript errors" or "missing files (404)" mean an app bug — fix the component or remove the reference to the nonexistent file; "accessibility violations" list axe rule ids — fix the offending components (add labels/alt text, increase color contrast, correct heading structure). Never try to modify or skip the browser test itself.
 
 Escalation rule: if an earlier attempt this build already rewrote the SAME test file for the same failing test, do not rewrite it again with cleverer queries — that strategy has failed. Instead either (a) fix the COMPONENT: races between effects and assertions, duplicated text without distinguishing roles/labels, state that briefly flickers through wrong values on mount — these are component bugs even when the error appears in a test; or (b) SIMPLIFY the test: delete the brittle assertions and keep only robust role/label-based checks of core behavior. A shorter passing test beats a thorough flaky one.
 

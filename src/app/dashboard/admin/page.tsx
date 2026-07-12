@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { and, count, desc, eq, gte, max, sum } from "drizzle-orm";
+import { and, count, desc, eq, gte, max, sql, sum } from "drizzle-orm";
 import { getDb } from "@/db";
 import { aiUsage, apps, auditLogs, buildRuns, users } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
@@ -82,6 +82,7 @@ export default async function AdminPage() {
         appName: apps.name,
         ownerEmail: users.email,
         requests: count(),
+        images: sql<number>`sum(case when ${aiUsage.kind} = 'image' then 1 else 0 end)`,
         inputTokens: sum(aiUsage.inputTokens),
         outputTokens: sum(aiUsage.outputTokens),
         lastUsed: max(aiUsage.createdAt),
@@ -181,6 +182,7 @@ export default async function AdminPage() {
                 <th className="px-4 py-2">App</th>
                 <th className="px-4 py-2">Owner</th>
                 <th className="px-4 py-2 text-right">Requests</th>
+                <th className="px-4 py-2 text-right">Images</th>
                 <th className="px-4 py-2 text-right">Tokens in</th>
                 <th className="px-4 py-2 text-right">Tokens out</th>
                 <th className="px-4 py-2">Last used</th>
@@ -199,6 +201,9 @@ export default async function AdminPage() {
                   </td>
                   <td className="px-4 py-2 text-slate-500">{a.ownerEmail}</td>
                   <td className="px-4 py-2 text-right">{a.requests}</td>
+                  <td className="px-4 py-2 text-right">
+                    {Number(a.images ?? 0)}
+                  </td>
                   <td className="px-4 py-2 text-right">
                     {Number(a.inputTokens ?? 0).toLocaleString("en-CA")}
                   </td>

@@ -30,7 +30,7 @@ Flow:
 4. After about 3-5 questions, call the propose_spec tool once with the complete specification.
 5. After the tool succeeds, briefly summarize the plan out loud and tell them to press the green Approve button on their screen if they want it built, or to keep talking to change it.
 
-Rules: never discuss code or hosting; politely decline anything unsafe or involving other people's money or medical decisions; if they want changes after proposing, call propose_spec again with the revised spec.`;
+Rules: never discuss code or hosting; apps can include AI text and AI picture generation (daily limits) but NOT audio, video, or music generation — say so kindly if asked; politely decline anything unsafe or involving other people's money or medical decisions; if they want changes after proposing, call propose_spec again with the revised spec.`;
 
 const CHANGE_VOICE_INSTRUCTIONS = `You are VoiceForge, a friendly voice assistant helping a non-technical person change an app they already built. You are SPEAKING with them — short conversational replies, one question at a time, no technical words.
 
