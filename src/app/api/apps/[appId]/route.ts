@@ -3,6 +3,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import {
+  aiUsage,
   apps,
   approvals,
   auditLogs,
@@ -105,6 +106,7 @@ export async function DELETE(
       .set({ buildRunId: null })
       .where(inArray(auditLogs.buildRunId, runIds));
   }
+  await db.delete(aiUsage).where(eq(aiUsage.appId, appId));
   await db.delete(deployments).where(eq(deployments.appId, appId));
   await db.delete(buildRuns).where(eq(buildRuns.appId, appId));
   await db.delete(changeRequests).where(eq(changeRequests.appId, appId));

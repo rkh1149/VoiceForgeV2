@@ -20,7 +20,7 @@ export default function DeleteAppButton({
     setError(null);
     try {
       const res = await fetch(`/api/apps/${appId}`, { method: "DELETE" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}) as { error?: string; warnings?: string[] });
       if (!res.ok) throw new Error(data.error ?? "Could not delete the app");
       if (data.warnings?.length) {
         alert(
