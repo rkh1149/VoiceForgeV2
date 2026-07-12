@@ -83,7 +83,7 @@ export async function POST(req: Request) {
 
   // ---- image mode -----------------------------------------------------
   if (mode === "image") {
-    const imageModel = process.env.AI_IMAGE_MODEL ?? "gpt-image-1";
+    const imageModel = process.env.AI_IMAGE_MODEL ?? "gpt-image-2";
     const imgRes = await fetch("https://api.openai.com/v1/images/generations", {
       method: "POST",
       headers: {

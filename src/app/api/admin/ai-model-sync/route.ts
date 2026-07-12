@@ -21,7 +21,7 @@ export async function POST() {
   }
 
   const textModel = process.env.OPENAI_GENAPP_MODEL ?? "gpt-5.6-terra";
-  const imageModel = process.env.OPENAI_GENAPP_IMAGE_MODEL ?? "gpt-image-1";
+  const imageModel = process.env.OPENAI_GENAPP_IMAGE_MODEL ?? "gpt-image-2";
 
   const db = getDb();
   const aiApps = await db
