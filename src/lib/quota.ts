@@ -1,4 +1,4 @@
-import { and, count, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, count, eq, gte, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { apps, buildRuns, type User } from "@/db/schema";
 
@@ -29,9 +29,14 @@ export async function checkBuildQuota(
  * killed dev process, function timeout…). Called from the status endpoint. */
 export async function failStaleRuns(appId: string): Promise<void> {
   const db = getDb();
-  const cutoff = new Date(Date.now() - 25 * 60_000);
-  const staleRuns = await db
-    .select({ id: buildRuns.id })
+  const hardCutoff = new Date(Date.now() - 25 * 60_000);
+  const heartbeatCutoff = new Date(Date.now() - 8 * 60_000);
+  const activeRuns = await db
+    .select({
+      id: buildRuns.id,
+      createdAt: buildRuns.createdAt,
+      logs: buildRuns.logs,
+    })
     .from(buildRuns)
     .where(
       and(
@@ -42,11 +47,18 @@ export async function failStaleRuns(appId: string): Promise<void> {
           "testing",
           "debugging",
         ]),
-        lte(buildRuns.createdAt, cutoff),
       ),
-    )
-    .limit(1);
-  if (staleRuns.length === 0) return;
+    );
+  const staleRunIds = activeRuns
+    .filter((run) => {
+      const logs = (run.logs ?? []) as Array<{ ts?: string }>;
+      const lastLogAt = logs.at(-1)?.ts
+        ? new Date(logs.at(-1)?.ts ?? run.createdAt)
+        : run.createdAt;
+      return run.createdAt <= hardCutoff || lastLogAt <= heartbeatCutoff;
+    })
+    .map((run) => run.id);
+  if (staleRunIds.length === 0) return;
 
   await db
     .update(buildRuns)
@@ -59,15 +71,7 @@ export async function failStaleRuns(appId: string): Promise<void> {
     .where(
       and(
         eq(buildRuns.appId, appId),
-        inArray(buildRuns.status, [
-          "queued",
-          "generating",
-          "testing",
-          "debugging",
-        ]),
-        // createdAt is set at queue time; active runs update logs constantly,
-        // so 25 minutes without finishing means it's dead.
-        lte(buildRuns.createdAt, cutoff),
+        inArray(buildRuns.id, staleRunIds),
       ),
     );
   const [app] = await db
