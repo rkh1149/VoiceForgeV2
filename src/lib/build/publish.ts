@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { apps, buildRuns, deployments } from "@/db/schema";
 import { audit } from "@/lib/audit";
+import { getGeneratedAppName } from "@/lib/generated-apps";
 import { createRepoIfMissing, mergeToDefault } from "@/lib/github";
 import { createDeployment } from "@/lib/vercel";
 
@@ -37,7 +38,7 @@ export async function publishToProduction(opts: {
       .limit(1);
     if (!app) throw new Error("App not found");
 
-    const repoName = `voiceforge-${app.slug}`;
+    const repoName = getGeneratedAppName(app.slug);
     const repo = await createRepoIfMissing({
       name: repoName,
       description: app.description ?? app.name,

@@ -38,7 +38,7 @@ type VercelProject = { id: string; name: string };
 
 /** Create (or fetch) the Vercel project for an app, linked to its repo. */
 export async function ensureProject(opts: {
-  name: string; // e.g. voiceforge-tic-tac-buddy
+  name: string; // e.g. voiceforgev2-tic-tac-buddy
   githubRepo: string; // owner/name
   userId?: string;
   appId?: string;

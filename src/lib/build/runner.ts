@@ -68,7 +68,7 @@ export async function createRunner(buildRunId: string): Promise<Runner> {
 async function createLocalRunner(buildRunId: string): Promise<Runner> {
   const base =
     process.env.BUILD_WORKSPACE_DIR ??
-    path.join(os.tmpdir(), "voiceforge-builds");
+    path.join(os.tmpdir(), "voiceforge-v2-builds");
   const dir = path.join(base, buildRunId);
 
   return {
@@ -107,7 +107,7 @@ async function createLocalRunner(buildRunId: string): Promise<Runner> {
 
         const timer = setTimeout(() => {
           child.kill("SIGKILL");
-          output += `\n[voiceforge] step "${step}" timed out after ${timeoutMs / 1000}s`;
+          output += `\n[voiceforge-v2] step "${step}" timed out after ${timeoutMs / 1000}s`;
         }, timeoutMs);
 
         child.on("close", (code) => {

@@ -24,7 +24,9 @@ export default async function DashboardLayout({
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-forge-600 text-lg text-white">
               ⚒
             </span>
-            <span className="text-lg font-bold text-forge-900">VoiceForge</span>
+            <span className="text-lg font-bold text-forge-900">
+              VoiceForge V2
+            </span>
           </Link>
           <nav className="hidden gap-1 sm:flex">
             {navItems.map((item) => (

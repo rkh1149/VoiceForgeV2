@@ -13,10 +13,10 @@ export default async function LandingPage() {
         ⚒
       </div>
       <h1 className="text-4xl font-bold tracking-tight text-forge-900 sm:text-5xl">
-        VoiceForge
+        VoiceForge V2
       </h1>
       <p className="mt-4 max-w-md text-lg text-slate-600">
-        Describe the app you want. VoiceForge plans it with you, builds it,
+        Describe the app you want. VoiceForge V2 plans it with you, builds it,
         tests it, and puts it online.
       </p>
       <div className="mt-8">

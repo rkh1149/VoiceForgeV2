@@ -1,14 +1,16 @@
-# VoiceForge
+# VoiceForge V2
 
-A voice-controlled app builder for family and friends. Describe an app in plain language; VoiceForge plans it with you, builds it, tests it, and deploys it.
+A voice-controlled app builder for family and friends. Describe an app in plain language; VoiceForge V2 plans it with you, builds it, tests it, and deploys it.
+
+This repository is the isolated V2 line. V1 is frozen at the `voiceforge-v1-freeze-2026-07-15` tag in the original `VoiceForge` repository. V2 generated apps use the `voiceforgev2-*` GitHub/Vercel prefix so they do not collide with V1 generated apps.
 
 Current progress: **Stage 7c — AI image generation.** AI-enabled apps can request real images: `POST /api/ai {mode:"image", prompt}` → base64 PNG via `gpt-image-1` (low quality, 1024×1024, ~1–2¢ each), with a separate per-app daily image limit (`apps.ai_daily_image_limit`, default 10/day). The planners now know exactly which AI abilities exist (text + images, not audio/video) so specs stop promising the impossible, and the Admin AI-usage table shows image counts. Requires `npm run db:push` (new column + `ai_usage.kind`).
 
 Stage 7b — browser + accessibility testing. Every local build now ends with a locked Playwright test (`e2e/smoke.spec.ts`, agents cannot touch it): the production build is started in a real Chromium, the home page must load without JavaScript errors or 404'd files, survive its buttons being pressed, and pass an axe accessibility audit with no serious/critical violations. First build downloads Chromium once (~150 MB, then cached). Cloud (hosted) builds record the step as skipped for now.
 
-Stage 7a — AI-enabled generated apps. When a plan includes AI features, the generated app gets a locked `/api/ai` server route (agents cannot touch it or create other API routes). At deploy time VoiceForge sets that app's own Vercel env vars: your OpenAI key (server-side only), a pinned cheap model (`OPENAI_GENAPP_MODEL`, default gpt-5.4-mini), and a per-app secret token. Every AI request is gated against a per-app daily limit (`apps.ai_daily_request_limit`, default 50/day, fail-closed) via VoiceForge's `/api/ai-usage` endpoint, and token usage is reported back — the Admin page shows cumulative AI usage by app. Requires `VOICEFORGE_PUBLIC_URL` in env and a `npm run db:push` (new `ai_usage` table + app columns).
+Stage 7a — AI-enabled generated apps. When a plan includes AI features, the generated app gets a locked `/api/ai` server route (agents cannot touch it or create other API routes). At deploy time VoiceForge V2 sets that app's own Vercel env vars: your OpenAI key (server-side only), a pinned cheap model (`OPENAI_GENAPP_MODEL`, default gpt-5.4-mini), and a per-app secret token. Every AI request is gated against a per-app daily limit (`apps.ai_daily_request_limit`, default 50/day, fail-closed) via VoiceForge V2's `/api/ai-usage` endpoint, and token usage is reported back — the Admin page shows cumulative AI usage by app. Requires `VOICEFORGE_PUBLIC_URL` in env and a `npm run db:push` (new `ai_usage` table + app columns).
 
-Stage 6 recap — operations and safety: per-user monthly build quotas (`users.monthly_build_limit`, default 10; admins exempt), an **Admin** page for the owner (stats, all apps, recent builds, audit log), **rollback** of any app to an earlier published version (Vercel promote, no rebuild), app deletion across VoiceForge/GitHub/Vercel, stale-build reaping, and **cloud builds**: on the hosted VoiceForge, generated apps are tested inside Vercel Sandbox microVMs instead of a local process. Deployment waits are finalized by status polling rather than blocking, so serverless function time stays low. Note: hosted builds must fit your Vercel plan's function limit (300s on Hobby — long builds with debug rounds may need Vercel Pro's 800s, or run builds locally with `npm run dev`, which remains the default path).
+Stage 6 recap — operations and safety: per-user monthly build quotas (`users.monthly_build_limit`, default 10; admins exempt), an **Admin** page for the owner (stats, all apps, recent builds, audit log), **rollback** of any app to an earlier published version (Vercel promote, no rebuild), app deletion across VoiceForge V2/GitHub/Vercel, stale-build reaping, and **cloud builds**: on the hosted VoiceForge V2, generated apps are tested inside Vercel Sandbox microVMs instead of a local process. Deployment waits are finalized by status polling rather than blocking, so serverless function time stays low. Note: hosted builds must fit your Vercel plan's function limit (300s on Hobby — long builds with debug rounds may need Vercel Pro's 800s, or run builds locally with `npm run dev`, which remains the default path).
 
 Stage 5 recap — you can plan apps and changes **by voice**: the browser talks to OpenAI Realtime over WebRTC using a short-lived key minted by the backend (the real API key never reaches the browser), the assistant asks clarifying questions out loud, transcripts are saved, and the proposed plan lands in the same approval → build → preview → publish pipeline as text. Voice costs roughly $0.05–0.15 per planning conversation; sessions auto-stop at 10 minutes.
 
@@ -39,9 +41,9 @@ npm run dev                  # open http://localhost:3000
 
 ### 1. Clerk (sign-in)
 
-1. Create an application at https://dashboard.clerk.com — name it "VoiceForge".
+1. Create an application at https://dashboard.clerk.com — name it "VoiceForge V2".
 2. Sign-in method: enable **Email** with **Email verification link** (magic link). Disable everything else for simplicity.
-3. Go to **Configure → Restrictions** and set sign-up mode to **Restricted** — this makes VoiceForge invite-only. Invite family/friends from the Clerk dashboard (**Users → Invite**).
+3. Go to **Configure → Restrictions** and set sign-up mode to **Restricted** — this makes VoiceForge V2 invite-only. Invite family/friends from the Clerk dashboard (**Users → Invite**).
 4. Copy the **Publishable key** and **Secret key** from **API Keys** into `.env.local`.
 
 ### 2. Neon (database)
@@ -64,7 +66,7 @@ npm run build       # production build
 
 ## Deploy to Vercel
 
-1. Push this folder to a GitHub repo (e.g. `richardhoyne/voiceforge`).
+1. Push this folder to a GitHub repo (e.g. `rkh1149/VoiceForgeV2`).
 2. In Vercel: **Add New → Project**, import the repo. Defaults are fine.
 3. Add the same environment variables from `.env.local` in **Project → Settings → Environment Variables** (use your Clerk *production* keys once you add a domain; test keys work for previews).
 4. Deploy. Pushes to `main` go to production; other branches get preview URLs.

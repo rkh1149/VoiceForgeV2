@@ -26,6 +26,7 @@ import {
   createDeployment,
   setProjectEnvVars,
 } from "@/lib/vercel";
+import { getGeneratedAppName } from "@/lib/generated-apps";
 import { randomBytes } from "crypto";
 import { loadTemplate, type FileMap } from "./template";
 import { createRunner, type Runner, type StepName } from "./runner";
@@ -175,7 +176,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     let generated;
     if (changeMode) {
       await log(buildRunId, "Fetching the app's current code from GitHub…");
-      const repoName = `voiceforge-${app.slug}`;
+      const repoName = getGeneratedAppName(app.slug);
       const repo = await createRepoIfMissing({
         name: repoName,
         description: app.description ?? app.name,
@@ -298,10 +299,10 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
 
     // 3. Push the passing code to a build branch on GitHub.
     await log(buildRunId, "All checks passed. Creating GitHub repo…");
-    const repoName = `voiceforge-${app.slug}`;
+    const repoName = getGeneratedAppName(app.slug);
     const repo = await createRepoIfMissing({
       name: repoName,
-      description: `${app.name} — built by VoiceForge. ${spec.purpose}`,
+      description: `${app.name} — built by VoiceForge V2. ${spec.purpose}`,
       userId: app.ownerId,
       appId: app.id,
     });
@@ -316,7 +317,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       repo: repo.repo,
       branch,
       files,
-      message: `VoiceForge build (spec v${requirement.version}): ${app.name}`,
+      message: `VoiceForge V2 build (spec v${requirement.version}): ${app.name}`,
       userId: app.ownerId,
       appId: app.id,
     });

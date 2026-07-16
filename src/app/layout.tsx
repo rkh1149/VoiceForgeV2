@@ -3,12 +3,13 @@ import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "VoiceForge",
-  description: "Describe an app. VoiceForge builds it, tests it, and deploys it.",
-  applicationName: "VoiceForge",
+  title: "VoiceForge V2",
+  description:
+    "Describe an app. VoiceForge V2 builds it, tests it, and deploys it.",
+  applicationName: "VoiceForge V2",
   appleWebApp: {
     capable: true,
-    title: "VoiceForge",
+    title: "VoiceForge V2",
     statusBarStyle: "default",
   },
 };

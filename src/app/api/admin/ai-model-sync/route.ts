@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import { apps } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import { audit } from "@/lib/audit";
+import { getGeneratedAppName } from "@/lib/generated-apps";
 import { createRepoIfMissing } from "@/lib/github";
 import { setProjectEnvVars, createDeployment } from "@/lib/vercel";
 
@@ -46,14 +47,15 @@ export async function POST() {
 
       if (app.productionUrl) {
         // Redeploy current production code so the new env vars apply.
+        const repoName = getGeneratedAppName(app.slug);
         const repo = await createRepoIfMissing({
-          name: `voiceforge-${app.slug}`,
+          name: repoName,
           description: app.description ?? app.name,
           userId: user.id,
           appId: app.id,
         });
         await createDeployment({
-          projectName: `voiceforge-${app.slug}`,
+          projectName: repoName,
           githubRepoId: repo.repoId,
           ref: repo.defaultBranch,
           production: true,

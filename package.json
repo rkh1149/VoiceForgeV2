@@ -1,8 +1,8 @@
 {
-  "name": "voiceforge",
+  "name": "voiceforge-v2",
   "version": "0.1.0",
   "private": true,
-  "description": "Voice-controlled app builder for family and friends",
+  "description": "VoiceForge V2 app builder for family and friends",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

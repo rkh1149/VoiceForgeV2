@@ -16,6 +16,7 @@ import {
 } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import { audit } from "@/lib/audit";
+import { getGeneratedAppName } from "@/lib/generated-apps";
 import { deleteRepo } from "@/lib/github";
 import { deleteProject } from "@/lib/vercel";
 
@@ -73,7 +74,7 @@ export async function DELETE(
     );
   }
 
-  const repoName = `voiceforge-${app.slug}`;
+  const repoName = getGeneratedAppName(app.slug);
   const warnings: string[] = [];
 
   // 1. Vercel project (removes its deployments and URLs).
