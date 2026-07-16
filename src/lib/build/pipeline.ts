@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
+  architecturePlans,
   apps,
   buildRuns,
   changeRequests,
@@ -9,6 +10,8 @@ import {
   testResults,
 } from "@/db/schema";
 import { computeSpecComplexity, normalizeAppSpec } from "@/lib/spec";
+import { runArchitectAgent } from "@/lib/agents/architect";
+import { validateArchitecturePlan } from "@/lib/architecture";
 import { audit } from "@/lib/audit";
 import {
   runCodeAgent,
@@ -46,6 +49,16 @@ const STEP_ORDER: StepName[] = [
   "e2e",
 ];
 const MAX_DEBUG_ROUNDS = 5;
+
+class ArchitectureBlockedError extends Error {
+  constructor(
+    message: string,
+    public readonly blockingIssues: string[],
+  ) {
+    super(message);
+    this.name = "ArchitectureBlockedError";
+  }
+}
 
 const SUITE_FOR_STEP: Record<
   StepName,
@@ -86,7 +99,8 @@ async function setStatus(
     | "deploying"
     | "awaiting_user_test"
     | "complete"
-    | "failed",
+    | "failed"
+    | "needs_input",
   extra: Partial<{
     errorMessage: string;
     commitSha: string;
@@ -159,6 +173,57 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       },
     });
 
+    await log(buildRunId, "Creating architecture plan…");
+    const architecture = await runArchitectAgent({ spec, complexity });
+    const architectureValidation = validateArchitecturePlan(architecture);
+    const architectureForStorage = {
+      ...architecture,
+      capabilityValidation: {
+        ...architecture.capabilityValidation,
+        canBuildNow: architectureValidation.canBuildNow,
+        blockingIssues: architectureValidation.blockingIssues,
+        warnings: architectureValidation.warnings,
+      },
+    };
+
+    await db.insert(architecturePlans).values({
+      appId: app.id,
+      requirementId: requirement.id,
+      buildRunId,
+      capabilityTier: architectureForStorage.implementationTier,
+      complexityScore: architectureForStorage.complexityScore,
+      canBuildNow: architectureValidation.canBuildNow,
+      summary: architectureForStorage.summary,
+      plan: architectureForStorage,
+    });
+    await audit({
+      userId: app.ownerId,
+      appId: app.id,
+      buildRunId,
+      action: "architecture.created",
+      payload: {
+        requestedTier: architectureForStorage.requestedTier,
+        implementationTier: architectureForStorage.implementationTier,
+        complexityScore: architectureForStorage.complexityScore,
+        canBuildNow: architectureValidation.canBuildNow,
+        blockingIssues: architectureValidation.blockingIssues,
+        warnings: architectureValidation.warnings,
+      },
+    });
+    await log(buildRunId, `Architecture: ${architectureForStorage.summary}`);
+    if (architectureValidation.warnings.length > 0) {
+      await log(
+        buildRunId,
+        `Architecture warnings: ${architectureValidation.warnings.join(" ")}`,
+      );
+    }
+    if (!architectureValidation.canBuildNow) {
+      throw new ArchitectureBlockedError(
+        `This app needs platform capabilities that are not available in VoiceForge V2 yet: ${architectureValidation.blockingIssues.join(" ")}`,
+        architectureValidation.blockingIssues,
+      );
+    }
+
     // Change mode: the app was built before, so modify its current code.
     const changeMode = Boolean(app.githubRepoUrl && requirement.version > 1);
     const [changeRequest] = changeMode
@@ -203,10 +268,11 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         changeSummary:
           changeRequest?.description ?? "Apply the updated specification.",
         currentFiles: currentSrc,
+        architecture: architectureForStorage,
       });
     } else {
       await log(buildRunId, `Generating code for "${app.name}"…`);
-      generated = await runCodeAgent(spec);
+      generated = await runCodeAgent(spec, architectureForStorage);
     }
     Object.assign(files, generated.files);
     await log(
@@ -405,6 +471,34 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (err instanceof ArchitectureBlockedError) {
+      await log(buildRunId, `Build needs input: ${message}`);
+      await setStatus(buildRunId, "needs_input", {
+        errorMessage: message,
+        finishedAt: new Date(),
+      });
+      await db
+        .update(apps)
+        .set({
+          status: app.productionUrl ? "deployed" : "spec_approved",
+          updatedAt: new Date(),
+        })
+        .where(eq(apps.id, app.id));
+      if (run.requirementId) {
+        await db
+          .update(changeRequests)
+          .set({ status: "failed", updatedAt: new Date() })
+          .where(eq(changeRequests.requirementId, run.requirementId));
+      }
+      await audit({
+        userId: app.ownerId,
+        appId: app.id,
+        buildRunId,
+        action: "build.needs_input",
+        payload: { error: message, blockingIssues: err.blockingIssues },
+      });
+      return;
+    }
     await log(buildRunId, `Build failed: ${message}`);
     await setStatus(buildRunId, "failed", {
       errorMessage: message,

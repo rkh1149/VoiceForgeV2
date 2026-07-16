@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { apps, buildRuns, testResults } from "@/db/schema";
+import { architecturePlans, apps, buildRuns, testResults } from "@/db/schema";
+import type { ArchitecturePlan } from "@/lib/architecture";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import { failStaleRuns } from "@/lib/quota";
 import { finalizePendingDeployment } from "@/lib/build/finalize";
@@ -63,6 +64,24 @@ export async function GET(
     .limit(1);
   const latestRun = runs[0] ?? null;
 
+  const [architectureRow] = latestRun
+    ? await db
+        .select()
+        .from(architecturePlans)
+        .where(eq(architecturePlans.buildRunId, latestRun.id))
+        .limit(1)
+    : [];
+  const architecturePlan = architectureRow
+    ? {
+        summary: architectureRow.summary,
+        capabilityTier: architectureRow.capabilityTier,
+        complexityScore: architectureRow.complexityScore,
+        canBuildNow: architectureRow.canBuildNow,
+        createdAt: architectureRow.createdAt,
+        validation: (architectureRow.plan as ArchitecturePlan).capabilityValidation,
+      }
+    : null;
+
   const results = latestRun
     ? await db
         .select({
@@ -110,6 +129,7 @@ export async function GET(
       summary: r.summary,
       createdAt: r.createdAt,
     })),
+    architecturePlan,
     failedOutput,
   });
 }

@@ -2,7 +2,14 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { and, count, desc, eq, gte, max, sql, sum } from "drizzle-orm";
 import { getDb } from "@/db";
-import { aiUsage, apps, auditLogs, buildRuns, users } from "@/db/schema";
+import {
+  aiUsage,
+  apps,
+  architecturePlans,
+  auditLogs,
+  buildRuns,
+  users,
+} from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import AiModelSyncButton from "@/components/AiModelSyncButton";
 
@@ -67,9 +74,13 @@ export default async function AdminPage() {
         createdAt: buildRuns.createdAt,
         appName: apps.name,
         appId: apps.id,
+        architectureTier: architecturePlans.capabilityTier,
+        architectureScore: architecturePlans.complexityScore,
+        architectureCanBuildNow: architecturePlans.canBuildNow,
       })
       .from(buildRuns)
       .innerJoin(apps, eq(buildRuns.appId, apps.id))
+      .leftJoin(architecturePlans, eq(architecturePlans.buildRunId, buildRuns.id))
       .orderBy(desc(buildRuns.createdAt))
       .limit(20),
     db
@@ -248,6 +259,12 @@ export default async function AdminPage() {
                 {r.errorMessage && (
                   <span className="ml-2 text-xs text-slate-400">
                     {r.errorMessage.slice(0, 80)}
+                  </span>
+                )}
+                {r.architectureTier && (
+                  <span className="ml-2 text-xs text-slate-400">
+                    {r.architectureTier} · score {r.architectureScore}
+                    {r.architectureCanBuildNow === false ? " · blocked" : ""}
                   </span>
                 )}
               </span>

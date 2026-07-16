@@ -28,6 +28,18 @@ type StatusPayload = {
     summary: string | null;
     createdAt: string;
   }>;
+  architecturePlan: {
+    summary: string;
+    capabilityTier: string;
+    complexityScore: number;
+    canBuildNow: boolean;
+    createdAt: string;
+    validation: {
+      approach: string;
+      blockingIssues: string[];
+      warnings: string[];
+    };
+  } | null;
   failedOutput: string | null;
 };
 
@@ -133,7 +145,7 @@ export default function BuildStatus({ appId }: { appId: string }) {
     );
   }
 
-  const { buildRun, testResults } = data;
+  const { architecturePlan, buildRun, testResults } = data;
   const isActive = buildRun ? ACTIVE_STATUSES.has(buildRun.status) : false;
 
   return (
@@ -162,6 +174,12 @@ export default function BuildStatus({ appId }: { appId: string }) {
             sometimes and it&rsquo;s not your fault. Press the button below to
             try again. If it fails a second time, tell Richard which app you
             were making and he&rsquo;ll take a look.
+          </p>
+        )}
+        {buildRun?.status === "needs_input" && (
+          <p className="mt-2 text-sm text-slate-600">
+            VoiceForge understood the plan, but this app needs platform
+            capabilities that are scheduled for a later stage.
           </p>
         )}
         {buildRun?.errorMessage && (
@@ -206,6 +224,56 @@ export default function BuildStatus({ appId }: { appId: string }) {
           </p>
         )}
       </div>
+
+      {/* Architecture plan */}
+      {architecturePlan && (
+        <div
+          className={`rounded-2xl border p-5 shadow-sm ${
+            architecturePlan.canBuildNow
+              ? "border-slate-200 bg-white"
+              : "border-amber-200 bg-amber-50"
+          }`}
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-semibold text-slate-700">
+              Architecture plan
+            </h3>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+              {architecturePlan.capabilityTier}
+            </span>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+              score {architecturePlan.complexityScore}
+            </span>
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                architecturePlan.canBuildNow
+                  ? "bg-green-100 text-green-700"
+                  : "bg-amber-100 text-amber-800"
+              }`}
+            >
+              {architecturePlan.canBuildNow ? "buildable now" : "needs later stage"}
+            </span>
+          </div>
+          <p className="mt-2 text-sm text-slate-600">{architecturePlan.summary}</p>
+          <p className="mt-2 text-xs text-slate-500">
+            {architecturePlan.validation.approach}
+          </p>
+          {architecturePlan.validation.blockingIssues.length > 0 && (
+            <ul className="mt-3 space-y-1 text-sm text-amber-900">
+              {architecturePlan.validation.blockingIssues.map((issue) => (
+                <li key={issue}>{issue}</li>
+              ))}
+            </ul>
+          )}
+          {architecturePlan.validation.warnings.length > 0 && (
+            <ul className="mt-3 space-y-1 text-sm text-slate-500">
+              {architecturePlan.validation.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* Live app */}
       {data.app.productionUrl && data.app.status === "deployed" && (

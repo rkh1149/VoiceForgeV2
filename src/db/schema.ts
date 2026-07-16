@@ -6,6 +6,7 @@ import {
   integer,
   timestamp,
   jsonb,
+  boolean,
   uniqueIndex,
   index,
 } from "drizzle-orm/pg-core";
@@ -242,6 +243,35 @@ export const buildRuns = pgTable(
   ],
 );
 
+/** Stored architecture output for a build before code generation starts. */
+export const architecturePlans = pgTable(
+  "architecture_plans",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    requirementId: uuid("requirement_id")
+      .notNull()
+      .references(() => requirements.id),
+    buildRunId: uuid("build_run_id")
+      .notNull()
+      .references(() => buildRuns.id),
+    capabilityTier: text("capability_tier").notNull(),
+    complexityScore: integer("complexity_score").notNull().default(0),
+    canBuildNow: boolean("can_build_now").notNull().default(true),
+    summary: text("summary").notNull(),
+    plan: jsonb("plan").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("architecture_plans_build_run_idx").on(t.buildRunId),
+    index("architecture_plans_app_idx").on(t.appId),
+  ],
+);
+
 /** Preview/production deployments and their URLs. */
 export const deployments = pgTable(
   "deployments",
@@ -355,6 +385,7 @@ export type Conversation = typeof conversations.$inferSelect;
 export type Requirement = typeof requirements.$inferSelect;
 export type Approval = typeof approvals.$inferSelect;
 export type BuildRun = typeof buildRuns.$inferSelect;
+export type ArchitecturePlanRow = typeof architecturePlans.$inferSelect;
 export type Deployment = typeof deployments.$inferSelect;
 export type TestResult = typeof testResults.$inferSelect;
 export type ChangeRequest = typeof changeRequests.$inferSelect;

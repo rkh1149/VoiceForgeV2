@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import {
   aiUsage,
+  architecturePlans,
   apps,
   approvals,
   auditLogs,
@@ -102,6 +103,9 @@ export async function DELETE(
     await db
       .delete(testResults)
       .where(inArray(testResults.buildRunId, runIds));
+    await db
+      .delete(architecturePlans)
+      .where(inArray(architecturePlans.buildRunId, runIds));
     await db
       .update(auditLogs)
       .set({ buildRunId: null })

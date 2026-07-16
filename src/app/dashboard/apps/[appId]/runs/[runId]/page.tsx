@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { apps, buildRuns, testResults } from "@/db/schema";
+import { architecturePlans, apps, buildRuns, testResults } from "@/db/schema";
+import type { ArchitecturePlan } from "@/lib/architecture";
 import { getOrCreateCurrentUser } from "@/lib/users";
 
 export const dynamic = "force-dynamic";
@@ -51,6 +52,13 @@ export default async function BuildRunPage({
     .where(eq(testResults.buildRunId, run.id))
     .orderBy(testResults.createdAt);
 
+  const [architectureRow] = await db
+    .select()
+    .from(architecturePlans)
+    .where(eq(architecturePlans.buildRunId, run.id))
+    .limit(1);
+  const architecture = architectureRow?.plan as ArchitecturePlan | undefined;
+
   const logs = (run.logs ?? []) as LogEntry[];
   const lastFailed = [...results].reverse().find((r) => r.status === "failed");
   const failedOutput =
@@ -82,6 +90,48 @@ export default async function BuildRunPage({
       {run.errorMessage && (
         <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
           {run.errorMessage}
+        </div>
+      )}
+
+      {architectureRow && architecture && (
+        <div
+          className={`mt-4 rounded-2xl border p-5 shadow-sm ${
+            architectureRow.canBuildNow
+              ? "border-slate-200 bg-white"
+              : "border-amber-200 bg-amber-50"
+          }`}
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-semibold text-slate-700">
+              Architecture plan
+            </h3>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+              {architectureRow.capabilityTier}
+            </span>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+              score {architectureRow.complexityScore}
+            </span>
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                architectureRow.canBuildNow
+                  ? "bg-green-100 text-green-700"
+                  : "bg-amber-100 text-amber-800"
+              }`}
+            >
+              {architectureRow.canBuildNow ? "buildable now" : "needs later stage"}
+            </span>
+          </div>
+          <p className="mt-2 text-sm text-slate-600">{architectureRow.summary}</p>
+          <p className="mt-2 text-xs text-slate-500">
+            {architecture.capabilityValidation.approach}
+          </p>
+          {architecture.capabilityValidation.blockingIssues.length > 0 && (
+            <ul className="mt-3 space-y-1 text-sm text-amber-900">
+              {architecture.capabilityValidation.blockingIssues.map((issue) => (
+                <li key={issue}>{issue}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

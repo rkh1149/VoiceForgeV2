@@ -1,6 +1,7 @@
 import { Agent, run, tool, user } from "@openai/agents";
 import { z } from "zod";
 import type { AppSpec } from "@/lib/spec";
+import type { ArchitecturePlan } from "@/lib/architecture";
 import { isAgentWritablePath, type FileMap } from "@/lib/build/template";
 
 /**
@@ -69,13 +70,26 @@ THIS APP HAS AI FEATURES. Use the locked platform endpoint for ALL of them:
 - In tests, mock global.fetch for /api/ai calls — never let tests hit the network.`;
 }
 
+export function architectureNote(architecture?: ArchitecturePlan): string {
+  if (!architecture) return "";
+  return `
+
+ARCHITECTURE PLAN TO FOLLOW:
+${JSON.stringify(architecture, null, 2)}
+
+Use the architecture plan as the source of implementation structure: routes, components, data model, file plan, workflow coverage, and tests. Do not implement services marked unavailable or future-platform. If a detail conflicts with the shared rules, the shared rules win.`;
+}
+
 export type CodegenResult = {
   files: FileMap; // newly written files only
   notes: string;
   filesWritten: string[];
 };
 
-export async function runCodeAgent(spec: AppSpec): Promise<CodegenResult> {
+export async function runCodeAgent(
+  spec: AppSpec,
+  architecture?: ArchitecturePlan,
+): Promise<CodegenResult> {
   const files: FileMap = {};
   const log: string[] = [];
 
@@ -88,7 +102,7 @@ ${SHARED_RULES}`,
     tools: [makeWriteFileTool(files, log)],
   });
 
-  const specMessage = `Build this app:\n\n${JSON.stringify(spec, null, 2)}\n\nStart by writing src/app/page.tsx (replace the placeholder), then all components, lib files, and tests. Cover every screen and feature in the specification.${aiUsageNote(spec)}`;
+  const specMessage = `Build this app:\n\n${JSON.stringify(spec, null, 2)}${architectureNote(architecture)}\n\nStart by writing src/app/page.tsx (replace the placeholder), then all components, lib files, and tests. Cover every screen and feature in the specification.${aiUsageNote(spec)}`;
 
   const result = await run(agent, [user(specMessage)], { maxTurns: 40 });
 
@@ -104,6 +118,7 @@ export async function runChangeCodeAgent(input: {
   spec: AppSpec; // the UPDATED spec
   changeSummary: string;
   currentFiles: FileMap; // current src/ files from the live app
+  architecture?: ArchitecturePlan;
 }): Promise<CodegenResult> {
   const files: FileMap = {};
   const log: string[] = [];
@@ -126,6 +141,7 @@ ${input.changeSummary}
 
 THE UPDATED FULL SPECIFICATION:
 ${JSON.stringify(input.spec, null, 2)}
+${architectureNote(input.architecture)}
 
 THE APP'S CURRENT SOURCE FILES:
 ${fileList}
