@@ -191,6 +191,7 @@ export default function BuildStatus({ appId }: { appId: string }) {
           </details>
         )}
         {(buildRun?.status === "failed" ||
+          buildRun?.status === "needs_input" ||
           buildRun?.status === "awaiting_user_test" ||
           (buildRun?.status === "complete" && !data.app.previewUrl)) && (
           <button
@@ -206,9 +207,11 @@ export default function BuildStatus({ appId }: { appId: string }) {
               ? "Restarting…"
               : buildRun?.status === "failed"
                 ? "↻ Try building again"
-                : buildRun?.status === "awaiting_user_test"
-                  ? "↻ Rebuild from scratch"
-                  : "↻ Rebuild & deploy"}
+                : buildRun?.status === "needs_input"
+                  ? "↻ Try building again"
+                  : buildRun?.status === "awaiting_user_test"
+                    ? "↻ Rebuild from scratch"
+                    : "↻ Rebuild & deploy"}
           </button>
         )}
         {data.app.githubRepoUrl && (
