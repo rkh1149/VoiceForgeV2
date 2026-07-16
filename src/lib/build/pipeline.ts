@@ -14,6 +14,7 @@ import { runArchitectAgent } from "@/lib/agents/architect";
 import {
   createFallbackArchitecturePlan,
   validateArchitecturePlan,
+  type ArchitecturePlan,
 } from "@/lib/architecture";
 import { audit } from "@/lib/audit";
 import {
@@ -34,6 +35,7 @@ import {
   setProjectEnvVars,
 } from "@/lib/vercel";
 import { getGeneratedAppName } from "@/lib/generated-apps";
+import { seedPlatformEntitySchemasFromSpec } from "@/lib/platform/spec-seeding";
 import { randomBytes } from "crypto";
 import { loadTemplate, type FileMap } from "./template";
 import { createRunner, type Runner, type StepName } from "./runner";
@@ -155,6 +157,18 @@ function shouldUseArchitectAgent(): boolean {
   return !process.env.VERCEL;
 }
 
+function architectureUsesPlatformData(architecture: ArchitecturePlan): boolean {
+  return (
+    architecture.platformServices.some(
+      (service) =>
+        service.service === "data" &&
+        service.required &&
+        service.availability === "available",
+    ) ||
+    architecture.dataModel.some((entity) => entity.storage === "platformData")
+  );
+}
+
 /**
  * Runs the full pipeline. Call without awaiting from request handlers:
  *   void startBuildPipeline(id).catch(...)
@@ -256,6 +270,29 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       throw new ArchitectureBlockedError(
         `This app needs platform capabilities that are not available in VoiceForge V2 yet: ${architectureValidation.blockingIssues.join(" ")}`,
         architectureValidation.blockingIssues,
+      );
+    }
+
+    const usesPlatformData = architectureUsesPlatformData(architectureForStorage);
+    if (usesPlatformData) {
+      await log(buildRunId, "Seeding platform data schemas…");
+      const seededEntities = await seedPlatformEntitySchemasFromSpec(db, {
+        appId: app.id,
+        user: { id: app.ownerId, role: "user" },
+        spec,
+      });
+      await audit({
+        userId: app.ownerId,
+        appId: app.id,
+        buildRunId,
+        action: "platformData.schemasSeeded",
+        payload: {
+          entities: seededEntities.map((entity) => entity.key),
+        },
+      });
+      await log(
+        buildRunId,
+        `Platform data schemas ready: ${seededEntities.map((entity) => entity.key).join(", ") || "none"}.`,
       );
     }
 
@@ -466,37 +503,60 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       .set({ vercelProjectId: project.id, updatedAt: new Date() })
       .where(eq(apps.id, app.id));
 
-    // AI-enabled apps: provision server-side env vars on the app's own
-    // Vercel project. The key never appears in the generated code.
-    if (spec.aiFeatures.length > 0) {
-      let aiToken = app.aiToken;
-      if (!aiToken) {
-        aiToken = randomBytes(24).toString("hex");
-        await db
-          .update(apps)
-          .set({ aiToken, updatedAt: new Date() })
-          .where(eq(apps.id, app.id));
+    // Platform-enabled apps: provision server-side env vars on the app's own
+    // Vercel project. Secrets never appear in generated browser code.
+    if (spec.aiFeatures.length > 0 || usesPlatformData) {
+      let platformToken = app.platformToken ?? app.aiToken;
+      if (!platformToken) platformToken = randomBytes(24).toString("hex");
+      const tokenUpdate: {
+        platformToken: string;
+        updatedAt: Date;
+        aiToken?: string;
+      } = {
+        platformToken,
+        updatedAt: new Date(),
+      };
+      if (spec.aiFeatures.length > 0 && !app.aiToken) {
+        tokenUpdate.aiToken = platformToken;
       }
+      await db.update(apps).set(tokenUpdate).where(eq(apps.id, app.id));
+
       const publicUrl = process.env.VOICEFORGE_PUBLIC_URL;
-      await setProjectEnvVars({
-        projectId: project.id,
-        vars: {
+      const vars: Record<string, string> = {
+        VOICEFORGE_APP_ID: app.id,
+        VOICEFORGE_APP_TOKEN: platformToken,
+        ...(publicUrl ? { VOICEFORGE_PUBLIC_URL: publicUrl } : {}),
+      };
+      if (spec.aiFeatures.length > 0) {
+        Object.assign(vars, {
           OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
           AI_MODEL: process.env.OPENAI_GENAPP_MODEL ?? "gpt-5.6-terra",
           AI_IMAGE_MODEL: process.env.OPENAI_GENAPP_IMAGE_MODEL ?? "gpt-image-2",
-          VOICEFORGE_APP_TOKEN: aiToken,
-          ...(publicUrl ? { VOICEFORGE_PUBLIC_URL: publicUrl } : {}),
-        },
+        });
+      }
+      await setProjectEnvVars({
+        projectId: project.id,
+        vars,
         userId: app.ownerId,
         appId: app.id,
       });
-      await log(
-        buildRunId,
-        `AI features enabled (daily limit: ${app.aiDailyRequestLimit} requests).` +
-          (publicUrl
-            ? ""
-            : " Warning: VOICEFORGE_PUBLIC_URL is not set, so the daily limit and usage tracking are INACTIVE for this app."),
-      );
+      if (usesPlatformData) {
+        await log(buildRunId, "Platform data is enabled for this generated app.");
+      }
+      if (spec.aiFeatures.length > 0) {
+        await log(
+          buildRunId,
+          `AI features enabled (daily limit: ${app.aiDailyRequestLimit} requests).` +
+            (publicUrl
+              ? ""
+              : " Warning: VOICEFORGE_PUBLIC_URL is not set, so platform callbacks are INACTIVE for this app."),
+        );
+      } else if (!publicUrl) {
+        await log(
+          buildRunId,
+          "Warning: VOICEFORGE_PUBLIC_URL is not set, so platform data will not work in the deployed app.",
+        );
+      }
     }
 
     const deployment = await createDeployment({

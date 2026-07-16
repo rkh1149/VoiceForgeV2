@@ -100,6 +100,7 @@ async function createLocalRunner(buildRunId: string): Promise<Runner> {
             HOME: process.env.HOME,
             CI: "true",
             NEXT_TELEMETRY_DISABLED: "1",
+            VOICEFORGE_DATA_LOCAL_FALLBACK: "1",
           } as unknown as NodeJS.ProcessEnv,
           shell: false,
         });
@@ -182,7 +183,13 @@ async function createSandboxRunner(): Promise<Runner> {
       const { cmd, args } = STEPS[step];
       const started = Date.now();
       try {
-        const result = await sandbox.runCommand(cmd, [...args]);
+        const result = await sandbox.runCommand("env", [
+          "CI=true",
+          "NEXT_TELEMETRY_DISABLED=1",
+          "VOICEFORGE_DATA_LOCAL_FALLBACK=1",
+          cmd,
+          ...args,
+        ]);
         const output = `${await result.stdout()}\n${await result.stderr()}`;
         return {
           step,

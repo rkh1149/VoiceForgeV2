@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { and, count, eq, gte } from "drizzle-orm";
+import { and, count, eq, gte, or } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { aiUsage, apps } from "@/db/schema";
@@ -39,7 +39,7 @@ export async function POST(req: Request) {
       status: apps.status,
     })
     .from(apps)
-    .where(eq(apps.aiToken, token))
+    .where(or(eq(apps.aiToken, token), eq(apps.platformToken, token)))
     .limit(1);
   if (!app) {
     return NextResponse.json({ error: "Unknown app" }, { status: 401 });

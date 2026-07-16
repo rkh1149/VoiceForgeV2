@@ -145,6 +145,7 @@ export const apps = pgTable(
     productionUrl: text("production_url"),
     // AI-enabled generated apps (Stage 7)
     aiToken: text("ai_token"), // secret the app uses to report/gate AI usage
+    platformToken: text("platform_token"), // secret generated apps use for platform services
     aiDailyRequestLimit: integer("ai_daily_request_limit").notNull().default(50),
     aiDailyImageLimit: integer("ai_daily_image_limit").notNull().default(10),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -156,6 +157,7 @@ export const apps = pgTable(
   },
   (t) => [
     uniqueIndex("apps_owner_slug_idx").on(t.ownerId, t.slug),
+    uniqueIndex("apps_platform_token_idx").on(t.platformToken),
     index("apps_owner_idx").on(t.ownerId),
   ],
 );

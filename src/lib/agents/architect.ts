@@ -17,10 +17,10 @@ Current platform capabilities available to generated apps:
 - Client-side Next.js/React/Tailwind app
 - localStorage persistence for personal/browser-only data
 - Locked /api/ai endpoint for AI text and image features
+- Locked /api/data endpoint for shared platform JSONB records without generated-app sign-in
 - Unit tests, build tests, and locked browser/accessibility smoke tests
 
 Current platform capabilities NOT available yet:
-- Shared server-side app records/database for generated apps
 - Generated-app sign-in, memberships, or server-enforced roles
 - File/blob storage
 - Email notifications

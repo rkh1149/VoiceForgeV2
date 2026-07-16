@@ -4,7 +4,7 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 // server-to-server AI usage endpoint (generated apps authenticate with
 // their own per-app token inside the route).
 const isProtectedRoute = createRouteMatcher(["/dashboard(.*)", "/api(.*)"]);
-const isPublicApi = createRouteMatcher(["/api/ai-usage"]);
+const isPublicApi = createRouteMatcher(["/api/ai-usage", "/api/platform-data"]);
 
 export default clerkMiddleware(async (auth, req) => {
   if (isProtectedRoute(req) && !isPublicApi(req)) {

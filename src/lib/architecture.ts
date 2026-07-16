@@ -85,7 +85,7 @@ export const architecturePlanSchema = z.object({
   platformServices: z.array(platformServicePlanSchema),
   filePlan: z.array(filePlanItemSchema),
   dependencyProfile: z
-    .array(z.enum(["base", "localStorage", "ai", "futurePlatform"]))
+    .array(z.enum(["base", "localStorage", "platformData", "ai", "futurePlatform"]))
     .describe("Approved dependency/runtime profile names"),
   buildPhases: z.array(z.string()),
   uxPlan: uxPlanSchema,
@@ -103,7 +103,7 @@ export const architecturePlanSchema = z.object({
 
 export type ArchitecturePlan = z.infer<typeof architecturePlanSchema>;
 
-const AVAILABLE_SERVICES = new Set(["ai"]);
+const AVAILABLE_SERVICES = new Set(["ai", "data"]);
 
 export function createFallbackArchitecturePlan(
   spec: AppSpec,
@@ -134,9 +134,10 @@ export function createFallbackArchitecturePlan(
     })),
     dataModel: spec.dataEntities.map((entity) => ({
       name: entity.name,
-      storage: entity.ownership === "per_user" && !needsServerData(spec)
-        ? "localStorage"
-        : "future",
+      storage:
+        entity.ownership === "per_user" && !needsServerData(spec)
+          ? "localStorage"
+          : "platformData",
       fields: entity.fields.map((field) => `${field.name}:${field.type}`),
       relationships: entity.relationships.map(
         (relationship) =>
@@ -145,7 +146,11 @@ export function createFallbackArchitecturePlan(
     })),
     permissionModel: spec.permissionRules.map((rule) => ({
       role: rule.role,
-      enforcement: needsServerData(spec) ? "serverRequired" : "notNeeded",
+      enforcement: needsGeneratedAppUsers(spec)
+        ? "serverRequired"
+        : needsServerData(spec)
+          ? "clientHint"
+          : "notNeeded",
       rules: [`${rule.entity}: ${rule.actions.join(", ")} ${rule.condition}`.trim()],
     })),
     platformServices,
@@ -169,9 +174,14 @@ export function createFallbackArchitecturePlan(
         dependsOn: ["src/app/page.tsx", "src/components/*"],
       },
     ],
-    dependencyProfile: spec.aiFeatures.length > 0 ? ["base", "localStorage", "ai"] : ["base", "localStorage"],
+    dependencyProfile: [
+      "base",
+      needsServerData(spec) ? "platformData" : "localStorage",
+      ...(spec.aiFeatures.length > 0 ? (["ai"] as const) : []),
+    ],
     buildPhases: [
       "Validate requested capabilities",
+      "Seed platform entity schemas",
       "Generate typed data shapes",
       "Generate UI components",
       "Generate pages and workflows",
@@ -201,7 +211,7 @@ export function createFallbackArchitecturePlan(
     ),
     riskNotes: needsFuturePlatform
       ? [
-          "Current generated apps are browser-only. Shared data, real roles, files, email, jobs, and integrations arrive in later stages.",
+          "Current generated apps can use shared platform records, but generated-app sign-in, real per-user roles, files, email, jobs, and integrations arrive in later stages.",
         ]
       : [],
     unsupportedCapabilities: blockingIssues,
@@ -209,7 +219,9 @@ export function createFallbackArchitecturePlan(
       canBuildNow: !needsFuturePlatform,
       approach: needsFuturePlatform
         ? "Stop before code generation so the user can revise or wait for platform services."
-        : "Build as a personal browser app using the locked template.",
+        : needsServerData(spec)
+          ? "Build with locked platform data APIs and the generated app template."
+          : "Build as a personal browser app using the locked template.",
       blockingIssues,
       warnings: [],
     },
@@ -225,7 +237,9 @@ export type ArchitectureValidation = {
 export function validateArchitecturePlan(
   plan: ArchitecturePlan,
 ): ArchitectureValidation {
-  const blockingIssues = [...plan.capabilityValidation.blockingIssues];
+  const blockingIssues = plan.capabilityValidation.blockingIssues.filter(
+    (issue) => !isAvailableServiceIssue(issue),
+  );
   const warnings = [...plan.capabilityValidation.warnings];
 
   for (const service of plan.platformServices) {
@@ -240,11 +254,22 @@ export function validateArchitecturePlan(
     }
   }
 
+  const onlyAvailableServiceBlocks =
+    plan.capabilityValidation.blockingIssues.length > 0 &&
+    plan.capabilityValidation.blockingIssues.every(isAvailableServiceIssue);
+
   return {
-    canBuildNow: plan.capabilityValidation.canBuildNow && blockingIssues.length === 0,
+    canBuildNow:
+      (plan.capabilityValidation.canBuildNow || onlyAvailableServiceBlocks) &&
+      blockingIssues.length === 0,
     blockingIssues: [...new Set(blockingIssues)],
     warnings: [...new Set(warnings)],
   };
+}
+
+function isAvailableServiceIssue(issue: string): boolean {
+  const service = issue.split(":", 1)[0]?.trim();
+  return service ? AVAILABLE_SERVICES.has(service) : false;
 }
 
 function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformServices"] {
@@ -261,14 +286,16 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
     services.push({
       service: "data",
       required: true,
-      availability: "later",
-      reason: "Shared server-side records are planned for Stage 9.",
+      availability: "available",
+      reason: "Locked platform JSONB records are available for generated apps.",
     });
+  }
+  if (needsGeneratedAppUsers(spec)) {
     services.push({
       service: "users",
       required: true,
       availability: "later",
-      reason: "Generated-app identity and memberships are planned for Stage 9.",
+      reason: "Generated-app sign-in, memberships, and per-user roles are planned for a later Stage 9 step.",
     });
   }
   if (spec.fileRequirements.length > 0) {
@@ -319,6 +346,15 @@ function needsServerData(spec: AppSpec): boolean {
     spec.needsLogin ||
     spec.sharingModel !== "private" ||
     spec.dataEntities.some((entity) => entity.ownership !== "per_user")
+  );
+}
+
+export function needsGeneratedAppUsers(spec: AppSpec): boolean {
+  return (
+    spec.needsLogin ||
+    spec.permissionRules.some((rule) =>
+      rule.actions.some((action) => action === "invite" || action === "admin"),
+    )
   );
 }
 

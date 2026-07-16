@@ -49,7 +49,7 @@ describe("architecture planning", () => {
     expect(validation.blockingIssues).toEqual([]);
   });
 
-  it("blocks shared apps until generated-app data and user services exist", () => {
+  it("blocks signed-in shared apps until generated-app user services exist", () => {
     const spec = normalizeAppSpec(sharedSpecInput);
     const complexity = computeSpecComplexity(spec);
     const plan = createFallbackArchitecturePlan(spec, complexity);
@@ -58,11 +58,46 @@ describe("architecture planning", () => {
     expect(plan.capabilityValidation.canBuildNow).toBe(false);
     expect(validation.canBuildNow).toBe(false);
     expect(validation.blockingIssues.some((issue) => issue.startsWith("data:"))).toBe(
-      true,
+      false,
     );
     expect(validation.blockingIssues.some((issue) => issue.startsWith("users:"))).toBe(
       true,
     );
+  });
+
+  it("allows no-login shared apps to use platform data", () => {
+    const spec = normalizeAppSpec({
+      ...sharedSpecInput,
+      needsLogin: false,
+    });
+    const complexity = computeSpecComplexity(spec);
+    const plan = createFallbackArchitecturePlan(spec, complexity);
+    const validation = validateArchitecturePlan(plan);
+
+    expect(plan.dataModel[0].storage).toBe("platformData");
+    expect(plan.dependencyProfile).toContain("platformData");
+    expect(validation.canBuildNow).toBe(true);
+    expect(validation.blockingIssues).toEqual([]);
+  });
+
+  it("does not let stale data blockers from the architect stop Stage 9B builds", () => {
+    const spec = normalizeAppSpec({
+      ...sharedSpecInput,
+      needsLogin: false,
+    });
+    const complexity = computeSpecComplexity(spec);
+    const plan = createFallbackArchitecturePlan(spec, complexity);
+    const validation = validateArchitecturePlan({
+      ...plan,
+      capabilityValidation: {
+        ...plan.capabilityValidation,
+        canBuildNow: false,
+        blockingIssues: ["data: Shared server-side records are now available."],
+      },
+    });
+
+    expect(validation.canBuildNow).toBe(true);
+    expect(validation.blockingIssues).toEqual([]);
   });
 
   it("blocks required unavailable platform services even if the agent misses them", () => {
