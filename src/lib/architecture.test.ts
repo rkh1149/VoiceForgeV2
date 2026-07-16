@@ -94,4 +94,51 @@ describe("architecture planning", () => {
       "files: Files need platform blob storage.",
     );
   });
+
+  it("allows personal apps with in-app reminders because they are local UI state", () => {
+    const base = normalizeAppSpec(personalSpecInput);
+    const spec = {
+      ...base,
+      notifications: [
+        {
+          name: "In-app expiration reminder",
+          trigger: "A saved item is close to its expiration date.",
+          recipients: ["Owner"],
+          channel: "in_app" as const,
+        },
+      ],
+    };
+    const complexity = computeSpecComplexity(spec);
+    const plan = createFallbackArchitecturePlan(spec, complexity);
+    const validation = validateArchitecturePlan(plan);
+
+    expect(validation.canBuildNow).toBe(true);
+    expect(validation.blockingIssues).toEqual([]);
+    expect(validation.warnings.some((warning) => warning.startsWith("jobs:"))).toBe(
+      true,
+    );
+  });
+
+  it("blocks email reminders until platform notifications exist", () => {
+    const base = normalizeAppSpec(personalSpecInput);
+    const spec = {
+      ...base,
+      notifications: [
+        {
+          name: "Email expiration reminder",
+          trigger: "A saved item is close to its expiration date.",
+          recipients: ["Owner"],
+          channel: "email" as const,
+        },
+      ],
+    };
+    const complexity = computeSpecComplexity(spec);
+    const plan = createFallbackArchitecturePlan(spec, complexity);
+    const validation = validateArchitecturePlan(plan);
+
+    expect(validation.canBuildNow).toBe(false);
+    expect(validation.blockingIssues).toContain(
+      "email: Email and notifications are planned for Stage 11B.",
+    );
+  });
 });

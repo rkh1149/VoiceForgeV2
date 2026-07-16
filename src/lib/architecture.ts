@@ -109,18 +109,9 @@ export function createFallbackArchitecturePlan(
   spec: AppSpec,
   complexity: ComplexityResult,
 ): ArchitecturePlan {
-  const needsFuturePlatform =
-    spec.capabilityTier !== "personal" ||
-    spec.needsLogin ||
-    spec.sharingModel !== "private" ||
-    spec.fileRequirements.length > 0 ||
-    spec.integrations.length > 0 ||
-    spec.notifications.length > 0;
-  const blockingIssues = needsFuturePlatform
-    ? [
-        "This app needs platform services that are planned for later stages before it can be built faithfully.",
-      ]
-    : [];
+  const platformServices = inferPlatformServices(spec);
+  const blockingIssues = blockingIssuesForServices(platformServices);
+  const needsFuturePlatform = blockingIssues.length > 0;
 
   return {
     summary: `${spec.appName} is planned as a ${spec.capabilityTier} app with ${spec.screens.length} screen(s), ${spec.dataEntities.length} data entity/entities, and ${spec.workflows.length} workflow(s).`,
@@ -143,7 +134,9 @@ export function createFallbackArchitecturePlan(
     })),
     dataModel: spec.dataEntities.map((entity) => ({
       name: entity.name,
-      storage: needsFuturePlatform ? "future" : "localStorage",
+      storage: entity.ownership === "per_user" && !needsServerData(spec)
+        ? "localStorage"
+        : "future",
       fields: entity.fields.map((field) => `${field.name}:${field.type}`),
       relationships: entity.relationships.map(
         (relationship) =>
@@ -152,13 +145,10 @@ export function createFallbackArchitecturePlan(
     })),
     permissionModel: spec.permissionRules.map((rule) => ({
       role: rule.role,
-      enforcement:
-        rule.actions.length > 0 && spec.capabilityTier !== "personal"
-          ? "serverRequired"
-          : "notNeeded",
+      enforcement: needsServerData(spec) ? "serverRequired" : "notNeeded",
       rules: [`${rule.entity}: ${rule.actions.join(", ")} ${rule.condition}`.trim()],
     })),
-    platformServices: inferPlatformServices(spec),
+    platformServices,
     filePlan: [
       {
         path: "src/app/page.tsx",
@@ -214,7 +204,7 @@ export function createFallbackArchitecturePlan(
           "Current generated apps are browser-only. Shared data, real roles, files, email, jobs, and integrations arrive in later stages.",
         ]
       : [],
-    unsupportedCapabilities: needsFuturePlatform ? blockingIssues : [],
+    unsupportedCapabilities: blockingIssues,
     capabilityValidation: {
       canBuildNow: !needsFuturePlatform,
       approach: needsFuturePlatform
@@ -267,7 +257,7 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
       reason: "Locked /api/ai route is available for generated apps.",
     });
   }
-  if (spec.needsLogin || spec.sharingModel !== "private" || spec.dataEntities.some((e) => e.ownership !== "per_user")) {
+  if (needsServerData(spec)) {
     services.push({
       service: "data",
       required: true,
@@ -289,12 +279,28 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
       reason: "Platform file storage is planned for Stage 11A.",
     });
   }
-  if (spec.notifications.length > 0) {
+  const emailNotifications = spec.notifications.filter(
+    (notification) =>
+      notification.channel === "email" || notification.channel === "both",
+  );
+  const inAppNotifications = spec.notifications.filter(
+    (notification) => notification.channel === "in_app",
+  );
+  if (emailNotifications.length > 0) {
     services.push({
       service: "email",
       required: true,
       availability: "later",
       reason: "Email and notifications are planned for Stage 11B.",
+    });
+  }
+  if (inAppNotifications.length > 0) {
+    services.push({
+      service: "jobs",
+      required: false,
+      availability: "not_available",
+      reason:
+        "In-app reminders can be calculated while the browser app is open; background scheduled jobs arrive in a later stage.",
     });
   }
   if (spec.integrations.length > 0) {
@@ -306,6 +312,27 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
     });
   }
   return services;
+}
+
+function needsServerData(spec: AppSpec): boolean {
+  return (
+    spec.needsLogin ||
+    spec.sharingModel !== "private" ||
+    spec.dataEntities.some((entity) => entity.ownership !== "per_user")
+  );
+}
+
+function blockingIssuesForServices(
+  services: ArchitecturePlan["platformServices"],
+): string[] {
+  return services
+    .filter(
+      (service) =>
+        service.required &&
+        service.availability !== "available" &&
+        !AVAILABLE_SERVICES.has(service.service),
+    )
+    .map((service) => `${service.service}: ${service.reason}`);
 }
 
 function slugify(value: string): string {
