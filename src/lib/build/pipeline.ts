@@ -11,7 +11,10 @@ import {
 } from "@/db/schema";
 import { computeSpecComplexity, normalizeAppSpec } from "@/lib/spec";
 import { runArchitectAgent } from "@/lib/agents/architect";
-import { validateArchitecturePlan } from "@/lib/architecture";
+import {
+  createFallbackArchitecturePlan,
+  validateArchitecturePlan,
+} from "@/lib/architecture";
 import { audit } from "@/lib/audit";
 import {
   runCodeAgent,
@@ -142,6 +145,16 @@ function applyCodegenResult(files: FileMap, result: CodegenResult): void {
   Object.assign(files, result.files);
 }
 
+function shouldUseArchitectAgent(): boolean {
+  const mode = process.env.VOICEFORGE_ARCHITECT_MODE;
+  if (mode === "agent") return true;
+  if (mode === "fallback") return false;
+  // Vercel Hobby has a hard 300s function ceiling. The deterministic
+  // architecture plan preserves the capability gate and saves enough time for
+  // the hosted build/test/commit/deploy pipeline to complete reliably.
+  return !process.env.VERCEL;
+}
+
 /**
  * Runs the full pipeline. Call without awaiting from request handlers:
  *   void startBuildPipeline(id).catch(...)
@@ -194,7 +207,9 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     });
 
     await log(buildRunId, "Creating architecture plan…");
-    const architecture = await runArchitectAgent({ spec, complexity });
+    const architecture = shouldUseArchitectAgent()
+      ? await runArchitectAgent({ spec, complexity })
+      : createFallbackArchitecturePlan(spec, complexity);
     const architectureValidation = validateArchitecturePlan(architecture);
     const architectureForStorage = {
       ...architecture,

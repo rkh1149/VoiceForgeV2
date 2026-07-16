@@ -30,6 +30,24 @@ export async function checkBuildQuota(
 export async function failStaleRuns(appId: string): Promise<void> {
   const db = getDb();
   const cutoff = new Date(Date.now() - 25 * 60_000);
+  const staleRuns = await db
+    .select({ id: buildRuns.id })
+    .from(buildRuns)
+    .where(
+      and(
+        eq(buildRuns.appId, appId),
+        inArray(buildRuns.status, [
+          "queued",
+          "generating",
+          "testing",
+          "debugging",
+        ]),
+        lte(buildRuns.createdAt, cutoff),
+      ),
+    )
+    .limit(1);
+  if (staleRuns.length === 0) return;
+
   await db
     .update(buildRuns)
     .set({
@@ -52,4 +70,16 @@ export async function failStaleRuns(appId: string): Promise<void> {
         lte(buildRuns.createdAt, cutoff),
       ),
     );
+  const [app] = await db
+    .select({ productionUrl: apps.productionUrl })
+    .from(apps)
+    .where(eq(apps.id, appId))
+    .limit(1);
+  await db
+    .update(apps)
+    .set({
+      status: app?.productionUrl ? "deployed" : "failed",
+      updatedAt: new Date(),
+    })
+    .where(eq(apps.id, appId));
 }
