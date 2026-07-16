@@ -63,6 +63,19 @@ const runStatusLabels: Record<string, string> = {
   needs_input: "Needs your input",
 };
 
+function userFacingFailureMessage(errorMessage: string | null): string {
+  if (errorMessage?.startsWith("GitHub is temporarily unavailable")) {
+    return errorMessage;
+  }
+
+  return (
+    "Something went wrong while building your app — this happens " +
+    "sometimes and it's not your fault. Press the button below to " +
+    "try again. If it fails a second time, tell Richard which app you " +
+    "were making and he'll take a look."
+  );
+}
+
 export default function BuildStatus({ appId }: { appId: string }) {
   const [data, setData] = useState<StatusPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -147,6 +160,14 @@ export default function BuildStatus({ appId }: { appId: string }) {
 
   const { architecturePlan, buildRun, testResults } = data;
   const isActive = buildRun ? ACTIVE_STATUSES.has(buildRun.status) : false;
+  const failureMessage =
+    buildRun?.status === "failed"
+      ? userFacingFailureMessage(buildRun.errorMessage)
+      : null;
+  const technicalDetails =
+    buildRun?.errorMessage && buildRun.errorMessage !== failureMessage
+      ? buildRun.errorMessage
+      : null;
 
   return (
     <div className="space-y-4">
@@ -168,13 +189,8 @@ export default function BuildStatus({ appId }: { appId: string }) {
               : "No build has run yet."}
           </p>
         </div>
-        {buildRun?.status === "failed" && (
-          <p className="mt-2 text-sm text-slate-600">
-            Something went wrong while building your app — this happens
-            sometimes and it&rsquo;s not your fault. Press the button below to
-            try again. If it fails a second time, tell Richard which app you
-            were making and he&rsquo;ll take a look.
-          </p>
+        {failureMessage && (
+          <p className="mt-2 text-sm text-slate-600">{failureMessage}</p>
         )}
         {buildRun?.status === "needs_input" && (
           <p className="mt-2 text-sm text-slate-600">
@@ -182,12 +198,12 @@ export default function BuildStatus({ appId }: { appId: string }) {
             capabilities that are scheduled for a later stage.
           </p>
         )}
-        {buildRun?.errorMessage && (
+        {technicalDetails && (
           <details className="mt-2">
             <summary className="cursor-pointer text-xs text-slate-400">
               Technical details
             </summary>
-            <p className="mt-1 text-sm text-red-600">{buildRun.errorMessage}</p>
+            <p className="mt-1 text-sm text-red-600">{technicalDetails}</p>
           </details>
         )}
         {(buildRun?.status === "failed" ||
