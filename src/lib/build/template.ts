@@ -7,13 +7,30 @@ export type FileMap = Record<string, string>;
 const TEMPLATE_DIR = path.join(process.cwd(), "templates", "nextjs-base");
 
 /** Paths the Code/Debug agents are allowed to create or overwrite. */
-const WRITABLE_PREFIXES = ["src/app/", "src/components/", "src/lib/"];
+const WRITABLE_PREFIXES = [
+  "src/app/",
+  "src/components/",
+  "src/lib/",
+  "e2e/generated/",
+];
+
+/** Readable generated-app files exposed through code navigation tools. */
+const READABLE_PREFIXES = ["src/", "e2e/"];
+const READABLE_FILES = new Set([
+  "package.json",
+  "tsconfig.json",
+  "next.config.ts",
+  "playwright.config.ts",
+  "vitest.config.ts",
+  "vitest.setup.ts",
+]);
 
 /** Files agents must never touch (template integrity). */
 const PROTECTED_FILES = new Set([
   "src/app/globals.css",
   "src/lib/template.test.ts",
   "src/app/api/ai/route.ts", // locked AI endpoint (Stage 7)
+  "e2e/smoke.spec.ts", // locked browser/accessibility smoke test
 ]);
 
 const ALLOWED_EXTENSIONS = new Set([".ts", ".tsx"]);
@@ -29,6 +46,9 @@ export function isAgentWritablePath(p: string): {
   if (PROTECTED_FILES.has(normalized)) {
     return { ok: false, reason: `${normalized} is protected` };
   }
+  if (normalized.startsWith("src/app/api/")) {
+    return { ok: false, reason: "Generated apps cannot create API routes" };
+  }
   if (!WRITABLE_PREFIXES.some((pre) => normalized.startsWith(pre))) {
     return {
       ok: false,
@@ -37,6 +57,26 @@ export function isAgentWritablePath(p: string): {
   }
   if (!ALLOWED_EXTENSIONS.has(path.posix.extname(normalized))) {
     return { ok: false, reason: "Only .ts and .tsx files are allowed" };
+  }
+  return { ok: true };
+}
+
+export function isAgentReadablePath(p: string): {
+  ok: boolean;
+  reason?: string;
+} {
+  const normalized = path.posix.normalize(p.replaceAll("\\", "/"));
+  if (normalized.startsWith("/") || normalized.includes("..")) {
+    return { ok: false, reason: "Path must be relative, without '..'" };
+  }
+  if (
+    !READABLE_FILES.has(normalized) &&
+    !READABLE_PREFIXES.some((pre) => normalized.startsWith(pre))
+  ) {
+    return {
+      ok: false,
+      reason: "Only generated app source, tests, and locked project config may be read",
+    };
   }
   return { ok: true };
 }

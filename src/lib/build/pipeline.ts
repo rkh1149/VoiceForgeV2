@@ -17,6 +17,7 @@ import {
   runCodeAgent,
   runChangeCodeAgent,
   runDebugAgent,
+  type CodegenResult,
 } from "@/lib/agents/coder";
 import {
   createRepoIfMissing,
@@ -116,10 +117,29 @@ async function setStatus(
     .where(eq(buildRuns.id, buildRunId));
 }
 
-function srcOnly(files: FileMap): FileMap {
+function agentVisibleFiles(files: FileMap): FileMap {
   return Object.fromEntries(
-    Object.entries(files).filter(([p]) => p.startsWith("src/")),
+    Object.entries(files).filter(
+      ([p]) =>
+        p.startsWith("src/") ||
+        p.startsWith("e2e/") ||
+        [
+          "package.json",
+          "tsconfig.json",
+          "next.config.ts",
+          "playwright.config.ts",
+          "vitest.config.ts",
+          "vitest.setup.ts",
+        ].includes(p),
+    ),
   );
+}
+
+function applyCodegenResult(files: FileMap, result: CodegenResult): void {
+  for (const deleted of result.deletedFiles) {
+    delete files[deleted];
+  }
+  Object.assign(files, result.files);
 }
 
 /**
@@ -242,7 +262,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       purpose: spec.purpose,
     });
 
-    let generated;
+    let generated: CodegenResult;
     if (changeMode) {
       await log(buildRunId, "Fetching the app's current code from GitHub…");
       const repoName = getGeneratedAppName(app.slug);
@@ -267,18 +287,34 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         spec,
         changeSummary:
           changeRequest?.description ?? "Apply the updated specification.",
-        currentFiles: currentSrc,
+        currentFiles: agentVisibleFiles(files),
         architecture: architectureForStorage,
       });
     } else {
       await log(buildRunId, `Generating code for "${app.name}"…`);
-      generated = await runCodeAgent(spec, architectureForStorage);
+      generated = await runCodeAgent({
+        spec,
+        architecture: architectureForStorage,
+        baseFiles: agentVisibleFiles(files),
+      });
     }
-    Object.assign(files, generated.files);
+    applyCodegenResult(files, generated);
+    for (const phase of generated.phases) {
+      await log(
+        buildRunId,
+        `Generation phase complete: ${phase.label} (${phase.filesWritten.length} changed, ${phase.filesDeleted.length} deleted). ${phase.notes}`,
+      );
+    }
     await log(
       buildRunId,
-      `Code agent wrote ${generated.filesWritten.length} files: ${generated.filesWritten.join(", ")}`,
+      `Code agent changed ${generated.filesWritten.length} files: ${generated.filesWritten.join(", ")}`,
     );
+    if (generated.deletedFiles.length > 0) {
+      await log(
+        buildRunId,
+        `Code agent deleted ${generated.deletedFiles.length} files: ${generated.deletedFiles.join(", ")}`,
+      );
+    }
     if (generated.notes) await log(buildRunId, `Code agent notes: ${generated.notes}`);
     if (generated.filesWritten.length === 0) {
       throw new Error("Code agent produced no files");
@@ -346,7 +382,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       );
       const fix = await runDebugAgent({
         spec,
-        currentFiles: srcOnly(files),
+        currentFiles: agentVisibleFiles(files),
         failedStep: step,
         errorOutput: result.output,
         previousAttempts: debugNotes,
@@ -355,11 +391,12 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         throw new Error(`Debug agent could not produce a fix for ${step}`);
       }
       debugNotes.push(fix.notes || `(rewrote ${fix.filesWritten.join(", ")})`);
-      Object.assign(files, fix.files);
+      applyCodegenResult(files, fix);
+      await runner.deleteFiles(fix.deletedFiles);
       await runner.writeFiles(fix.files);
       await log(
         buildRunId,
-        `Debug agent rewrote: ${fix.filesWritten.join(", ")}. ${fix.notes}`,
+        `Debug agent changed: ${fix.filesWritten.join(", ")}${fix.deletedFiles.length > 0 ? `; deleted: ${fix.deletedFiles.join(", ")}` : ""}. ${fix.notes}`,
       );
       await setStatus(buildRunId, "testing");
       // Re-run from typecheck (install output can't be affected by src changes).

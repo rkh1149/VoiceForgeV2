@@ -99,9 +99,8 @@ export async function deleteRepo(name: string): Promise<void> {
 }
 
 /**
- * Fetch the current src/ files of an app repo (change-mode starting point).
- * Only src/**&#47;*.ts(x) matter: configs and package.json always come fresh
- * from the template, and agents may only write under src/ anyway.
+ * Fetch the current generated files of an app repo (change-mode starting
+ * point). Configs and package.json always come fresh from the template.
  */
 export async function getRepoSrcFiles(opts: {
   repo: string;
@@ -131,9 +130,11 @@ export async function getRepoSrcFiles(opts: {
   for (const entry of tree.data.tree) {
     if (
       entry.type !== "blob" ||
-      !entry.path?.startsWith("src/") ||
       !entry.sha ||
-      !/\.(ts|tsx|css)$/.test(entry.path)
+      !(
+        (entry.path.startsWith("src/") && /\.(ts|tsx|css)$/.test(entry.path)) ||
+        (entry.path.startsWith("e2e/generated/") && /\.ts$/.test(entry.path))
+      )
     ) {
       continue;
     }

@@ -1,20 +1,26 @@
-import { Agent, run, tool, user } from "@openai/agents";
-import { z } from "zod";
+import { Agent, run, user } from "@openai/agents";
 import type { AppSpec } from "@/lib/spec";
 import type { ArchitecturePlan } from "@/lib/architecture";
-import { isAgentWritablePath, type FileMap } from "@/lib/build/template";
+import type { FileMap } from "@/lib/build/template";
+import {
+  createAgentFileTools,
+  type DiagnosticsContext,
+  type FileOperation,
+} from "@/lib/agents/file-tools";
 
 /**
- * Code Agent + Debug Agent (Stage 2).
- * Both write files exclusively through the write_file tool, which enforces
- * the writable-path policy (src/ only, no configs, no package.json).
+ * Code Agent + Debug Agent.
+ *
+ * Stage 8C changes generation from one giant pass into explicit phases with
+ * file navigation tools. Mutations still go through the same path policy:
+ * generated app source/tests only, no configs, no package.json, no API routes.
  */
 
 const CODER_MODEL = process.env.OPENAI_CODER_MODEL ?? "gpt-5.6-terra";
 
-const SHARED_RULES = `Rules for all files you write:
+const SHARED_RULES = `Rules for all files you mutate:
 - This is a Next.js 15 App Router project with TypeScript (strict) and Tailwind CSS 4. React 19.
-- You may ONLY write files under src/app/, src/components/, and src/lib/, with .ts or .tsx extensions, via the write_file tool. package.json, configs, and src/app/globals.css are locked — the project's dependencies CANNOT be changed, so import only: react, next (next/link, next/image, next/navigation), and files you write yourself.
+- You may ONLY mutate approved generated-app files via write_file, patch_file, delete_file, or rename_file: src/app/, src/components/, src/lib/, and e2e/generated/. package.json, configs, src/app/globals.css, src/lib/template.test.ts, e2e/smoke.spec.ts, and all API routes are locked.
 - The app must work entirely in the browser: no databases, no API keys, no external services (the ONLY exception is the locked /api/ai endpoint described below when the spec includes AI features). If data must persist, use localStorage inside client components ("use client") with a typed wrapper in src/lib/storage.ts.
 - src/app/api/ai/route.ts is a LOCKED platform file — never modify, overwrite, or reimplement it, and never create any other file under src/app/api/.
 - CRITICAL: every page is prerendered on the server at build time, where window/localStorage do not exist. Never touch window or localStorage at module scope, in useState initializers, or during render — ONLY inside useEffect. Initialize state to defaults, then load saved data in a useEffect after mount.
@@ -22,36 +28,103 @@ const SHARED_RULES = `Rules for all files you write:
 - NEVER reference static asset files (mp3, images, fonts, videos) — you cannot create them, so any such path will 404. And NEVER reference EXTERNAL media URLs either: no stock-photo sites, no Unsplash, no placeholder services (placehold.co etc.), no CDNs, no invented hostnames — the app must be fully self-contained and the browser test fails on ANY external request. For sound, synthesize it with the Web Audio API. For graphics and decoration, use inline SVG, CSS gradients, or emoji. For photos the user mentions, build an upload feature (stored in localStorage as data URLs). For generated pictures, use the AI image mode if this app has AI features.
 - Style with Tailwind utility classes only. Mobile-first, readable, generous touch targets. The app is used by non-technical family members.
 - Accessibility: semantic HTML, labels on inputs, alt text, keyboard operability.
-- Write tests: for each main feature, add a *.test.tsx or *.test.ts file under src/ using vitest + @testing-library/react (both installed; jest-dom matchers like toBeInTheDocument are set up). Tests must not rely on localStorage persisting between tests.
+- Write unit/workflow tests under src/ using vitest + @testing-library/react (both installed; jest-dom matchers like toBeInTheDocument are set up). Tests must not rely on localStorage persisting between tests.
+- Write browser acceptance tests only under e2e/generated/*.spec.ts. Never edit e2e/smoke.spec.ts.
 - Tests must be deterministic: NEVER use vi.useFakeTimers, real delays, or arbitrary waits. Never use setTimeout/setInterval in components for game or app logic — apply state updates synchronously (skip artificial "thinking" pauses; they break tests and add nothing). In tests use fireEvent from @testing-library/react (@testing-library/user-event is NOT installed) then findBy*/waitFor.
 - Write robust test assertions: query by role or aria-label on unique interactive elements, never by text that appears in more than one place or is split across elements (e.g. "0:13 / 0:37" rendered from multiple spans). Fewer, stronger assertions beat many brittle ones. Don't assert on intermediate states that depend on effect timing.
-- A locked BROWSER TEST runs against every build: it loads /, presses visible buttons, and fails on any JavaScript error, any 404'd resource, or any serious axe accessibility violation. Therefore: the home page must render standalone with sensible defaults, every button must be safe to press in any order without crashing, and accessibility must be real — labels on all inputs and icon-only buttons (aria-label), alt text, sufficient color contrast (no light gray on white; Tailwind *-400 or lighter text on white backgrounds usually fails), and one h1 per page.
-- Do not overwrite src/lib/template.test.ts.
+- A locked BROWSER TEST runs against every build: it loads /, presses visible buttons, and fails on any JavaScript error, any 404'd resource, or any serious axe accessibility violation. Therefore: the home page must render standalone with sensible defaults, every button must be safe to press in any order without crashing, and accessibility must be real — labels on all inputs and icon-only buttons (aria-label), alt text, sufficient color contrast (no light gray on white backgrounds usually fails), and one h1 per page.
 - src/app/layout.tsx already exists with correct metadata; only rewrite it if the app truly needs a different shell, and keep the import of "./globals.css".
 - Every page must compile under strict TypeScript and pass eslint (next/core-web-vitals). No unused variables, no explicit any.`;
 
-function makeWriteFileTool(files: FileMap, log: string[]) {
-  return tool({
-    name: "write_file",
-    description:
-      "Create or overwrite one file in the app. Call once per file with the complete file content.",
-    parameters: z.object({
-      path: z
-        .string()
-        .describe("Repo-relative path, e.g. src/app/page.tsx"),
-      content: z.string().describe("Complete file content"),
-    }),
-    execute: async ({ path: p, content }) => {
-      const check = isAgentWritablePath(p);
-      if (!check.ok) {
-        return `REJECTED: ${check.reason}`;
-      }
-      files[p] = content;
-      log.push(p);
-      return `Wrote ${p} (${content.length} chars).`;
-    },
-  });
-}
+type GenerationPhase = {
+  id: string;
+  label: string;
+  objective: string;
+  maxTurns: number;
+  allowMutations?: boolean;
+};
+
+export const CODE_GENERATION_PHASES: GenerationPhase[] = [
+  {
+    id: "foundation",
+    label: "Data, types, constants, and platform wrappers",
+    objective:
+      "Create typed domain models, constants, validation helpers, localStorage wrappers, and any AI/platform client helpers needed by later UI phases. Keep UI work minimal in this phase.",
+    maxTurns: 18,
+  },
+  {
+    id: "components",
+    label: "Reusable components",
+    objective:
+      "Create reusable components, hooks, and focused UI building blocks. Prefer small components with clear props. Read existing foundation files before importing from them.",
+    maxTurns: 22,
+  },
+  {
+    id: "pages-workflows",
+    label: "Pages, navigation, and workflows",
+    objective:
+      "Assemble App Router pages and wire the main workflows end to end. Replace the placeholder home page, add routes when the architecture calls for them, and make every button safe.",
+    maxTurns: 28,
+  },
+  {
+    id: "unit-workflow-tests",
+    label: "Unit and workflow tests",
+    objective:
+      "Add deterministic vitest tests under src/ for domain helpers, storage behavior, components, and acceptance-criterion workflows.",
+    maxTurns: 20,
+  },
+  {
+    id: "browser-acceptance-tests",
+    label: "Browser acceptance tests",
+    objective:
+      "Add Playwright acceptance tests under e2e/generated/ for core user-visible workflows that can be tested reliably. Keep them robust and avoid duplicating the locked smoke test.",
+    maxTurns: 16,
+  },
+];
+
+const CHANGE_GENERATION_PHASES: GenerationPhase[] = [
+  {
+    id: "inspect-change",
+    label: "Inspect current app for change impact",
+    objective:
+      "Inspect only the files likely to be affected by the requested change. Use list_files, read_file, and search_code. Do not mutate files in this phase.",
+    maxTurns: 10,
+    allowMutations: false,
+  },
+  {
+    id: "apply-change",
+    label: "Apply targeted source changes",
+    objective:
+      "Patch or rewrite only files that need to change. Preserve unrelated look, behavior, routes, and localStorage data shapes.",
+    maxTurns: 24,
+  },
+  {
+    id: "change-tests",
+    label: "Update tests for change",
+    objective:
+      "Add or update unit/workflow/browser acceptance tests that cover the requested change without making brittle assertions.",
+    maxTurns: 18,
+  },
+];
+
+export type GenerationPhaseResult = {
+  id: string;
+  label: string;
+  filesWritten: string[];
+  filesDeleted: string[];
+  notes: string;
+};
+
+export type CodegenResult = {
+  files: FileMap; // newly written or changed files only
+  deletedFiles: string[];
+  notes: string;
+  filesWritten: string[];
+  phases: GenerationPhaseResult[];
+  operations: FileOperation[];
+};
+
+export type DebugResult = CodegenResult;
 
 /** Extra guidance injected only when the spec includes AI features. */
 export function aiUsageNote(spec: AppSpec): string {
@@ -80,146 +153,265 @@ ${JSON.stringify(architecture, null, 2)}
 Use the architecture plan as the source of implementation structure: routes, components, data model, file plan, workflow coverage, and tests. Do not implement services marked unavailable or future-platform. If a detail conflicts with the shared rules, the shared rules win.`;
 }
 
-export type CodegenResult = {
-  files: FileMap; // newly written files only
-  notes: string;
-  filesWritten: string[];
-};
+export async function runCodeAgent(input: {
+  spec: AppSpec;
+  architecture?: ArchitecturePlan;
+  baseFiles?: FileMap;
+}): Promise<CodegenResult> {
+  const workspaceFiles: FileMap = { ...(input.baseFiles ?? {}) };
+  const operations: FileOperation[] = [];
+  const phaseResults: GenerationPhaseResult[] = [];
 
-export async function runCodeAgent(
-  spec: AppSpec,
-  architecture?: ArchitecturePlan,
-): Promise<CodegenResult> {
-  const files: FileMap = {};
-  const log: string[] = [];
+  for (const phase of CODE_GENERATION_PHASES) {
+    const phaseResult = await runGenerationPhase({
+      mode: "new",
+      phase,
+      spec: input.spec,
+      architecture: input.architecture,
+      workspaceFiles,
+      operations,
+      previousPhases: phaseResults,
+    });
+    phaseResults.push(phaseResult);
+  }
 
-  const agent = new Agent({
-    name: "VoiceForge Code Agent",
-    model: CODER_MODEL,
-    instructions: `You are an expert Next.js developer. Build the app described by the specification, writing every file with the write_file tool. When finished, reply with a short plain-text summary of what you built and any limitations.
-
-${SHARED_RULES}`,
-    tools: [makeWriteFileTool(files, log)],
-  });
-
-  const specMessage = `Build this app:\n\n${JSON.stringify(spec, null, 2)}${architectureNote(architecture)}\n\nStart by writing src/app/page.tsx (replace the placeholder), then all components, lib files, and tests. Cover every screen and feature in the specification.${aiUsageNote(spec)}`;
-
-  const result = await run(agent, [user(specMessage)], { maxTurns: 40 });
-
-  return {
-    files,
-    notes: extractText(result.output),
-    filesWritten: log,
-  };
+  return collectCodegenResult(workspaceFiles, operations, phaseResults);
 }
 
 /** Change mode: modify an existing app's source instead of regenerating. */
 export async function runChangeCodeAgent(input: {
   spec: AppSpec; // the UPDATED spec
   changeSummary: string;
-  currentFiles: FileMap; // current src/ files from the live app
+  currentFiles: FileMap; // current generated-app files from the live app
   architecture?: ArchitecturePlan;
 }): Promise<CodegenResult> {
-  const files: FileMap = {};
-  const log: string[] = [];
+  const workspaceFiles: FileMap = { ...input.currentFiles };
+  const operations: FileOperation[] = [];
+  const phaseResults: GenerationPhaseResult[] = [];
 
-  const agent = new Agent({
-    name: "VoiceForge Change Agent",
-    model: CODER_MODEL,
-    instructions: `You are an expert Next.js developer modifying an EXISTING app. Apply the requested change by rewriting only the files that need to differ (always complete file content, via write_file) and adding any new files/tests the change needs. Preserve everything else about the app: its look, behavior, and saved-data format (users must not lose data stored in localStorage — migrate the stored shape in the storage helper if the change requires it). Update or add tests to cover the change. When finished, reply with a short summary of what you changed.
+  for (const phase of CHANGE_GENERATION_PHASES) {
+    const phaseResult = await runGenerationPhase({
+      mode: "change",
+      phase,
+      spec: input.spec,
+      architecture: input.architecture,
+      workspaceFiles,
+      operations,
+      previousPhases: phaseResults,
+      changeSummary: input.changeSummary,
+    });
+    phaseResults.push(phaseResult);
+  }
 
-${SHARED_RULES}`,
-    tools: [makeWriteFileTool(files, log)],
-  });
-
-  const fileList = Object.entries(input.currentFiles)
-    .map(([p, c]) => `===== ${p} =====\n${c}`)
-    .join("\n\n");
-
-  const message = `THE REQUESTED CHANGE:
-${input.changeSummary}
-
-THE UPDATED FULL SPECIFICATION:
-${JSON.stringify(input.spec, null, 2)}
-${architectureNote(input.architecture)}
-
-THE APP'S CURRENT SOURCE FILES:
-${fileList}
-
-Apply the change.${aiUsageNote(input.spec)}`;
-
-  const result = await run(agent, [user(message)], { maxTurns: 40 });
-
-  return {
-    files,
-    notes: extractText(result.output),
-    filesWritten: log,
-  };
+  return collectCodegenResult(workspaceFiles, operations, phaseResults);
 }
-
-export type DebugResult = {
-  files: FileMap; // changed files only
-  notes: string;
-  filesWritten: string[];
-};
 
 export async function runDebugAgent(input: {
   spec: AppSpec;
-  currentFiles: FileMap; // src/ files only
+  currentFiles: FileMap; // generated-app files only
   failedStep: string;
   errorOutput: string;
   previousAttempts: string[]; // notes from earlier debug rounds this build
 }): Promise<DebugResult> {
-  const files: FileMap = {};
-  const log: string[] = [];
+  const workspaceFiles: FileMap = { ...input.currentFiles };
+  const operations: FileOperation[] = [];
+  const diagnostics: DiagnosticsContext = {
+    failedStep: input.failedStep,
+    errorOutput: input.errorOutput,
+    typeErrors: input.failedStep === "typecheck" ? input.errorOutput : undefined,
+    testResults: ["lint", "test", "build"].includes(input.failedStep)
+      ? input.errorOutput
+      : undefined,
+    browserFailure: input.failedStep === "e2e" ? input.errorOutput : undefined,
+  };
 
   const agent = new Agent({
     name: "VoiceForge Debug Agent",
     model: CODER_MODEL,
-    instructions: `You are an expert Next.js developer fixing a broken build. Analyze the failing step's output, find the root cause, and rewrite ONLY the files that need to change, using the write_file tool (always the complete file content). Keep changes minimal. When finished, reply with one short paragraph explaining the cause and the fix.
+    instructions: `You are an expert Next.js developer fixing a broken generated app. Use list_files, read_file, search_code, and the inspect_* diagnostic tools to identify the root cause. Rewrite or patch ONLY the files that need to change. Keep changes minimal. When finished, reply with one short paragraph explaining the cause and fix.
 
 Known failure signatures:
 - "next build" failing while prerendering /404, /500, or /_error with "<Html> should not be imported outside of pages/_document": a component threw during server prerendering — almost always window or localStorage accessed at module scope, in a useState initializer, or during render. Find that component and move the access into useEffect. Do NOT create 404.tsx/500.tsx/_document/_error files; they are not valid in the App Router and will not fix this.
-
-- The "e2e" step failing: this is the locked browser test (e2e/smoke.spec.ts, NOT editable). Its failure messages name the exact problem: "JavaScript errors" or "missing files (404)" mean an app bug — fix the component or remove the reference to the nonexistent file; "requested external URLs" means the app references stock photos/CDNs/placeholder hosts — replace them with inline SVG, emoji, CSS art, or AI image mode; "accessibility violations" list axe rule ids — fix the offending components (add labels/alt text, increase color contrast, correct heading structure). Never try to modify or skip the browser test itself.
-
-Escalation rule: if an earlier attempt this build already rewrote the SAME test file for the same failing test, do not rewrite it again with cleverer queries — that strategy has failed. Instead either (a) fix the COMPONENT: races between effects and assertions, duplicated text without distinguishing roles/labels, state that briefly flickers through wrong values on mount — these are component bugs even when the error appears in a test; or (b) SIMPLIFY the test: delete the brittle assertions and keep only robust role/label-based checks of core behavior. A shorter passing test beats a thorough flaky one.
+- The "e2e" step failing: this is the locked browser test plus generated acceptance tests. Its failure messages name the exact problem: JavaScript errors, missing files, external URLs, accessibility violations, or brittle generated acceptance assertions. Prefer fixing the component. If a generated acceptance test is brittle, simplify it under e2e/generated/; never edit e2e/smoke.spec.ts.
+- If an earlier attempt already rewrote the SAME test for the same failure, change strategy: fix the component or simplify the test.
 
 ${SHARED_RULES}`,
-    tools: [makeWriteFileTool(files, log)],
+    tools: createAgentFileTools(workspaceFiles, {
+      mutationLog: operations,
+      diagnostics,
+    }),
   });
-
-  const fileList = Object.entries(input.currentFiles)
-    .map(([p, c]) => `===== ${p} =====\n${c}`)
-    .join("\n\n");
 
   const previousSection =
     input.previousAttempts.length > 0
-      ? `\n--- EARLIER FIX ATTEMPTS THIS BUILD (did NOT resolve the failure — do something different) ---\n${input.previousAttempts
+      ? `\nEARLIER FIX ATTEMPTS THIS BUILD (they did NOT resolve the failure):\n${input.previousAttempts
           .map((n, i) => `Attempt ${i + 1}: ${n}`)
           .join("\n")}\n`
       : "";
 
   const message = `The step "${input.failedStep}" failed.
 ${previousSection}
---- ERROR OUTPUT (tail) ---
-${input.errorOutput}
+Use inspect_test_results, inspect_type_errors, or inspect_browser_failure as appropriate.
 
---- APP SPECIFICATION ---
+APP SPECIFICATION:
 ${JSON.stringify(input.spec, null, 2)}
 
---- CURRENT SOURCE FILES ---
-${fileList}
+ERROR OUTPUT TAIL:
+${input.errorOutput}
 
-Fix the problem.`;
+Current files are available through list_files/read_file/search_code. Fix the problem.${aiUsageNote(input.spec)}`;
 
   const result = await run(agent, [user(message)], { maxTurns: 25 });
+  const phaseResult = makePhaseResult({
+    phase: {
+      id: "debug",
+      label: `Debug ${input.failedStep}`,
+      objective: "Fix the failing build step.",
+      maxTurns: 25,
+    },
+    operations,
+    operationStart: 0,
+    workspaceFiles,
+    notes: extractText(result.output),
+  });
+
+  return collectCodegenResult(workspaceFiles, operations, [phaseResult]);
+}
+
+async function runGenerationPhase(input: {
+  mode: "new" | "change";
+  phase: GenerationPhase;
+  spec: AppSpec;
+  architecture?: ArchitecturePlan;
+  workspaceFiles: FileMap;
+  operations: FileOperation[];
+  previousPhases: GenerationPhaseResult[];
+  changeSummary?: string;
+}): Promise<GenerationPhaseResult> {
+  const operationStart = input.operations.length;
+  const agent = new Agent({
+    name: `VoiceForge ${input.mode === "new" ? "Code" : "Change"} Agent - ${input.phase.label}`,
+    model: CODER_MODEL,
+    instructions: `${input.mode === "new" ? "You are building a new generated app" : "You are modifying an existing generated app"} in a controlled multi-phase pipeline. Complete only the current phase. Use list_files, read_file, and search_code to understand existing files before importing from or patching them. Reply with a concise phase summary and any limitations.
+
+Current phase: ${input.phase.label}
+Objective: ${input.phase.objective}
+
+${SHARED_RULES}`,
+    tools: createAgentFileTools(input.workspaceFiles, {
+      mutationLog: input.operations,
+      allowMutations: input.phase.allowMutations,
+    }),
+  });
+
+  const previous =
+    input.previousPhases.length > 0
+      ? `\nPREVIOUS PHASE NOTES:\n${input.previousPhases
+          .map(
+            (phase) =>
+              `- ${phase.label}: ${phase.notes || "no notes"} (${phase.filesWritten.length} changed, ${phase.filesDeleted.length} deleted)`,
+          )
+          .join("\n")}\n`
+      : "";
+  const change =
+    input.mode === "change"
+      ? `\nREQUESTED CHANGE:\n${input.changeSummary ?? "Apply the approved specification update."}\n`
+      : "";
+
+  const message = `${input.mode === "new" ? "Build" : "Update"} this app through the current phase only.
+${change}${previous}
+APP SPECIFICATION:
+${JSON.stringify(input.spec, null, 2)}
+${architectureNote(input.architecture)}
+
+Use the file tools instead of assuming file contents. ${
+    input.mode === "change"
+      ? "Do not read every file; search and inspect only likely impacted files."
+      : "List files first if you need to know what earlier phases created."
+  }
+${aiUsageNote(input.spec)}`;
+
+  const result = await run(agent, [user(message)], {
+    maxTurns: input.phase.maxTurns,
+  });
+
+  return makePhaseResult({
+    phase: input.phase,
+    operations: input.operations,
+    operationStart,
+    workspaceFiles: input.workspaceFiles,
+    notes: extractText(result.output),
+  });
+}
+
+function makePhaseResult(input: {
+  phase: GenerationPhase;
+  operations: FileOperation[];
+  operationStart: number;
+  workspaceFiles: FileMap;
+  notes: string;
+}): GenerationPhaseResult {
+  const phaseOperations = input.operations.slice(input.operationStart);
+  const filesWritten = pathsWithContent(input.workspaceFiles, phaseOperations);
+  const filesDeleted = deletedPaths(phaseOperations);
+  return {
+    id: input.phase.id,
+    label: input.phase.label,
+    filesWritten,
+    filesDeleted,
+    notes: input.notes,
+  };
+}
+
+function collectCodegenResult(
+  workspaceFiles: FileMap,
+  operations: FileOperation[],
+  phases: GenerationPhaseResult[],
+): CodegenResult {
+  const filesWritten = pathsWithContent(workspaceFiles, operations);
+  const deletedFiles = deletedPaths(operations);
+  const files: FileMap = {};
+  for (const filePath of filesWritten) {
+    const content = workspaceFiles[filePath];
+    if (content !== undefined) files[filePath] = content;
+  }
+  const notes = phases
+    .map((phase) => `${phase.label}: ${phase.notes || "No notes."}`)
+    .join("\n");
 
   return {
     files,
-    notes: extractText(result.output),
-    filesWritten: log,
+    deletedFiles,
+    notes,
+    filesWritten,
+    phases,
+    operations,
   };
+}
+
+function pathsWithContent(
+  workspaceFiles: FileMap,
+  operations: FileOperation[],
+): string[] {
+  const paths = new Set<string>();
+  for (const operation of operations) {
+    const filePath =
+      operation.operation === "rename" ? operation.targetPath : operation.path;
+    if (filePath && workspaceFiles[filePath] !== undefined) {
+      paths.add(filePath);
+    }
+  }
+  return [...paths].sort();
+}
+
+function deletedPaths(operations: FileOperation[]): string[] {
+  const paths = new Set<string>();
+  for (const operation of operations) {
+    if (operation.operation === "delete" || operation.operation === "rename") {
+      paths.add(operation.path);
+    }
+  }
+  return [...paths].sort();
 }
 
 /** Collect non-empty assistant text (same reasoning-model quirk as planner). */

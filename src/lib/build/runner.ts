@@ -30,6 +30,7 @@ export type StepResult = {
 export type Runner = {
   kind: "local" | "sandbox";
   writeFiles(files: FileMap): Promise<void>;
+  deleteFiles(paths: string[]): Promise<void>;
   run(step: StepName): Promise<StepResult>;
   dispose(): Promise<void>;
 };
@@ -78,6 +79,11 @@ async function createLocalRunner(buildRunId: string): Promise<Runner> {
         const abs = path.join(dir, rel);
         await fs.mkdir(path.dirname(abs), { recursive: true });
         await fs.writeFile(abs, content, "utf8");
+      }
+    },
+    async deleteFiles(paths: string[]) {
+      for (const rel of paths) {
+        await fs.rm(path.join(dir, rel), { force: true });
       }
     },
     run(step: StepName): Promise<StepResult> {
@@ -166,6 +172,11 @@ async function createSandboxRunner(): Promise<Runner> {
           content: Buffer.from(content, "utf8"),
         })),
       );
+    },
+    async deleteFiles(paths: string[]) {
+      if (paths.length > 0) {
+        await sandbox.runCommand("rm", ["-f", ...paths]);
+      }
     },
     async run(step: StepName): Promise<StepResult> {
       const { cmd, args } = STEPS[step];
