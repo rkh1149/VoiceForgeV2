@@ -1,6 +1,7 @@
 import { Octokit } from "@octokit/rest";
-import type { FileMap } from "@/lib/build/template";
-import { audit } from "@/lib/audit";
+import { audit } from "./audit";
+import type { FileMap } from "./build/template";
+import { getGitHubErrorStatus, withGitHubRetry } from "./github-retry";
 
 /**
  * GitHub tool layer (Stage 2).
@@ -44,7 +45,10 @@ export async function createRepoIfMissing(opts: {
   const owner = getOwner();
 
   try {
-    const { data } = await octokit.repos.get({ owner, repo: opts.name });
+    const { data } = await withGitHubRetry(
+      `repos.get ${owner}/${opts.name}`,
+      () => octokit.repos.get({ owner, repo: opts.name }),
+    );
     return {
       owner,
       repo: data.name,
@@ -53,16 +57,20 @@ export async function createRepoIfMissing(opts: {
       defaultBranch: data.default_branch,
     };
   } catch (err) {
-    const status = (err as { status?: number }).status;
+    const status = getGitHubErrorStatus(err);
     if (status !== 404) throw err;
   }
 
-  const { data } = await octokit.repos.createForAuthenticatedUser({
-    name: opts.name,
-    description: opts.description.slice(0, 300),
-    private: true,
-    auto_init: true, // creates main branch so we can commit against it
-  });
+  const { data } = await withGitHubRetry(
+    `repos.createForAuthenticatedUser ${opts.name}`,
+    () =>
+      octokit.repos.createForAuthenticatedUser({
+        name: opts.name,
+        description: opts.description.slice(0, 300),
+        private: true,
+        auto_init: true, // creates main branch so we can commit against it
+      }),
+  );
 
   await audit({
     userId: opts.userId,
@@ -85,9 +93,11 @@ export async function deleteRepo(name: string): Promise<void> {
   const octokit = getOctokit();
   const owner = getOwner();
   try {
-    await octokit.repos.delete({ owner, repo: name });
+    await withGitHubRetry(`repos.delete ${owner}/${name}`, () =>
+      octokit.repos.delete({ owner, repo: name }),
+    );
   } catch (err) {
-    const status = (err as { status?: number }).status;
+    const status = getGitHubErrorStatus(err);
     if (status === 404) return;
     if (status === 403) {
       throw new Error(
@@ -109,22 +119,34 @@ export async function getRepoSrcFiles(opts: {
   const octokit = getOctokit();
   const owner = getOwner();
 
-  const ref = await octokit.git.getRef({
-    owner,
-    repo: opts.repo,
-    ref: `heads/${opts.branch}`,
-  });
-  const commit = await octokit.git.getCommit({
-    owner,
-    repo: opts.repo,
-    commit_sha: ref.data.object.sha,
-  });
-  const tree = await octokit.git.getTree({
-    owner,
-    repo: opts.repo,
-    tree_sha: commit.data.tree.sha,
-    recursive: "1",
-  });
+  const ref = await withGitHubRetry(
+    `git.getRef ${owner}/${opts.repo}@${opts.branch}`,
+    () =>
+      octokit.git.getRef({
+        owner,
+        repo: opts.repo,
+        ref: `heads/${opts.branch}`,
+      }),
+  );
+  const commit = await withGitHubRetry(
+    `git.getCommit ${owner}/${opts.repo}@${ref.data.object.sha}`,
+    () =>
+      octokit.git.getCommit({
+        owner,
+        repo: opts.repo,
+        commit_sha: ref.data.object.sha,
+      }),
+  );
+  const tree = await withGitHubRetry(
+    `git.getTree ${owner}/${opts.repo}@${commit.data.tree.sha}`,
+    () =>
+      octokit.git.getTree({
+        owner,
+        repo: opts.repo,
+        tree_sha: commit.data.tree.sha,
+        recursive: "1",
+      }),
+  );
 
   const files: FileMap = {};
   for (const entry of tree.data.tree) {
@@ -138,11 +160,15 @@ export async function getRepoSrcFiles(opts: {
     ) {
       continue;
     }
-    const blob = await octokit.git.getBlob({
-      owner,
-      repo: opts.repo,
-      file_sha: entry.sha,
-    });
+    const blob = await withGitHubRetry(
+      `git.getBlob ${owner}/${opts.repo}:${entry.path}`,
+      () =>
+        octokit.git.getBlob({
+          owner,
+          repo: opts.repo,
+          file_sha: entry.sha,
+        }),
+    );
     files[entry.path] = Buffer.from(blob.data.content, "base64").toString(
       "utf8",
     );
@@ -158,28 +184,40 @@ export async function createBranch(opts: {
 }): Promise<void> {
   const octokit = getOctokit();
   const owner = getOwner();
-  const base = await octokit.git.getRef({
-    owner,
-    repo: opts.repo,
-    ref: `heads/${opts.fromBranch}`,
-  });
+  const base = await withGitHubRetry(
+    `git.getRef ${owner}/${opts.repo}@${opts.fromBranch}`,
+    () =>
+      octokit.git.getRef({
+        owner,
+        repo: opts.repo,
+        ref: `heads/${opts.fromBranch}`,
+      }),
+  );
   try {
-    await octokit.git.createRef({
-      owner,
-      repo: opts.repo,
-      ref: `refs/heads/${opts.branch}`,
-      sha: base.data.object.sha,
-    });
+    await withGitHubRetry(
+      `git.createRef ${owner}/${opts.repo}@${opts.branch}`,
+      () =>
+        octokit.git.createRef({
+          owner,
+          repo: opts.repo,
+          ref: `refs/heads/${opts.branch}`,
+          sha: base.data.object.sha,
+        }),
+    );
   } catch (err) {
     // 422 = ref already exists (retried build) — reset it to base instead.
-    if ((err as { status?: number }).status !== 422) throw err;
-    await octokit.git.updateRef({
-      owner,
-      repo: opts.repo,
-      ref: `heads/${opts.branch}`,
-      sha: base.data.object.sha,
-      force: true,
-    });
+    if (getGitHubErrorStatus(err) !== 422) throw err;
+    await withGitHubRetry(
+      `git.updateRef ${owner}/${opts.repo}@${opts.branch}`,
+      () =>
+        octokit.git.updateRef({
+          owner,
+          repo: opts.repo,
+          ref: `heads/${opts.branch}`,
+          sha: base.data.object.sha,
+          force: true,
+        }),
+    );
   }
 }
 
@@ -194,13 +232,17 @@ export async function mergeToDefault(opts: {
 }): Promise<{ mergeSha: string | null }> {
   const octokit = getOctokit();
   const owner = getOwner();
-  const { data } = await octokit.repos.merge({
-    owner,
-    repo: opts.repo,
-    base: opts.defaultBranch,
-    head: opts.branch,
-    commit_message: opts.message,
-  });
+  const { data } = await withGitHubRetry(
+    `repos.merge ${owner}/${opts.repo}:${opts.branch}`,
+    () =>
+      octokit.repos.merge({
+        owner,
+        repo: opts.repo,
+        base: opts.defaultBranch,
+        head: opts.branch,
+        commit_message: opts.message,
+      }),
+  );
 
   await audit({
     userId: opts.userId,
@@ -229,37 +271,50 @@ export async function commitFiles(opts: {
   const owner = getOwner();
   const { repo, branch, files, message } = opts;
 
-  const ref = await octokit.git.getRef({ owner, repo, ref: `heads/${branch}` });
+  const ref = await withGitHubRetry(
+    `git.getRef ${owner}/${repo}@${branch}`,
+    () => octokit.git.getRef({ owner, repo, ref: `heads/${branch}` }),
+  );
   const parentSha = ref.data.object.sha;
 
   // No base_tree: each build commit is a COMPLETE snapshot of the app.
   // Overlaying on the previous tree would leave stale files from earlier
   // generations in the repo, breaking deployment builds.
-  const tree = await octokit.git.createTree({
-    owner,
-    repo,
-    tree: Object.entries(files).map(([path, content]) => ({
-      path,
-      mode: "100644" as const,
-      type: "blob" as const,
-      content,
-    })),
-  });
+  const tree = await withGitHubRetry(
+    `git.createTree ${owner}/${repo}@${branch}`,
+    () =>
+      octokit.git.createTree({
+        owner,
+        repo,
+        tree: Object.entries(files).map(([path, content]) => ({
+          path,
+          mode: "100644" as const,
+          type: "blob" as const,
+          content,
+        })),
+      }),
+  );
 
-  const commit = await octokit.git.createCommit({
-    owner,
-    repo,
-    message,
-    tree: tree.data.sha,
-    parents: [parentSha],
-  });
+  const commit = await withGitHubRetry(
+    `git.createCommit ${owner}/${repo}@${branch}`,
+    () =>
+      octokit.git.createCommit({
+        owner,
+        repo,
+        message,
+        tree: tree.data.sha,
+        parents: [parentSha],
+      }),
+  );
 
-  await octokit.git.updateRef({
-    owner,
-    repo,
-    ref: `heads/${branch}`,
-    sha: commit.data.sha,
-  });
+  await withGitHubRetry(`git.updateRef ${owner}/${repo}@${branch}`, () =>
+    octokit.git.updateRef({
+      owner,
+      repo,
+      ref: `heads/${branch}`,
+      sha: commit.data.sha,
+    }),
+  );
 
   await audit({
     userId: opts.userId,
