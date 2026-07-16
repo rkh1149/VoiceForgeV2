@@ -1,8 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
-import { apps, buildRuns, deployments } from "@/db/schema";
+import {
+  appEntitySchemas,
+  appMemberships,
+  appRecords,
+  apps,
+  buildRuns,
+  deployments,
+} from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import BuildStatus from "@/components/BuildStatus";
 import DeleteAppButton from "@/components/DeleteAppButton";
@@ -63,6 +70,25 @@ export default async function AppDetailPage({
     .orderBy(desc(buildRuns.createdAt))
     .limit(15);
 
+  const [
+    [{ dataEntityCount }],
+    [{ activeRecordCount }],
+    [{ invitedMemberCount }],
+  ] = await Promise.all([
+    db
+      .select({ dataEntityCount: count() })
+      .from(appEntitySchemas)
+      .where(eq(appEntitySchemas.appId, app.id)),
+    db
+      .select({ activeRecordCount: count() })
+      .from(appRecords)
+      .where(and(eq(appRecords.appId, app.id), isNull(appRecords.deletedAt))),
+    db
+      .select({ invitedMemberCount: count() })
+      .from(appMemberships)
+      .where(eq(appMemberships.appId, app.id)),
+  ]);
+
   // After a rollback, "current" is not necessarily the newest — ask Vercel.
   const currentDeploymentId =
     app.vercelProjectId && productionVersions.length > 1
@@ -78,6 +104,32 @@ export default async function AppDetailPage({
         <p className="mt-1 mb-6 text-sm text-slate-500">{app.description}</p>
       )}
       <BuildStatus appId={app.id} />
+
+      <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-slate-700">
+          Platform data
+        </h3>
+        <dl className="mt-3 grid grid-cols-3 gap-3 text-center">
+          <div>
+            <dt className="text-xs text-slate-400">Entities</dt>
+            <dd className="mt-1 text-xl font-semibold text-forge-900">
+              {dataEntityCount}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs text-slate-400">Records</dt>
+            <dd className="mt-1 text-xl font-semibold text-forge-900">
+              {activeRecordCount}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs text-slate-400">Members</dt>
+            <dd className="mt-1 text-xl font-semibold text-forge-900">
+              {invitedMemberCount + 1}
+            </dd>
+          </div>
+        </dl>
+      </div>
 
       {runHistory.length > 1 && (
         <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

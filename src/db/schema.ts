@@ -97,6 +97,12 @@ export const changeRequestStatus = pgEnum("change_request_status", [
   "failed",
 ]);
 
+export const appMembershipRole = pgEnum("app_membership_role", [
+  "owner",
+  "editor",
+  "viewer",
+]);
+
 // ---------------------------------------------------------------------------
 // Tables
 // ---------------------------------------------------------------------------
@@ -335,6 +341,132 @@ export const changeRequests = pgTable(
   (t) => [index("change_requests_app_idx").on(t.appId)],
 );
 
+/** Platform-managed entity metadata for generated app records. */
+export const appEntitySchemas = pgTable(
+  "app_entity_schemas",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    entityKey: text("entity_key").notNull(),
+    displayName: text("display_name").notNull(),
+    definition: jsonb("definition").notNull(),
+    createdBy: uuid("created_by").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("app_entity_schemas_app_key_idx").on(t.appId, t.entityKey),
+    index("app_entity_schemas_app_idx").on(t.appId),
+  ],
+);
+
+/** People invited to a generated app and their server-enforced role. */
+export const appMemberships = pgTable(
+  "app_memberships",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    role: appMembershipRole("role").notNull().default("viewer"),
+    invitedBy: uuid("invited_by").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("app_memberships_app_user_idx").on(t.appId, t.userId),
+    index("app_memberships_app_idx").on(t.appId),
+    index("app_memberships_user_idx").on(t.userId),
+  ],
+);
+
+/** JSONB records stored by the VoiceForge platform on behalf of apps. */
+export const appRecords = pgTable(
+  "app_records",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    entityKey: text("entity_key").notNull(),
+    ownerId: uuid("owner_id").references(() => users.id),
+    data: jsonb("data").notNull(),
+    version: integer("version").notNull().default(1),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("app_records_app_entity_idx").on(t.appId, t.entityKey),
+    index("app_records_app_owner_idx").on(t.appId, t.ownerId),
+    index("app_records_deleted_idx").on(t.deletedAt),
+  ],
+);
+
+/** Append-only record snapshots for rollback/debug/history. */
+export const appRecordVersions = pgTable(
+  "app_record_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    recordId: uuid("record_id")
+      .notNull()
+      .references(() => appRecords.id),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    version: integer("version").notNull(),
+    data: jsonb("data").notNull(),
+    changedBy: uuid("changed_by").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("app_record_versions_record_idx").on(t.recordId),
+    index("app_record_versions_app_idx").on(t.appId),
+  ],
+);
+
+/** Per-app data activity log for record and membership operations. */
+export const appRecordEvents = pgTable(
+  "app_record_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    recordId: uuid("record_id").references(() => appRecords.id),
+    userId: uuid("user_id").references(() => users.id),
+    eventType: text("event_type").notNull(),
+    payload: jsonb("payload"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("app_record_events_app_idx").on(t.appId),
+    index("app_record_events_record_idx").on(t.recordId),
+    index("app_record_events_user_idx").on(t.userId),
+  ],
+);
+
 /** One row per AI request made by a generated app (gate + usage report). */
 export const aiUsage = pgTable(
   "ai_usage",
@@ -389,5 +521,10 @@ export type ArchitecturePlanRow = typeof architecturePlans.$inferSelect;
 export type Deployment = typeof deployments.$inferSelect;
 export type TestResult = typeof testResults.$inferSelect;
 export type ChangeRequest = typeof changeRequests.$inferSelect;
+export type AppEntitySchema = typeof appEntitySchemas.$inferSelect;
+export type AppMembership = typeof appMemberships.$inferSelect;
+export type AppRecord = typeof appRecords.$inferSelect;
+export type AppRecordVersion = typeof appRecordVersions.$inferSelect;
+export type AppRecordEvent = typeof appRecordEvents.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type AiUsage = typeof aiUsage.$inferSelect;

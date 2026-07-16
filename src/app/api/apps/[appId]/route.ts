@@ -4,6 +4,11 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import {
   aiUsage,
+  appEntitySchemas,
+  appMemberships,
+  appRecordEvents,
+  appRecordVersions,
+  appRecords,
   architecturePlans,
   apps,
   approvals,
@@ -112,6 +117,13 @@ export async function DELETE(
       .where(inArray(auditLogs.buildRunId, runIds));
   }
   await db.delete(aiUsage).where(eq(aiUsage.appId, appId));
+  await db.delete(appRecordEvents).where(eq(appRecordEvents.appId, appId));
+  await db
+    .delete(appRecordVersions)
+    .where(eq(appRecordVersions.appId, appId));
+  await db.delete(appRecords).where(eq(appRecords.appId, appId));
+  await db.delete(appMemberships).where(eq(appMemberships.appId, appId));
+  await db.delete(appEntitySchemas).where(eq(appEntitySchemas.appId, appId));
   await db.delete(deployments).where(eq(deployments.appId, appId));
   await db.delete(buildRuns).where(eq(buildRuns.appId, appId));
   await db.delete(changeRequests).where(eq(changeRequests.appId, appId));

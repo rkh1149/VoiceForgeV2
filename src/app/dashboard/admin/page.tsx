@@ -4,6 +4,9 @@ import { and, count, desc, eq, gte, max, sql, sum } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   aiUsage,
+  appEntitySchemas,
+  appMemberships,
+  appRecords,
   apps,
   architecturePlans,
   auditLogs,
@@ -40,6 +43,9 @@ export default async function AdminPage() {
     recentRuns,
     recentAudit,
     aiByApp,
+    [{ platformEntityCount }],
+    [{ platformRecordCount }],
+    [{ platformMembershipCount }],
   ] = await Promise.all([
     db.select({ userCount: count() }).from(users),
     db.select({ appCount: count() }).from(apps),
@@ -104,6 +110,9 @@ export default async function AdminPage() {
       .innerJoin(users, eq(apps.ownerId, users.id))
       .groupBy(apps.id, apps.name, users.email)
       .orderBy(desc(count())),
+    db.select({ platformEntityCount: count() }).from(appEntitySchemas),
+    db.select({ platformRecordCount: count() }).from(appRecords),
+    db.select({ platformMembershipCount: count() }).from(appMemberships),
   ]);
 
   const stats = [
@@ -111,6 +120,9 @@ export default async function AdminPage() {
     { label: "Apps", value: appCount },
     { label: "Builds this month", value: buildsThisMonth },
     { label: "of which failed", value: failuresThisMonth },
+    { label: "Data entities", value: platformEntityCount },
+    { label: "App records", value: platformRecordCount },
+    { label: "App members", value: platformMembershipCount },
   ];
 
   return (
@@ -121,7 +133,7 @@ export default async function AdminPage() {
       </p>
 
       {/* Stats */}
-      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
         {stats.map((s) => (
           <div
             key={s.label}
