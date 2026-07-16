@@ -53,4 +53,27 @@ describe("platform entity seeding", () => {
       "due_date_2",
     ]);
   });
+
+  it("adds a completion boolean when workflows require marking records done", () => {
+    const spec = normalizeAppSpec({
+      appName: "Family Grocery List",
+      purpose: "Share groceries.",
+      targetUsers: "A family",
+      screens: [{ name: "Home", description: "Manage groceries." }],
+      features: ["Add items", "Mark items bought"],
+      dataToStore: ["grocery items with name and quantity"],
+      needsLogin: false,
+      sharingModel: "shared",
+      aiFeatures: [],
+      testPlan: ["Mark an item bought"],
+      deploymentNotes: "",
+    });
+
+    const entity = platformEntityFromSpec(spec.dataEntities[0], spec);
+
+    expect(entity.fields.some((field) => field.key === "bought")).toBe(true);
+    expect(entity.fields.find((field) => field.key === "bought")?.type).toBe(
+      "boolean",
+    );
+  });
 });

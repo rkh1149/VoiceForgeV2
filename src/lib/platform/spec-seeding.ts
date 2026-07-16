@@ -16,9 +16,10 @@ type PlatformSeedUser = {
 
 export function platformEntityFromSpec(
   entity: AppSpec["dataEntities"][number],
+  spec?: AppSpec,
 ): PlatformEntityDefinition {
   const usedKeys = new Map<string, number>();
-  const fields =
+  const fields: PlatformFieldDefinition[] =
     entity.fields.length > 0
       ? entity.fields.map((field) => {
           const baseKey = normalizeEntityKey(field.name || field.label);
@@ -50,6 +51,16 @@ export function platformEntityFromSpec(
             validation: "A short name for this record.",
           },
         ];
+  if (spec && shouldAddCompletionField(entity, spec, fields)) {
+    fields.push({
+      key: "bought",
+      label: completionFieldLabel(spec),
+      type: "boolean",
+      required: false,
+      options: [],
+      validation: "Whether this item has been completed.",
+    });
+  }
 
   return {
     key: normalizeEntityKey(entity.name),
@@ -72,7 +83,9 @@ export async function seedPlatformEntitySchemasFromSpec(
     spec: AppSpec;
   },
 ): Promise<PlatformEntityDefinition[]> {
-  const entities = input.spec.dataEntities.map(platformEntityFromSpec);
+  const entities = input.spec.dataEntities.map((entity) =>
+    platformEntityFromSpec(entity, input.spec),
+  );
   for (const entity of entities) {
     await upsertEntitySchema(db, {
       appId: input.appId,
@@ -81,6 +94,38 @@ export async function seedPlatformEntitySchemasFromSpec(
     });
   }
   return entities;
+}
+
+function shouldAddCompletionField(
+  entity: AppSpec["dataEntities"][number],
+  spec: AppSpec,
+  fields: PlatformFieldDefinition[],
+): boolean {
+  if (fields.some((field) => field.type === "boolean")) return false;
+  const text = [
+    spec.appName,
+    ...spec.features,
+    ...spec.testPlan,
+    ...spec.acceptanceCriteria.map((criterion) => criterion.scenario),
+    ...spec.workflows.flatMap((workflow) => [
+      workflow.name,
+      workflow.successOutcome,
+      ...workflow.steps,
+    ]),
+    entity.name,
+    entity.description,
+  ]
+    .join(" ")
+    .toLowerCase();
+  return /\b(bought|buy|purchased|done|complete|completed|finished|checked off|mark)\b/.test(
+    text,
+  );
+}
+
+function completionFieldLabel(spec: AppSpec): string {
+  const text = `${spec.appName} ${spec.features.join(" ")}`.toLowerCase();
+  if (/\b(bought|buy|purchased)\b/.test(text)) return "Bought";
+  return "Done";
 }
 
 function uniqueKey(baseKey: string, usedKeys: Map<string, number>): string {

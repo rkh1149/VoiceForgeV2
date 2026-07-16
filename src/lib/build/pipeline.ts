@@ -24,6 +24,10 @@ import {
   type CodegenResult,
 } from "@/lib/agents/coder";
 import {
+  canUsePlatformDataStarter,
+  generatePlatformDataStarterApp,
+} from "@/lib/agents/platform-data-starter";
+import {
   createRepoIfMissing,
   createBranch,
   commitFiles,
@@ -155,6 +159,13 @@ function shouldUseArchitectAgent(): boolean {
   // architecture plan preserves the capability gate and saves enough time for
   // the hosted build/test/commit/deploy pipeline to complete reliably.
   return !process.env.VERCEL;
+}
+
+function shouldUsePlatformDataStarterGenerator(): boolean {
+  const mode = process.env.VOICEFORGE_PLATFORM_DATA_GENERATOR;
+  if (mode === "agent") return false;
+  if (mode === "starter") return true;
+  return Boolean(process.env.VERCEL);
 }
 
 function architectureUsesPlatformData(architecture: ArchitecturePlan): boolean {
@@ -344,11 +355,26 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       });
     } else {
       await log(buildRunId, `Generating code for "${app.name}"…`);
-      generated = await runCodeAgent({
-        spec,
-        architecture: architectureForStorage,
-        baseFiles: agentVisibleFiles(files),
-      });
+      if (
+        usesPlatformData &&
+        shouldUsePlatformDataStarterGenerator() &&
+        canUsePlatformDataStarter({ spec, architecture: architectureForStorage })
+      ) {
+        await log(
+          buildRunId,
+          "Using fast platform-data starter generator for this shared app…",
+        );
+        generated = generatePlatformDataStarterApp({
+          spec,
+          architecture: architectureForStorage,
+        });
+      } else {
+        generated = await runCodeAgent({
+          spec,
+          architecture: architectureForStorage,
+          baseFiles: agentVisibleFiles(files),
+        });
+      }
     }
     applyCodegenResult(files, generated);
     for (const phase of generated.phases) {
