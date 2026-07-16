@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isRetryableGitHubError } from "./github-retry";
+import { GitHubTransientError, isRetryableGitHubError } from "./github-retry";
 
 describe("GitHub retry classification", () => {
   it("retries transient server and rate-limit failures", () => {
@@ -31,5 +31,23 @@ describe("GitHub retry classification", () => {
     expect(isRetryableGitHubError({ status: 403, message: "Forbidden" })).toBe(
       false,
     );
+  });
+
+  it("formats exhausted retries without raw provider HTML", () => {
+    const error = new GitHubTransientError(
+      "repos.get owner/example",
+      {
+        status: 503,
+        response: {
+          data: "<!DOCTYPE html><html><title>Unicorn! GitHub</title></html>",
+        },
+      },
+      4,
+    );
+
+    expect(error.message).toContain("GitHub is temporarily unavailable");
+    expect(error.message).toContain("HTTP 503");
+    expect(error.message).not.toContain("<!DOCTYPE");
+    expect(error.message).not.toContain("Unicorn");
   });
 });

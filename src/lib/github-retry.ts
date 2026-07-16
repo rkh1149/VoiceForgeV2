@@ -1,5 +1,22 @@
 const GITHUB_RETRY_DELAYS_MS = [750, 1500, 3000];
 
+export class GitHubTransientError extends Error {
+  constructor(
+    label: string,
+    err: unknown,
+    attempts: number,
+  ) {
+    const status = getGitHubErrorStatus(err);
+    super(
+      `GitHub is temporarily unavailable while running ${label}. ` +
+        `GitHub returned ${status ? `HTTP ${status}` : "a transient network error"} after ${attempts} attempts. ` +
+        "Please try building again in a few minutes.",
+      { cause: err },
+    );
+    this.name = "GitHubTransientError";
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -63,7 +80,11 @@ export async function withGitHubRetry<T>(
       return await operation();
     } catch (err) {
       lastError = err;
-      if (attempt === maxAttempts || !isRetryableGitHubError(err)) {
+      const retryable = isRetryableGitHubError(err);
+      if (attempt === maxAttempts || !retryable) {
+        if (attempt === maxAttempts && retryable) {
+          throw new GitHubTransientError(label, err, maxAttempts);
+        }
         throw err;
       }
 
