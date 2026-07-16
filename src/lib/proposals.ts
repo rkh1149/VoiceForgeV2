@@ -7,7 +7,7 @@ import {
   conversations,
   requirements,
 } from "@/db/schema";
-import type { AppSpec } from "@/lib/spec";
+import { computeSpecComplexity, normalizeAppSpec, type AppSpec } from "@/lib/spec";
 import type { User } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { uniqueSlugForOwner } from "@/lib/slug";
@@ -34,7 +34,9 @@ export async function persistProposal(opts: {
   changeMode: boolean;
   changeSummary?: string | null;
 }): Promise<ProposalPayload> {
-  const { user, conversationId, spec, plainSummary, changeMode } = opts;
+  const { user, conversationId, plainSummary, changeMode } = opts;
+  const spec = normalizeAppSpec(opts.spec);
+  const complexity = computeSpecComplexity(spec);
   const db = getDb();
 
   const [convo] = await db
@@ -130,7 +132,12 @@ export async function persistProposal(opts: {
     userId: user.id,
     appId,
     action: changeMode ? "change.proposed" : "spec.proposed",
-    payload: { requirementId: requirement.id, version, appName: spec.appName },
+    payload: {
+      requirementId: requirement.id,
+      version,
+      appName: spec.appName,
+      complexity,
+    },
   });
 
   return {
@@ -151,5 +158,5 @@ export async function getLatestSpec(appId: string): Promise<AppSpec | null> {
     .where(eq(requirements.appId, appId))
     .orderBy(desc(requirements.version))
     .limit(1);
-  return latest ? (latest.spec as AppSpec) : null;
+  return latest ? normalizeAppSpec(latest.spec) : null;
 }

@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "test": "vitest run src/lib/spec.test.ts",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
@@ -16,9 +17,9 @@
   },
   "dependencies": {
     "@clerk/nextjs": "^7.5.16",
-    "@openai/agents": "^0.13.1",
     "@neondatabase/serverless": "^1.1.0",
     "@octokit/rest": "^22.0.1",
+    "@openai/agents": "^0.13.1",
     "@vercel/functions": "^3.7.5",
     "@vercel/sandbox": "^2.5.0",
     "drizzle-orm": "^0.45.2",
@@ -37,7 +38,8 @@
     "eslint": "^9",
     "eslint-config-next": "^15.5.18",
     "tailwindcss": "^4.3.0",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=20.9.0"

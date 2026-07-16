@@ -8,7 +8,7 @@ import {
   requirements,
   testResults,
 } from "@/db/schema";
-import type { AppSpec } from "@/lib/spec";
+import { computeSpecComplexity, normalizeAppSpec } from "@/lib/spec";
 import { audit } from "@/lib/audit";
 import {
   runCodeAgent,
@@ -139,7 +139,8 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     : [];
   if (!requirement) throw new Error(`Requirement missing for build ${buildRunId}`);
 
-  const spec = requirement.spec as AppSpec;
+  const spec = normalizeAppSpec(requirement.spec);
+  const complexity = computeSpecComplexity(spec);
 
   try {
     await setStatus(buildRunId, "generating", { startedAt: new Date() });
@@ -152,7 +153,10 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       appId: app.id,
       buildRunId,
       action: "build.started",
-      payload: { requirementVersion: requirement.version },
+      payload: {
+        requirementVersion: requirement.version,
+        complexity,
+      },
     });
 
     // Change mode: the app was built before, so modify its current code.
