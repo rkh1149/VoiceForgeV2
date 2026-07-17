@@ -17,10 +17,43 @@ export function canUsePlatformDataStarter(input: {
   spec: AppSpec;
   architecture: ArchitecturePlan;
 }): boolean {
+  const needsRichStage10Ui =
+    input.architecture.dependencyProfile.some((profile) =>
+      ["advancedInterface", "fileExport"].includes(profile),
+    ) || hasExplicitRichUiRequest(input.spec);
   return (
+    !needsRichStage10Ui &&
     input.spec.dataEntities.length > 0 &&
     input.architecture.dataModel.some((entity) => entity.storage === "platformData")
   );
+}
+
+function hasExplicitRichUiRequest(spec: AppSpec): boolean {
+  const text = JSON.stringify({
+    appName: spec.appName,
+    purpose: spec.purpose,
+    screens: spec.screens,
+    features: spec.features,
+    workflows: spec.workflows,
+    dataToStore: spec.dataToStore,
+    acceptanceCriteria: spec.acceptanceCriteria,
+    testScenarios: spec.testScenarios,
+  }).toLowerCase();
+  return [
+    "chart",
+    "dashboard",
+    "sortable",
+    "table",
+    "calendar",
+    "date picker",
+    "drag",
+    "drop",
+    "kanban",
+    "csv",
+    "export",
+    "comment",
+    "activity history",
+  ].some((signal) => text.includes(signal));
 }
 
 export function generatePlatformDataStarterApp(input: {

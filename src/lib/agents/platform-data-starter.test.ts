@@ -20,6 +20,35 @@ const sharedGroceryInput = {
   deploymentNotes: "",
 };
 
+const richActivityPlannerInput = {
+  appName: "Family Activity Planner",
+  purpose: "Plan weekend activities with charts, calendar, board, and CSV export.",
+  targetUsers: "A family",
+  screens: [
+    {
+      name: "Planner",
+      description: "Search, filter, schedule, and organize activities.",
+    },
+  ],
+  features: [
+    "Dashboard charts",
+    "Sortable activity table",
+    "Search and filters",
+    "Calendar date picker",
+    "Drag/drop planning board",
+    "CSV export",
+    "Comments and activity history",
+  ],
+  dataToStore: [
+    "activities with name, category, location, planned date, priority, status, notes, comments, and history",
+  ],
+  needsLogin: false,
+  sharingModel: "shared" as const,
+  aiFeatures: [],
+  testPlan: ["Add, schedule, move, and export an activity"],
+  deploymentNotes: "",
+};
+
 describe("platform data starter generator", () => {
   it("generates a locked-platform-data CRUD starter for no-login shared apps", () => {
     const spec = normalizeAppSpec(sharedGroceryInput);
@@ -83,5 +112,23 @@ describe("platform data starter generator", () => {
     expect(result.files["src/components/PlatformDataApp.tsx"]).toContain(
       "accessModeLabel",
     );
+  });
+
+  it("does not use the simple starter for Stage 10 rich shared apps", () => {
+    const spec = normalizeAppSpec(richActivityPlannerInput);
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+
+    expect(architecture.dependencyProfile).toEqual(
+      expect.arrayContaining([
+        "dataDisplay",
+        "dateScheduling",
+        "advancedInterface",
+        "fileExport",
+      ]),
+    );
+    expect(canUsePlatformDataStarter({ spec, architecture })).toBe(false);
   });
 });
