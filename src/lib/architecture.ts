@@ -103,7 +103,7 @@ export const architecturePlanSchema = z.object({
 
 export type ArchitecturePlan = z.infer<typeof architecturePlanSchema>;
 
-const AVAILABLE_SERVICES = new Set(["ai", "data"]);
+const AVAILABLE_SERVICES = new Set(["ai", "data", "users"]);
 
 export function createFallbackArchitecturePlan(
   spec: AppSpec,
@@ -211,7 +211,7 @@ export function createFallbackArchitecturePlan(
     ),
     riskNotes: needsFuturePlatform
       ? [
-          "Current generated apps can use shared platform records, but generated-app sign-in, real per-user roles, files, email, jobs, and integrations arrive in later stages.",
+          "Current generated apps can use shared platform records and VoiceForge member sign-in, but files, email, jobs, and integrations arrive in later stages.",
         ]
       : [],
     unsupportedCapabilities: blockingIssues,
@@ -294,8 +294,9 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
     services.push({
       service: "users",
       required: true,
-      availability: "later",
-      reason: "Generated-app sign-in, memberships, and per-user roles are planned for a later Stage 9 step.",
+      availability: "available",
+      reason:
+        "VoiceForge member sign-in and owner/editor/viewer roles are available for generated apps.",
     });
   }
   if (spec.fileRequirements.length > 0) {

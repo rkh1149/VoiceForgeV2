@@ -52,7 +52,7 @@ describe("platform data starter generator", () => {
     );
   });
 
-  it("does not claim signed-in apps are starter-safe", () => {
+  it("generates role-aware session UI for signed-in shared apps", () => {
     const spec = normalizeAppSpec({
       ...sharedGroceryInput,
       needsLogin: true,
@@ -62,6 +62,26 @@ describe("platform data starter generator", () => {
       computeSpecComplexity(spec),
     );
 
-    expect(canUsePlatformDataStarter({ spec, architecture })).toBe(false);
+    expect(canUsePlatformDataStarter({ spec, architecture })).toBe(true);
+
+    const result = generatePlatformDataStarterApp({ spec, architecture });
+    expect(result.files["src/components/PlatformDataApp.tsx"]).toContain(
+      "getPlatformSession",
+    );
+    expect(result.files["src/components/PlatformDataApp.tsx"]).toContain(
+      "Sign in required",
+    );
+    expect(result.files["src/components/PlatformDataApp.tsx"]).toContain(
+      "Your role is viewer",
+    );
+    expect(result.files["src/lib/platform-app-config.ts"]).toContain(
+      "REQUIRE_SIGN_IN: boolean = true",
+    );
+    expect(result.files["src/lib/platform-app-config.ts"]).toContain(
+      'SHARING_MODEL: "private" | "shared" | "public" = "shared"',
+    );
+    expect(result.files["src/components/PlatformDataApp.tsx"]).toContain(
+      "accessModeLabel",
+    );
   });
 });

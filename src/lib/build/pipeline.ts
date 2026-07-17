@@ -551,6 +551,8 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       const vars: Record<string, string> = {
         VOICEFORGE_APP_ID: app.id,
         VOICEFORGE_APP_TOKEN: platformToken,
+        VOICEFORGE_REQUIRE_SIGN_IN: spec.needsLogin ? "1" : "0",
+        VOICEFORGE_SHARING_MODEL: spec.sharingModel,
         ...(publicUrl ? { VOICEFORGE_PUBLIC_URL: publicUrl } : {}),
       };
       if (spec.aiFeatures.length > 0) {

@@ -10,6 +10,7 @@ import { NextResponse } from "next/server";
  */
 
 type DataAction =
+  | "session"
   | "listSchemas"
   | "listRecords"
   | "getRecord"
@@ -24,6 +25,8 @@ type DataBody = {
   data?: unknown;
   includeDeleted?: unknown;
   limit?: unknown;
+  sessionToken?: unknown;
+  returnTo?: unknown;
 };
 
 type LocalRecord = {
@@ -39,6 +42,7 @@ type LocalRecord = {
 };
 
 const ACTIONS = new Set<DataAction>([
+  "session",
   "listSchemas",
   "listRecords",
   "getRecord",
@@ -63,9 +67,21 @@ export async function POST(req: Request) {
 
   const base = process.env.VOICEFORGE_PUBLIC_URL?.replace(/\/$/, "");
   const token = process.env.VOICEFORGE_APP_TOKEN;
+  const appId = process.env.VOICEFORGE_APP_ID;
   if (!base || !token) {
     return NextResponse.json(
       { error: "Platform data is not enabled for this app." },
+      { status: 503 },
+    );
+  }
+  const requireSession = process.env.VOICEFORGE_REQUIRE_SIGN_IN === "1";
+  const sharingModel = normalizeSharingModel(process.env.VOICEFORGE_SHARING_MODEL);
+  const sessionToken =
+    typeof body.sessionToken === "string" ? body.sessionToken : undefined;
+
+  if (body.action === "session" && (!appId || typeof body.returnTo !== "string")) {
+    return NextResponse.json(
+      { error: "Platform sign-in is not configured for this app." },
       { status: 503 },
     );
   }
@@ -73,7 +89,13 @@ export async function POST(req: Request) {
   const platformRes = await fetch(`${base}/api/platform-data`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...body, token }),
+    body: JSON.stringify({
+      ...body,
+      token,
+      sessionToken,
+      requireSession,
+      sharingModel,
+    }),
   }).catch(() => null);
 
   if (!platformRes) {
@@ -81,6 +103,42 @@ export async function POST(req: Request) {
       { error: "Platform data is unavailable right now." },
       { status: 502 },
     );
+  }
+
+  if (body.action === "session") {
+    const payload = (await platformRes.json().catch(() => ({}))) as {
+      session?: unknown;
+      error?: string;
+      code?: string;
+    };
+    const loginUrl = buildLoginUrl(base, appId as string, body.returnTo as string);
+    if (!platformRes.ok) {
+      return NextResponse.json(
+        {
+          session: {
+            status:
+              payload.code === "no_access" || payload.code === "wrong_app_session"
+                ? "no_access"
+                : "signed_out",
+            user: null,
+            role: null,
+            canWrite: false,
+            canManage: false,
+            requireSignIn: requireSession,
+            loginUrl,
+            error: payload.error ?? "Please sign in with VoiceForge.",
+          },
+        },
+        { status: 200 },
+      );
+    }
+    return NextResponse.json({
+      session: {
+        ...(payload.session as object),
+        requireSignIn: requireSession,
+        loginUrl,
+      },
+    });
   }
 
   const text = await platformRes.text();
@@ -98,6 +156,22 @@ function handleLocalData(body: DataBody & { action: DataAction }) {
   const now = new Date().toISOString();
 
   switch (body.action) {
+    case "session":
+      return NextResponse.json({
+        session: {
+          status: "signed_in",
+          user: {
+            id: "local-user",
+            email: "local@voiceforge.dev",
+            displayName: "Local tester",
+          },
+          role: "owner",
+          canWrite: true,
+          canManage: true,
+          requireSignIn: false,
+          loginUrl: "#",
+        },
+      });
     case "listSchemas":
       return NextResponse.json({ entities: [] });
     case "listRecords": {
@@ -177,4 +251,16 @@ function handleLocalData(body: DataBody & { action: DataAction }) {
 function getLocalRecords(): Map<string, LocalRecord> {
   globalStore.__voiceforgeLocalData ??= new Map<string, LocalRecord>();
   return globalStore.__voiceforgeLocalData;
+}
+
+function buildLoginUrl(base: string, appId: string, returnTo: string): string {
+  const url = new URL("/api/platform/session/start", base);
+  url.searchParams.set("appId", appId);
+  url.searchParams.set("returnTo", returnTo);
+  return url.toString();
+}
+
+function normalizeSharingModel(value: string | undefined): "private" | "shared" | "public" {
+  if (value === "private" || value === "public") return value;
+  return "shared";
 }

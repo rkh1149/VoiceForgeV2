@@ -49,19 +49,26 @@ describe("architecture planning", () => {
     expect(validation.blockingIssues).toEqual([]);
   });
 
-  it("blocks signed-in shared apps until generated-app user services exist", () => {
+  it("allows signed-in shared apps to use VoiceForge member roles", () => {
     const spec = normalizeAppSpec(sharedSpecInput);
     const complexity = computeSpecComplexity(spec);
     const plan = createFallbackArchitecturePlan(spec, complexity);
     const validation = validateArchitecturePlan(plan);
 
-    expect(plan.capabilityValidation.canBuildNow).toBe(false);
-    expect(validation.canBuildNow).toBe(false);
+    expect(plan.capabilityValidation.canBuildNow).toBe(true);
+    expect(validation.canBuildNow).toBe(true);
+    expect(plan.platformServices).toContainEqual(
+      expect.objectContaining({
+        service: "users",
+        availability: "available",
+        required: true,
+      }),
+    );
     expect(validation.blockingIssues.some((issue) => issue.startsWith("data:"))).toBe(
       false,
     );
     expect(validation.blockingIssues.some((issue) => issue.startsWith("users:"))).toBe(
-      true,
+      false,
     );
   });
 

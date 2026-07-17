@@ -1,5 +1,4 @@
 import type { ArchitecturePlan } from "../architecture";
-import { needsGeneratedAppUsers } from "../architecture";
 import type { FileMap } from "../build/template";
 import { platformEntityFromSpec } from "../platform/spec-seeding";
 import type { AppSpec } from "../spec";
@@ -19,7 +18,6 @@ export function canUsePlatformDataStarter(input: {
   architecture: ArchitecturePlan;
 }): boolean {
   return (
-    !needsGeneratedAppUsers(input.spec) &&
     input.spec.dataEntities.length > 0 &&
     input.architecture.dataModel.some((entity) => entity.storage === "platformData")
   );
@@ -115,6 +113,8 @@ function configFile(input: {
 
 export const APP_NAME = ${JSON.stringify(input.spec.appName)};
 export const APP_PURPOSE = ${JSON.stringify(input.spec.purpose)};
+export const REQUIRE_SIGN_IN: boolean = ${JSON.stringify(input.spec.needsLogin)};
+export const SHARING_MODEL: "private" | "shared" | "public" = ${JSON.stringify(input.spec.sharingModel)};
 export const ENTITY_KEY = ${JSON.stringify(input.entityKey)};
 export const ENTITY_LABEL = ${JSON.stringify(input.entityLabel)};
 export const PRIMARY_FIELD_KEY = ${JSON.stringify(input.primaryFieldKey)};
@@ -189,8 +189,12 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   createPlatformRecord,
   deletePlatformRecord,
+  getPlatformSession,
   listPlatformRecords,
+  signInToPlatform,
+  signOutPlatformSession,
   updatePlatformRecord,
+  type PlatformSession,
   type PlatformRecord,
 } from "@/lib/platform-data";
 import {
@@ -198,6 +202,8 @@ import {
   APP_PURPOSE,
   ENTITY_KEY,
   ENTITY_LABEL,
+  REQUIRE_SIGN_IN,
+  SHARING_MODEL,
   TOGGLE_FIELD_KEY,
   VISIBLE_FIELDS,
   createEmptyDraft,
@@ -211,19 +217,37 @@ import {
 
 type SharedRecord = PlatformRecord<Record<string, unknown>>;
 
+function accessModeLabel(): string {
+  if (REQUIRE_SIGN_IN) return "Invite-only workspace";
+  if (SHARING_MODEL === "public") return "Public workspace";
+  if (SHARING_MODEL === "private") return "Private workspace";
+  return "Shared link workspace";
+}
+
 export default function PlatformDataApp() {
   const [records, setRecords] = useState<SharedRecord[]>([]);
   const [draft, setDraft] = useState<DraftData>(() => createEmptyDraft());
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [session, setSession] = useState<PlatformSession | null>(null);
 
   useEffect(() => {
     let active = true;
-    async function loadRecords() {
+    async function loadApp() {
       try {
         setIsLoading(true);
         setError(null);
+        const currentSession = await getPlatformSession();
+        if (!active) return;
+        setSession(currentSession);
+        if (
+          currentSession.status === "signed_out" ||
+          currentSession.status === "no_access"
+        ) {
+          setRecords([]);
+          return;
+        }
         const loaded = await listPlatformRecords<Record<string, unknown>>(
           ENTITY_KEY,
         );
@@ -234,7 +258,7 @@ export default function PlatformDataApp() {
         if (active) setIsLoading(false);
       }
     }
-    void loadRecords();
+    void loadApp();
     return () => {
       active = false;
     };
@@ -256,6 +280,10 @@ export default function PlatformDataApp() {
       setError(\`\${missing.label} is required.\`);
       return;
     }
+    if (!session?.canWrite) {
+      setError("You can view this app, but you cannot change its data.");
+      return;
+    }
 
     try {
       setIsSaving(true);
@@ -275,7 +303,7 @@ export default function PlatformDataApp() {
 
   async function toggleRecord(record: SharedRecord) {
     const toggleKey = TOGGLE_FIELD_KEY;
-    if (!toggleKey) return;
+    if (!toggleKey || !session?.canWrite) return;
     const nextData = {
       ...record.data,
       [toggleKey]: !Boolean(record.data[toggleKey]),
@@ -302,6 +330,10 @@ export default function PlatformDataApp() {
   }
 
   async function removeRecord(recordId: string) {
+    if (!session?.canWrite) {
+      setError("You can view this app, but you cannot change its data.");
+      return;
+    }
     try {
       setError(null);
       await deletePlatformRecord(recordId);
@@ -316,13 +348,37 @@ export default function PlatformDataApp() {
       <div className="mx-auto max-w-5xl">
         <header className="border-b border-slate-200 pb-5">
           <p className="text-sm font-medium uppercase tracking-wide text-emerald-700">
-            Shared family workspace
+            {accessModeLabel()}
           </p>
           <h1 className="mt-2 text-3xl font-bold text-slate-950">{APP_NAME}</h1>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
             {APP_PURPOSE}
           </p>
+          <SessionBanner
+            session={session}
+            isLoading={isLoading}
+            onSignIn={() => session && signInToPlatform(session)}
+            onSignOut={() => {
+              signOutPlatformSession();
+              window.location.reload();
+            }}
+          />
         </header>
+
+        {session?.status === "signed_out" ? (
+          <AccessState
+            title="Sign in required"
+            message="This app is shared with specific people. Sign in with VoiceForge to continue."
+            actionLabel="Sign in with VoiceForge"
+            onAction={() => signInToPlatform(session)}
+          />
+        ) : session?.status === "no_access" ? (
+          <AccessState
+            title="No access"
+            message="You are signed in, but this app has not been shared with your VoiceForge account."
+          />
+        ) : (
+          <>
 
         <section className="mt-6 grid gap-4 sm:grid-cols-3">
           <Metric label="Total" value={records.length} />
@@ -333,23 +389,29 @@ export default function PlatformDataApp() {
         <section className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,380px)_1fr]">
           <form
             onSubmit={handleSubmit}
-            className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
+            className={\`rounded-lg border border-slate-200 bg-white p-4 shadow-sm \${!session?.canWrite ? "opacity-75" : ""}\`}
           >
             <h2 className="text-lg font-semibold text-slate-950">
               Add {ENTITY_LABEL.toLowerCase()}
             </h2>
-            <div className="mt-4 space-y-4">
-              {VISIBLE_FIELDS.map((field) => (
-                <FieldInput
-                  key={field.key}
-                  field={field}
-                  value={draft[field.key]}
-                  onChange={(value) =>
-                    setDraft((current) => ({ ...current, [field.key]: value }))
-                  }
-                />
-              ))}
-            </div>
+            {session?.canWrite ? (
+              <div className="mt-4 space-y-4">
+                {VISIBLE_FIELDS.map((field) => (
+                  <FieldInput
+                    key={field.key}
+                    field={field}
+                    value={draft[field.key]}
+                    onChange={(value) =>
+                      setDraft((current) => ({ ...current, [field.key]: value }))
+                    }
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="mt-4 rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                Your role is viewer, so adding and editing are disabled.
+              </p>
+            )}
             {error && (
               <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
                 {error}
@@ -357,7 +419,7 @@ export default function PlatformDataApp() {
             )}
             <button
               type="submit"
-              disabled={isSaving}
+              disabled={isSaving || !session?.canWrite}
               className="mt-5 w-full rounded-md bg-emerald-700 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-400"
             >
               {isSaving ? "Saving..." : "Save item"}
@@ -404,24 +466,118 @@ export default function PlatformDataApp() {
                         )}
                       </dl>
                     </div>
-                    <div className="flex items-start gap-2">
-                      {renderToggleButton(record, toggleRecord)}
-                      <button
-                        type="button"
-                        onClick={() => void removeRecord(record.id)}
-                        className="rounded-md border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                      >
-                        Delete
-                      </button>
-                    </div>
+                    {session?.canWrite && (
+                      <div className="flex items-start gap-2">
+                        {renderToggleButton(record, toggleRecord)}
+                        <button
+                          type="button"
+                          onClick={() => void removeRecord(record.id)}
+                          className="rounded-md border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
             )}
           </section>
         </section>
+          </>
+        )}
       </div>
     </main>
+  );
+}
+
+function SessionBanner({
+  session,
+  isLoading,
+  onSignIn,
+  onSignOut,
+}: {
+  session: PlatformSession | null;
+  isLoading: boolean;
+  onSignIn: () => void;
+  onSignOut: () => void;
+}) {
+  if (isLoading && !session) {
+    return (
+      <p className="mt-4 rounded-md bg-slate-100 px-3 py-2 text-sm text-slate-500">
+        Checking access...
+      </p>
+    );
+  }
+  if (!session) return null;
+  if (session.status === "anonymous") {
+    const accessName =
+      SHARING_MODEL === "public"
+        ? "Public link access"
+        : SHARING_MODEL === "private"
+          ? "Private app access"
+          : "Shared link access";
+    const accessVerb = session.canWrite ? "view and edit" : "view";
+    return (
+      <p className="mt-4 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+        {accessName} is enabled. Anyone with this link can {accessVerb}.
+      </p>
+    );
+  }
+  if (session.status === "signed_in") {
+    return (
+      <div className="mt-4 flex flex-col gap-2 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-900 sm:flex-row sm:items-center sm:justify-between">
+        <p>
+          Signed in as {session.user?.displayName || session.user?.email} - {session.role}
+        </p>
+        <button
+          type="button"
+          onClick={onSignOut}
+          className="self-start rounded-md border border-emerald-200 px-3 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-100 sm:self-auto"
+        >
+          Sign out
+        </button>
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onSignIn}
+      className="mt-4 rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800"
+    >
+      Sign in with VoiceForge
+    </button>
+  );
+}
+
+function AccessState({
+  title,
+  message,
+  actionLabel,
+  onAction,
+}: {
+  title: string;
+  message: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <section className="mt-8 rounded-lg border border-slate-200 bg-white p-8 text-center shadow-sm">
+      <h2 className="text-xl font-semibold text-slate-950">{title}</h2>
+      <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-600">
+        {message}
+      </p>
+      {actionLabel && onAction && (
+        <button
+          type="button"
+          onClick={onAction}
+          className="mt-5 rounded-md bg-emerald-700 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-800"
+        >
+          {actionLabel}
+        </button>
+      )}
+    </section>
   );
 }
 

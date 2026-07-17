@@ -43,6 +43,7 @@ export default async function AdminPage() {
     recentRuns,
     recentAudit,
     aiByApp,
+    recentMemberships,
     [{ platformEntityCount }],
     [{ platformRecordCount }],
     [{ platformMembershipCount }],
@@ -110,6 +111,20 @@ export default async function AdminPage() {
       .innerJoin(users, eq(apps.ownerId, users.id))
       .groupBy(apps.id, apps.name, users.email)
       .orderBy(desc(count())),
+    db
+      .select({
+        id: appMemberships.id,
+        appId: apps.id,
+        appName: apps.name,
+        memberEmail: users.email,
+        role: appMemberships.role,
+        updatedAt: appMemberships.updatedAt,
+      })
+      .from(appMemberships)
+      .innerJoin(apps, eq(appMemberships.appId, apps.id))
+      .innerJoin(users, eq(appMemberships.userId, users.id))
+      .orderBy(desc(appMemberships.updatedAt))
+      .limit(20),
     db.select({ platformEntityCount: count() }).from(appEntitySchemas),
     db.select({ platformRecordCount: count() }).from(appRecords),
     db.select({ platformMembershipCount: count() }).from(appMemberships),
@@ -247,6 +262,55 @@ export default async function AdminPage() {
       )}
 
       <AiModelSyncButton />
+
+      {/* App memberships */}
+      <h2 className="mt-8 text-lg font-semibold text-forge-900">
+        Recent app members
+      </h2>
+      {recentMemberships.length === 0 ? (
+        <p className="mt-2 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-400">
+          No shared app members have been added yet.
+        </p>
+      ) : (
+        <div className="mt-2 overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <table className="w-full text-left text-sm">
+            <thead className="border-b border-slate-100 text-xs text-slate-400">
+              <tr>
+                <th className="px-4 py-2">App</th>
+                <th className="px-4 py-2">Member</th>
+                <th className="px-4 py-2">Role</th>
+                <th className="px-4 py-2">Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentMemberships.map((membership) => (
+                <tr key={membership.id} className="border-b border-slate-50">
+                  <td className="px-4 py-2">
+                    <Link
+                      href={`/dashboard/apps/${membership.appId}`}
+                      className="font-medium text-forge-700 hover:underline"
+                    >
+                      {membership.appName}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-2 text-slate-500">
+                    {membership.memberEmail}
+                  </td>
+                  <td className="px-4 py-2 text-slate-500">
+                    {membership.role}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-slate-400">
+                    {membership.updatedAt
+                      .toISOString()
+                      .replace("T", " ")
+                      .slice(0, 16)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Recent builds */}
       <h2 className="mt-8 text-lg font-semibold text-forge-900">
