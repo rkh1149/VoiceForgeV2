@@ -1,5 +1,9 @@
 import { z } from "zod";
 import type { AppSpec, ComplexityResult } from "@/lib/spec";
+import {
+  DEPENDENCY_PROFILE_VALUES,
+  inferDependencyProfiles,
+} from "./build/dependencies";
 
 const capabilityTierSchema = z.enum(["personal", "shared", "advanced"]);
 
@@ -85,7 +89,7 @@ export const architecturePlanSchema = z.object({
   platformServices: z.array(platformServicePlanSchema),
   filePlan: z.array(filePlanItemSchema),
   dependencyProfile: z
-    .array(z.enum(["base", "localStorage", "platformData", "ai", "futurePlatform"]))
+    .array(z.enum(DEPENDENCY_PROFILE_VALUES))
     .describe("Approved dependency/runtime profile names"),
   buildPhases: z.array(z.string()),
   uxPlan: uxPlanSchema,
@@ -174,11 +178,7 @@ export function createFallbackArchitecturePlan(
         dependsOn: ["src/app/page.tsx", "src/components/*"],
       },
     ],
-    dependencyProfile: [
-      "base",
-      needsServerData(spec) ? "platformData" : "localStorage",
-      ...(spec.aiFeatures.length > 0 ? (["ai"] as const) : []),
-    ],
+    dependencyProfile: inferDependencyProfiles(spec),
     buildPhases: [
       "Validate requested capabilities",
       "Seed platform entity schemas",

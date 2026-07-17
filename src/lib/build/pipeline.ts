@@ -41,6 +41,7 @@ import {
 import { getGeneratedAppName } from "@/lib/generated-apps";
 import { seedPlatformEntitySchemasFromSpec } from "@/lib/platform/spec-seeding";
 import { randomBytes } from "crypto";
+import { validateGeneratedAppDependencies } from "./dependencies";
 import { loadTemplate, type FileMap } from "./template";
 import { createRunner, type Runner, type StepName } from "./runner";
 
@@ -50,8 +51,11 @@ import { createRunner, type Runner, type StepName } from "./runner";
  * All state lives in the database so the UI can poll it.
  */
 
-const STEP_ORDER: StepName[] = [
+type PipelineStepName = StepName | "dependencies";
+
+const STEP_ORDER: PipelineStepName[] = [
   "install",
+  "dependencies",
   "typecheck",
   "lint",
   "test",
@@ -71,10 +75,11 @@ class ArchitectureBlockedError extends Error {
 }
 
 const SUITE_FOR_STEP: Record<
-  StepName,
-  "typecheck" | "lint" | "unit" | "build" | "e2e"
+  PipelineStepName,
+  "typecheck" | "lint" | "unit" | "build" | "e2e" | "security"
 > = {
   install: "build",
+  dependencies: "security",
   typecheck: "typecheck",
   lint: "lint",
   test: "unit",
@@ -430,7 +435,10 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       }
 
       await log(buildRunId, `Running ${step}…`);
-      const result = await runner.run(step);
+      const result =
+        step === "dependencies"
+          ? runDependencySecurityStep(files)
+          : await runner.run(step);
 
       await db.insert(testResults).values({
         buildRunId,
@@ -668,4 +676,24 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
   } finally {
     await runner?.dispose();
   }
+}
+
+function runDependencySecurityStep(files: FileMap): {
+  step: "dependencies";
+  ok: boolean;
+  output: string;
+  durationMs: number;
+} {
+  const started = Date.now();
+  const result = validateGeneratedAppDependencies(files);
+  return {
+    step: "dependencies",
+    ok: result.ok,
+    output: result.ok
+      ? "Generated app dependency check passed."
+      : result.problems
+          .map((problem) => `${problem.path}: ${problem.message}`)
+          .join("\n"),
+    durationMs: Date.now() - started,
+  };
 }

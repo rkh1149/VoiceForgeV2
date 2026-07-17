@@ -5,6 +5,7 @@ import {
   createFallbackArchitecturePlan,
   type ArchitecturePlan,
 } from "@/lib/architecture";
+import { APPROVED_DEPENDENCY_GUIDANCE } from "../build/dependencies";
 
 const ARCHITECT_MODEL =
   process.env.OPENAI_ARCHITECT_MODEL ??
@@ -20,6 +21,7 @@ Current platform capabilities available to generated apps:
 - Locked /api/data endpoint for shared/public platform JSONB records, with optional VoiceForge member sign-in
 - VoiceForge member sign-in for generated apps, including owner/editor/viewer role enforcement
 - Anonymous shared-link apps can allow collaboration; anonymous public apps are read-only
+- Approved dependency profiles for richer UI, charts, tables, calendars, drag/drop, and CSV/PDF export
 - Unit tests, build tests, and locked browser/accessibility smoke tests
 
 Current platform capabilities NOT available yet:
@@ -31,10 +33,13 @@ Current platform capabilities NOT available yet:
 
 Rules:
 - Produce a concrete file-level and component-level plan.
+- Select dependencyProfile entries only from the approved catalogue below.
 - Be honest about unsupported capabilities. If the approved spec cannot be built faithfully with the current platform, set capabilityValidation.canBuildNow=false and list blockingIssues.
 - If a personal/browser-only approximation would be misleading for the user, block instead of downgrading silently.
 - Use empty arrays where a section does not apply.
-- Do not invent new platform capabilities.`;
+- Do not invent new platform capabilities.
+
+${APPROVED_DEPENDENCY_GUIDANCE}`;
 
 export async function runArchitectAgent(input: {
   spec: AppSpec;

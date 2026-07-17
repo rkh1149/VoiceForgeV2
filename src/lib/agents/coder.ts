@@ -7,6 +7,7 @@ import {
   type DiagnosticsContext,
   type FileOperation,
 } from "@/lib/agents/file-tools";
+import { APPROVED_DEPENDENCY_GUIDANCE } from "../build/dependencies";
 
 /**
  * Code Agent + Debug Agent.
@@ -24,6 +25,9 @@ const SHARED_RULES = `Rules for all files you mutate:
 - The app must work through browser code plus locked platform endpoints only: no direct databases, no API keys, no arbitrary external services. If data is personal/browser-only, use localStorage inside client components ("use client") with a typed wrapper in src/lib/storage.ts. If the architecture data model uses storage:"platformData", use the locked src/lib/platform-data.ts client and the locked /api/data endpoint as the source of truth instead of localStorage.
 - src/app/api/ai/route.ts and src/app/api/data/route.ts are LOCKED platform files — never modify, overwrite, or reimplement them, and never create any other file under src/app/api/.
 - For platform data, import from src/lib/platform-data.ts. Call listPlatformRecords, createPlatformRecord, updatePlatformRecord, and deletePlatformRecord from client components. For apps that require sign-in or roles, also call getPlatformSession, signInToPlatform, and signOutPlatformSession; show signed-out, no-access, current-user, and read-only viewer states, and hide/disable write controls when session.canWrite is false. Use the entity keys named in the architecture/spec. Always show loading and error states. NEVER reference VOICEFORGE_APP_TOKEN, VOICEFORGE_PUBLIC_URL, or the VoiceForge platform URL in browser code.
+- Stage 10 reusable modules are available in the locked template. Prefer importing from src/lib/voiceforge-modules.ts and src/components/voiceforge-reusable.tsx for common CRUD helpers, search/filter/sort, comments, activity history, dashboard charts, CSV import/export, date/calendar controls, drag/drop lists, and role-aware shells.
+- You may import only approved packages from the catalogue below. Never ask to add a package, never edit package.json, and never use CDN/external script URLs.
+${APPROVED_DEPENDENCY_GUIDANCE}
 - CRITICAL: every page is prerendered on the server at build time, where window/localStorage do not exist. Never touch window or localStorage at module scope, in useState initializers, or during render — ONLY inside useEffect. Initialize state to defaults, then load saved data in a useEffect after mount.
 - Do not create pages/, src/pages/, 404.tsx, 500.tsx, _document, or _app files — this is App Router only (use not-found.tsx / error.tsx if genuinely needed).
 - NEVER reference static asset files (mp3, images, fonts, videos) — you cannot create them, so any such path will 404. And NEVER reference EXTERNAL media URLs either: no stock-photo sites, no Unsplash, no placeholder services (placehold.co etc.), no CDNs, no invented hostnames — the app must be fully self-contained and the browser test fails on ANY external request. For sound, synthesize it with the Web Audio API. For graphics and decoration, use inline SVG, CSS gradients, or emoji. For photos the user mentions, build an upload feature (stored in localStorage as data URLs). For generated pictures, use the AI image mode if this app has AI features.

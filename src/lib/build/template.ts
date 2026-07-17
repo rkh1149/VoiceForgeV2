@@ -30,6 +30,8 @@ const PROTECTED_FILES = new Set([
   "src/app/globals.css",
   "src/lib/template.test.ts",
   "src/lib/platform-data.ts", // locked platform data browser client (Stage 9B)
+  "src/lib/voiceforge-modules.ts", // locked reusable helpers (Stage 10)
+  "src/components/voiceforge-reusable.tsx", // locked reusable UI components (Stage 10)
   "src/app/api/ai/route.ts", // locked AI endpoint (Stage 7)
   "src/app/api/data/route.ts", // locked platform data endpoint (Stage 9B)
   "e2e/smoke.spec.ts", // locked browser/accessibility smoke test
