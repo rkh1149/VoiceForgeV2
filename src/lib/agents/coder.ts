@@ -7,6 +7,10 @@ import {
   type DiagnosticsContext,
   type FileOperation,
 } from "@/lib/agents/file-tools";
+import {
+  selectChangeWorkflow,
+  type ChangeWorkflow,
+} from "@/lib/agents/change-workflow";
 import { APPROVED_DEPENDENCY_GUIDANCE } from "../build/dependencies";
 
 /**
@@ -113,6 +117,61 @@ const CHANGE_GENERATION_PHASES: GenerationPhase[] = [
   },
 ];
 
+const DEEP_DIAGNOSTIC_CHANGE_PHASES: GenerationPhase[] = [
+  {
+    id: "classify-change",
+    label: "Classify change and acceptance criteria",
+    objective:
+      "Step 1: classify whether the request is a bug fix or feature change, restate the exact user-visible failure/change, and define concrete acceptance criteria before touching code.",
+    maxTurns: 8,
+    allowMutations: false,
+  },
+  {
+    id: "map-current-app",
+    label: "Map current app codebase",
+    objective:
+      "Step 2: use inspect_app_map, list_files, search_code, and selective reads to map routes, components, domain libraries, tests, storage/platform-data calls, and workflow entry points. Broad source mapping is allowed in this diagnostic phase, but keep the notes focused.",
+    maxTurns: 16,
+    allowMutations: false,
+  },
+  {
+    id: "trace-workflow",
+    label: "Trace broken workflow end to end",
+    objective:
+      "Step 3: trace the requested workflow end to end through page, component, form/control handler, validation, data payload, platform-data or localStorage wrapper, state refresh, rendering, and persistence. Identify the likely root cause and the exact files to change.",
+    maxTurns: 18,
+    allowMutations: false,
+  },
+  {
+    id: "write-reproduction-tests",
+    label: "Write reproduction tests first",
+    objective:
+      "Step 4: add or update deterministic unit/workflow tests that reproduce the requested bug or prove the requested behavior before making the source fix. For Save-style issues, test fill fields, click Save, visible result, and persistence/refresh when practical.",
+    maxTurns: 20,
+  },
+  {
+    id: "apply-root-cause-fix",
+    label: "Apply root-cause fix",
+    objective:
+      "Step 5: patch the actual root cause identified by the workflow trace. Fix the workflow rather than only loosening tests. Preserve unrelated routes, styling, data shapes, and existing behavior.",
+    maxTurns: 30,
+  },
+  {
+    id: "browser-regression-tests",
+    label: "Add browser regression coverage",
+    objective:
+      "Step 6: add or update Playwright tests under e2e/generated/ for the user-visible workflow when it can be tested reliably. Cover the real browser path and avoid brittle selectors, duplicate smoke coverage, external requests, or arbitrary waits.",
+    maxTurns: 18,
+  },
+  {
+    id: "stabilize-escalation",
+    label: "Stabilize repeated-change fix",
+    objective:
+      "Step 7: when this mode was triggered by prior failed changes or bug-like wording, review the previous notes and tests, make final small corrections, and confirm the fix changed strategy from symptom-patching to root-cause repair.",
+    maxTurns: 14,
+  },
+];
+
 export type GenerationPhaseResult = {
   id: string;
   label: string;
@@ -190,12 +249,23 @@ export async function runChangeCodeAgent(input: {
   changeSummary: string;
   currentFiles: FileMap; // current generated-app files from the live app
   architecture?: ArchitecturePlan;
+  forceDeepDiagnostic?: boolean;
+  previousFailedChangeCount?: number;
 }): Promise<CodegenResult> {
   const workspaceFiles: FileMap = { ...input.currentFiles };
   const operations: FileOperation[] = [];
   const phaseResults: GenerationPhaseResult[] = [];
+  const changeWorkflow = selectChangeWorkflow({
+    changeSummary: input.changeSummary,
+    forceDeepDiagnostic: input.forceDeepDiagnostic,
+    previousFailedChangeCount: input.previousFailedChangeCount,
+  });
+  const phases =
+    changeWorkflow.mode === "deep-diagnostic"
+      ? DEEP_DIAGNOSTIC_CHANGE_PHASES
+      : CHANGE_GENERATION_PHASES;
 
-  for (const phase of CHANGE_GENERATION_PHASES) {
+  for (const phase of phases) {
     const phaseResult = await runGenerationPhase({
       mode: "change",
       phase,
@@ -205,6 +275,7 @@ export async function runChangeCodeAgent(input: {
       operations,
       previousPhases: phaseResults,
       changeSummary: input.changeSummary,
+      changeWorkflow,
     });
     phaseResults.push(phaseResult);
   }
@@ -294,6 +365,7 @@ async function runGenerationPhase(input: {
   operations: FileOperation[];
   previousPhases: GenerationPhaseResult[];
   changeSummary?: string;
+  changeWorkflow?: ChangeWorkflow;
 }): Promise<GenerationPhaseResult> {
   const operationStart = input.operations.length;
   const agent = new Agent({
@@ -303,6 +375,7 @@ async function runGenerationPhase(input: {
 
 Current phase: ${input.phase.label}
 Objective: ${input.phase.objective}
+${changeWorkflowInstruction(input.changeWorkflow)}
 
 ${SHARED_RULES}`,
     tools: createAgentFileTools(input.workspaceFiles, {
@@ -322,7 +395,7 @@ ${SHARED_RULES}`,
       : "";
   const change =
     input.mode === "change"
-      ? `\nREQUESTED CHANGE:\n${input.changeSummary ?? "Apply the approved specification update."}\n`
+      ? `\nREQUESTED CHANGE:\n${input.changeSummary ?? "Apply the approved specification update."}\n${changeWorkflowMessage(input.changeWorkflow)}`
       : "";
 
   const message = `${input.mode === "new" ? "Build" : "Update"} this app through the current phase only.
@@ -333,7 +406,9 @@ ${architectureNote(input.architecture)}
 
 Use the file tools instead of assuming file contents. ${
     input.mode === "change"
-      ? "Do not read every file; search and inspect only likely impacted files."
+      ? input.changeWorkflow?.mode === "deep-diagnostic"
+        ? "Deep diagnostic mode is active: start with inspect_app_map when mapping or tracing, then read every file that participates in the requested workflow. You may inspect broadly to understand cross-file behavior, but keep edits scoped to the root cause."
+        : "Standard change mode is active: search and inspect the files likely impacted by the targeted change."
       : "List files first if you need to know what earlier phases created."
   }
 ${aiUsageNote(input.spec)}`;
@@ -349,6 +424,31 @@ ${aiUsageNote(input.spec)}`;
     workspaceFiles: input.workspaceFiles,
     notes: extractText(result.output),
   });
+}
+
+function changeWorkflowInstruction(workflow?: ChangeWorkflow): string {
+  if (!workflow || workflow.mode !== "deep-diagnostic") return "";
+  return `
+
+DEEP DIAGNOSTIC CHANGE MODE:
+- Trigger reasons: ${workflow.reasons.join("; ")}.
+- Follow the seven-step workflow across the phases: classify, map, trace, reproduce with tests, fix root cause, add browser coverage, and stabilize repeated-change fixes.
+- Treat Save/Submit bugs as cross-cutting until proven otherwise: trace form state, validation, payload shape, platform-data/localStorage calls, state refresh, rendering, and persistence.
+- Do not only rewrite tests to pass. A reproduction test may be updated for robustness, but the source workflow must be repaired when behavior is broken.
+- If this mode was triggered after failed changes, change strategy and explicitly avoid repeating a symptom-only patch.`;
+}
+
+function changeWorkflowMessage(workflow?: ChangeWorkflow): string {
+  if (!workflow) return "";
+  const focus = workflow.acceptanceFocus
+    .map((item) => `- ${item}`)
+    .join("\n");
+  return `
+CHANGE WORKFLOW MODE: ${workflow.mode}
+MODE REASONS: ${workflow.reasons.join("; ")}
+ACCEPTANCE FOCUS:
+${focus}
+`;
 }
 
 function makePhaseResult(input: {

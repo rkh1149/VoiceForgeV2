@@ -11,6 +11,7 @@ type Proposal = {
   requirementId: string;
   approvalId: string;
   version: number;
+  forceDeepDiagnostic: boolean;
 };
 
 export default function PlannerChat({
@@ -27,6 +28,7 @@ export default function PlannerChat({
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [decision, setDecision] = useState<"approved" | "rejected" | null>(null);
+  const [forceDeepDiagnostic, setForceDeepDiagnostic] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -47,7 +49,12 @@ export default function PlannerChat({
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId, message, appId }),
+        body: JSON.stringify({
+          conversationId,
+          message,
+          appId,
+          forceDeepDiagnostic: appId ? forceDeepDiagnostic : false,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Something went wrong.");
@@ -140,6 +147,11 @@ export default function PlannerChat({
             Read the plan above. Approve it to queue the build, or keep
             chatting to change it.
           </p>
+          {appId && proposal.forceDeepDiagnostic && (
+            <p className="mt-2 text-xs font-medium text-forge-700">
+              Deep Diagnostic Change Mode will be used for this change.
+            </p>
+          )}
           <div className="mt-3 flex gap-2">
             <button
               onClick={() => decide("approved")}
@@ -178,28 +190,50 @@ export default function PlannerChat({
       )}
 
       {/* Input */}
-      <div className="flex gap-2 border-t border-slate-200 p-3">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          rows={1}
-          maxLength={2000}
-          placeholder="Type your message…"
-          className="max-h-32 flex-1 resize-y rounded-xl border border-slate-300 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-forge-500 focus:outline-none"
-        />
-        <button
-          onClick={send}
-          disabled={busy || !input.trim()}
-          className="rounded-xl bg-forge-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-forge-700 disabled:opacity-40"
-        >
-          Send
-        </button>
+      <div className="border-t border-slate-200 p-3">
+        {appId && (
+          <label className="mb-3 flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={forceDeepDiagnostic}
+              onChange={(e) => setForceDeepDiagnostic(e.target.checked)}
+              disabled={busy}
+              className="mt-1 h-4 w-4 rounded border-slate-300 text-forge-600 focus:ring-forge-500"
+            />
+            <span>
+              <span className="block font-semibold text-slate-800">
+                Use Deep Diagnostic Change Mode
+              </span>
+              <span className="block text-xs text-slate-500">
+                Slower, but better for tricky bugs because VoiceForge maps the
+                app, traces the workflow, and adds regression tests.
+              </span>
+            </span>
+          </label>
+        )}
+        <div className="flex gap-2">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            rows={1}
+            maxLength={2000}
+            placeholder="Type your message…"
+            className="max-h-32 flex-1 resize-y rounded-xl border border-slate-300 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-forge-500 focus:outline-none"
+          />
+          <button
+            onClick={send}
+            disabled={busy || !input.trim()}
+            className="rounded-xl bg-forge-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-forge-700 disabled:opacity-40"
+          >
+            Send
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   architecturePlans,
@@ -23,6 +23,7 @@ import {
   runDebugAgent,
   type CodegenResult,
 } from "@/lib/agents/coder";
+import { selectChangeWorkflow } from "@/lib/agents/change-workflow";
 import {
   canUsePlatformDataStarter,
   generatePlatformDataStarterApp,
@@ -327,6 +328,20 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
           .where(eq(changeRequests.requirementId, requirement.id))
           .limit(1)
       : [];
+    const priorFailedChangeCount = changeMode
+      ? (
+          await db
+            .select({ id: changeRequests.id })
+            .from(changeRequests)
+            .where(
+              and(
+                eq(changeRequests.appId, app.id),
+                eq(changeRequests.status, "failed"),
+              ),
+            )
+            .limit(10)
+        ).length
+      : 0;
 
     // 1. Assemble files: locked (always-fresh) template + app code.
     await log(buildRunId, "Loading app template…");
@@ -357,12 +372,26 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         buildRunId,
         `Applying change: ${changeRequest?.description ?? "updated specification"}`,
       );
+      const changeWorkflow = selectChangeWorkflow({
+        changeSummary:
+          changeRequest?.description ?? "Apply the updated specification.",
+        forceDeepDiagnostic: changeRequest?.forceDeepDiagnostic ?? false,
+        previousFailedChangeCount: priorFailedChangeCount,
+      });
+      await log(
+        buildRunId,
+        changeWorkflow.mode === "deep-diagnostic"
+          ? `Change workflow: Deep Diagnostic Change Mode (${changeWorkflow.reasons.join("; ")}).`
+          : "Change workflow: standard targeted change mode.",
+      );
       generated = await runChangeCodeAgent({
         spec,
         changeSummary:
           changeRequest?.description ?? "Apply the updated specification.",
         currentFiles: agentVisibleFiles(files),
         architecture: architectureForStorage,
+        forceDeepDiagnostic: changeRequest?.forceDeepDiagnostic ?? false,
+        previousFailedChangeCount: priorFailedChangeCount,
       });
     } else {
       await log(buildRunId, `Generating code for "${app.name}"…`);

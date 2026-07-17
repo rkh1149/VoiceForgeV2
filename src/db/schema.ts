@@ -331,6 +331,9 @@ export const changeRequests = pgTable(
       .notNull()
       .references(() => users.id),
     description: text("description").notNull(),
+    forceDeepDiagnostic: boolean("force_deep_diagnostic")
+      .notNull()
+      .default(false),
     status: changeRequestStatus("status").notNull().default("intake"),
     requirementId: uuid("requirement_id").references(() => requirements.id),
     createdAt: timestamp("created_at", { withTimezone: true })

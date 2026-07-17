@@ -23,6 +23,7 @@ type Proposal = {
   requirementId: string;
   approvalId: string;
   version: number;
+  forceDeepDiagnostic: boolean;
 };
 
 const MAX_SESSION_MS = 10 * 60_000; // hard stop after 10 minutes (cost)

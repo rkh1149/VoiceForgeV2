@@ -9,6 +9,7 @@ import {
 
 const MAX_READ_CHARS = 24_000;
 const MAX_SEARCH_RESULTS = 40;
+const MAX_APP_MAP_MATCHES = 80;
 
 export type FileOperation = {
   operation: "write" | "patch" | "delete" | "rename";
@@ -104,6 +105,117 @@ export function searchAgentCode(
   }
 
   return results.length > 0 ? results : ["No matches."];
+}
+
+export function inspectAgentAppMap(files: FileMap): string {
+  const readablePaths = sortedReadablePaths(files);
+  const routes = readablePaths.filter(
+    (p) =>
+      p.startsWith("src/app/") &&
+      (p.endsWith("/page.tsx") ||
+        p.endsWith("/layout.tsx") ||
+        p.endsWith("/error.tsx") ||
+        p.endsWith("/not-found.tsx")),
+  );
+  const components = readablePaths.filter((p) => p.startsWith("src/components/"));
+  const libs = readablePaths.filter((p) => p.startsWith("src/lib/"));
+  const tests = readablePaths.filter(
+    (p) =>
+      p.endsWith(".test.ts") ||
+      p.endsWith(".test.tsx") ||
+      p.endsWith(".spec.ts") ||
+      p.endsWith(".spec.tsx"),
+  );
+
+  const dataTouchpoints = collectLineMatches(files, readablePaths, [
+    "platform-data",
+    "listPlatformRecords",
+    "createPlatformRecord",
+    "updatePlatformRecord",
+    "deletePlatformRecord",
+    "getPlatformSession",
+    "localStorage",
+    "storage",
+  ]);
+  const workflowTouchpoints = collectLineMatches(files, readablePaths, [
+    "onSubmit",
+    "handleSubmit",
+    "submit",
+    "Save",
+    "save",
+    "button",
+    "form",
+    "create",
+    "update",
+    "delete",
+    "search",
+    "filter",
+    "sort",
+    "drag",
+    "drop",
+    "export",
+    "CSV",
+    "comment",
+  ]);
+  const imports = collectImportEdges(files, readablePaths);
+
+  return [
+    "APP SOURCE MAP",
+    formatSection("Routes", routes),
+    formatSection("Components", components),
+    formatSection("Libraries", libs),
+    formatSection("Tests", tests),
+    formatSection("Data/storage touchpoints", dataTouchpoints),
+    formatSection("Workflow/control touchpoints", workflowTouchpoints),
+    formatSection("Internal import edges", imports),
+  ].join("\n\n");
+}
+
+function collectLineMatches(
+  files: FileMap,
+  paths: string[],
+  needles: string[],
+): string[] {
+  const lowerNeedles = needles.map((needle) => needle.toLowerCase());
+  const matches: string[] = [];
+  for (const filePath of paths) {
+    const content = files[filePath];
+    if (content === undefined) continue;
+    const lines = content.split(/\r?\n/);
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
+      const lower = line.toLowerCase();
+      if (!lowerNeedles.some((needle) => lower.includes(needle))) continue;
+      matches.push(`${filePath}:${index + 1}: ${line.trim()}`);
+      if (matches.length >= MAX_APP_MAP_MATCHES) return matches;
+    }
+  }
+  return matches;
+}
+
+function collectImportEdges(files: FileMap, paths: string[]): string[] {
+  const imports: string[] = [];
+  const importPattern = /from\s+["']([^"']+)["']/g;
+  for (const filePath of paths) {
+    const content = files[filePath];
+    if (content === undefined) continue;
+    for (const line of content.split(/\r?\n/)) {
+      importPattern.lastIndex = 0;
+      const match = importPattern.exec(line);
+      const target = match?.[1];
+      if (!target || (!target.startsWith("@/") && !target.startsWith("."))) {
+        continue;
+      }
+      imports.push(`${filePath} -> ${target}`);
+      if (imports.length >= MAX_APP_MAP_MATCHES) return imports;
+    }
+  }
+  return imports;
+}
+
+function formatSection(label: string, values: string[]): string {
+  if (values.length === 0) return `${label}:\n- none found`;
+  return `${label}:\n${values.map((value) => `- ${value}`).join("\n")}`;
 }
 
 export function writeAgentFile(
@@ -263,6 +375,13 @@ export function createAgentFileTools(
         maxResults: z.number().int().min(1).max(MAX_SEARCH_RESULTS).optional(),
       }),
       execute: async (input) => searchAgentCode(files, input).join("\n"),
+    }),
+    tool({
+      name: "inspect_app_map",
+      description:
+        "Summarize visible generated-app routes, components, libraries, tests, data/storage touchpoints, workflow touchpoints, and internal imports before a deep diagnostic change.",
+      parameters: z.object({}),
+      execute: async () => inspectAgentAppMap(files),
     }),
     tool({
       name: "inspect_test_results",

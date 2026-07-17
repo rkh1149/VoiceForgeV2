@@ -21,6 +21,7 @@ const bodySchema = z.object({
   conversationId: z.string().uuid().nullish(),
   // Present when the user is changing an existing app (change flow).
   appId: z.string().uuid().nullish(),
+  forceDeepDiagnostic: z.boolean().default(false),
   message: z.string().min(1).max(2000),
 });
 
@@ -42,7 +43,12 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
-  const { conversationId, appId: requestedAppId, message } = parsed.data;
+  const {
+    conversationId,
+    appId: requestedAppId,
+    forceDeepDiagnostic,
+    message,
+  } = parsed.data;
 
   const db = getDb();
 
@@ -164,6 +170,7 @@ export async function POST(req: Request) {
       plainSummary: result.reply,
       changeMode,
       changeSummary,
+      forceDeepDiagnostic: changeMode ? forceDeepDiagnostic : false,
     });
   }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   deleteAgentFile,
+  inspectAgentAppMap,
   patchAgentFile,
   readAgentFile,
   renameAgentFile,
@@ -116,5 +117,27 @@ describe("agent file operations", () => {
       "src/app/page.tsx:1: export default function Home() { return <h1>Reading</h1>; }",
     ]);
     expect(searchAgentCode(files, { query: "SECRET" })).toEqual(["No matches."]);
+  });
+
+  it("summarizes routes, storage touchpoints, workflow handlers, and imports", () => {
+    const files: FileMap = {
+      "src/app/page.tsx": 'import { Planner } from "@/components/Planner";',
+      "src/components/Planner.tsx":
+        'import { saveItem } from "@/lib/storage";\nexport function Planner() { return <form onSubmit={() => saveItem()}>Save</form>; }',
+      "src/lib/storage.ts":
+        "export function saveItem() { localStorage.setItem('items', '[]'); }",
+      "e2e/generated/planner.spec.ts": "test('save works', async () => {});",
+      ".env.local": "SECRET=value",
+    };
+
+    const appMap = inspectAgentAppMap(files);
+
+    expect(appMap).toContain("Routes:");
+    expect(appMap).toContain("src/app/page.tsx");
+    expect(appMap).toContain("src/components/Planner.tsx");
+    expect(appMap).toContain("localStorage");
+    expect(appMap).toContain("onSubmit");
+    expect(appMap).toContain("src/app/page.tsx -> @/components/Planner");
+    expect(appMap).not.toContain("SECRET");
   });
 });

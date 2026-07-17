@@ -18,6 +18,7 @@ export type ProposalPayload = {
   requirementId: string;
   approvalId: string;
   version: number;
+  forceDeepDiagnostic: boolean;
 };
 
 /**
@@ -33,6 +34,7 @@ export async function persistProposal(opts: {
   plainSummary: string;
   changeMode: boolean;
   changeSummary?: string | null;
+  forceDeepDiagnostic?: boolean;
 }): Promise<ProposalPayload> {
   const { user, conversationId, plainSummary, changeMode } = opts;
   const spec = normalizeAppSpec(opts.spec);
@@ -123,6 +125,7 @@ export async function persistProposal(opts: {
       appId,
       userId: user.id,
       description: opts.changeSummary,
+      forceDeepDiagnostic: opts.forceDeepDiagnostic ?? false,
       status: "awaiting_approval",
       requirementId: requirement.id,
     });
@@ -137,6 +140,8 @@ export async function persistProposal(opts: {
       version,
       appName: spec.appName,
       complexity,
+      forceDeepDiagnostic:
+        changeMode && opts.forceDeepDiagnostic ? true : undefined,
     },
   });
 
@@ -146,6 +151,7 @@ export async function persistProposal(opts: {
     requirementId: requirement.id,
     approvalId: approval.id,
     version,
+    forceDeepDiagnostic: changeMode ? (opts.forceDeepDiagnostic ?? false) : false,
   };
 }
 
