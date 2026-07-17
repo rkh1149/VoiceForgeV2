@@ -9,10 +9,12 @@ import {
   apps,
   buildRuns,
   deployments,
+  users,
 } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import BuildStatus from "@/components/BuildStatus";
 import DeleteAppButton from "@/components/DeleteAppButton";
+import PlatformMembersManager from "@/components/PlatformMembersManager";
 import VersionHistory from "@/components/VersionHistory";
 import { getCurrentProductionDeploymentId } from "@/lib/vercel";
 
@@ -39,6 +41,15 @@ export default async function AppDetailPage({
     .limit(1);
   const app = rows[0];
   if (!app) notFound();
+
+  const [owner] = await db
+    .select({
+      email: users.email,
+      displayName: users.displayName,
+    })
+    .from(users)
+    .where(eq(users.id, app.ownerId))
+    .limit(1);
 
   const productionVersions = await db
     .select({
@@ -130,6 +141,16 @@ export default async function AppDetailPage({
           </div>
         </dl>
       </div>
+
+      {(app.ownerId === user.id || user.role === "admin") &&
+        owner &&
+        dataEntityCount > 0 && (
+          <PlatformMembersManager
+            appId={app.id}
+            ownerEmail={owner.email}
+            ownerName={owner.displayName}
+          />
+        )}
 
       {runHistory.length > 1 && (
         <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

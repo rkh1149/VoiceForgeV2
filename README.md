@@ -4,7 +4,13 @@ A voice-controlled app builder for family and friends. Describe an app in plain 
 
 This repository is the isolated V2 line. V1 is frozen at the `voiceforge-v1-freeze-2026-07-15` tag in the original `VoiceForge` repository. V2 generated apps use the `voiceforgev2-*` GitHub/Vercel prefix so they do not collide with V1 generated apps.
 
-Current progress: **Stage 8C — phased generation and code navigation tools.** Code generation now runs through visible phases: foundation, components, pages/workflows, unit/workflow tests, and browser acceptance tests. Agents can safely `list_files`, `read_file`, `search_code`, `write_file`, `patch_file`, `delete_file`, `rename_file`, and inspect test/type/browser failures while preserving the locked generated-app path policy. Change builds now inspect targeted files through tools instead of pasting every source file into one large prompt, and per-phase notes are stored in the build log.
+Current progress: **Stage 9C — platform data members and roles.** Owners can manage app-level platform data access from the app dashboard by adding existing VoiceForge V2 users as owner, editor, or viewer, changing their role, and removing access. The locked platform data service enforces those roles for signed-in VoiceForge-side APIs, while generated shared apps from Stage 9B continue to use the app's server-side platform token for shared no-sign-in workflows.
+
+Stage 9B — generated shared apps use platform data. Shared app builds can seed platform JSONB entity schemas, generate a locked `src/lib/platform-data.ts` browser client plus same-origin `/api/data` proxy, provision generated-app Vercel environment variables, and build shared CRUD apps that persist beyond one browser/device. Hosted Vercel builds use a deterministic fast starter for simple shared-data apps so they stay under function-duration limits.
+
+Stage 9A — platform data foundation. VoiceForge V2 has generic JSONB application records, entity metadata, record versions, per-app record events, app memberships, role checks, rate limits, validation, and locked platform CRUD APIs.
+
+Stage 8C — phased generation and code navigation tools. Code generation now runs through visible phases: foundation, components, pages/workflows, unit/workflow tests, and browser acceptance tests. Agents can safely `list_files`, `read_file`, `search_code`, `write_file`, `patch_file`, `delete_file`, `rename_file`, and inspect test/type/browser failures while preserving the locked generated-app path policy. Change builds now inspect targeted files through tools instead of pasting every source file into one large prompt, and per-phase notes are stored in the build log.
 
 Hosted builds on Vercel Hobby use the deterministic architecture planner by default to stay under the 300-second function limit while preserving the Stage 8B capability gate. Set `VOICEFORGE_ARCHITECT_MODE=agent` only on a plan/runtime with enough function duration for the extra model call.
 
