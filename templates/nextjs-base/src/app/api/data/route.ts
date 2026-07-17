@@ -41,6 +41,35 @@ type LocalRecord = {
   updatedAt: string;
 };
 
+type LocalFieldSchema = {
+  key?: unknown;
+  label?: unknown;
+  type?: unknown;
+  required?: unknown;
+  options?: unknown;
+};
+
+type LocalEntitySchema = {
+  key?: unknown;
+  name?: unknown;
+  displayName?: unknown;
+  fields?: unknown;
+};
+
+type NormalizedLocalFieldSchema = {
+  key: string;
+  label: string;
+  type: string;
+  required: boolean;
+  options: string[];
+};
+
+type NormalizedLocalEntitySchema = {
+  key: string;
+  name: string;
+  fields: NormalizedLocalFieldSchema[];
+};
+
 const ACTIONS = new Set<DataAction>([
   "session",
   "listSchemas",
@@ -173,16 +202,34 @@ function handleLocalData(body: DataBody & { action: DataAction }) {
         },
       });
     case "listSchemas":
-      return NextResponse.json({ entities: [] });
+      return NextResponse.json({
+        entities: getLocalSchemas().map((schema) => ({
+          id: schema.key,
+          appId: "local",
+          entityKey: schema.key,
+          displayName: schema.name,
+          definition: schema,
+          createdAt: now,
+          updatedAt: now,
+        })),
+      });
     case "listRecords": {
       if (typeof body.entityKey !== "string") {
         return NextResponse.json({ error: "entityKey required." }, { status: 400 });
+      }
+      const entity = getLocalEntity(body.entityKey);
+      if (!entity) {
+        return localPlatformError(
+          404,
+          "entity_not_found",
+          `Data entity "${normalizeEntityKey(body.entityKey)}" is not defined for this app.`,
+        );
       }
       const includeDeleted = body.includeDeleted === true;
       const result = [...records.values()]
         .filter(
           (record) =>
-            record.entityKey === body.entityKey &&
+            record.entityKey === entity.key &&
             (includeDeleted || !record.deletedAt),
         )
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -202,12 +249,29 @@ function handleLocalData(body: DataBody & { action: DataAction }) {
       if (typeof body.entityKey !== "string") {
         return NextResponse.json({ error: "entityKey required." }, { status: 400 });
       }
+      const entity = getLocalEntity(body.entityKey);
+      if (!entity) {
+        return localPlatformError(
+          404,
+          "entity_not_found",
+          `Data entity "${normalizeEntityKey(body.entityKey)}" is not defined for this app.`,
+        );
+      }
+      const validation = validateLocalRecordData(entity, body.data);
+      if (!validation.ok) {
+        return localPlatformError(
+          400,
+          "invalid_record",
+          "Record data failed validation.",
+          validation.issues,
+        );
+      }
       const record: LocalRecord = {
         id: crypto.randomUUID(),
         appId: "local",
-        entityKey: body.entityKey,
+        entityKey: entity.key,
         ownerId: null,
-        data: body.data ?? {},
+        data: validation.data,
         version: 1,
         deletedAt: null,
         createdAt: now,
@@ -224,9 +288,26 @@ function handleLocalData(body: DataBody & { action: DataAction }) {
       if (!record || record.deletedAt) {
         return NextResponse.json({ error: "Record not found." }, { status: 404 });
       }
+      const entity = getLocalEntity(record.entityKey);
+      if (!entity) {
+        return localPlatformError(
+          404,
+          "entity_not_found",
+          `Data entity "${normalizeEntityKey(record.entityKey)}" is not defined for this app.`,
+        );
+      }
+      const validation = validateLocalRecordData(entity, body.data);
+      if (!validation.ok) {
+        return localPlatformError(
+          400,
+          "invalid_record",
+          "Record data failed validation.",
+          validation.issues,
+        );
+      }
       const updated = {
         ...record,
-        data: body.data ?? {},
+        data: validation.data,
         version: record.version + 1,
         updatedAt: now,
       };
@@ -251,6 +332,188 @@ function handleLocalData(body: DataBody & { action: DataAction }) {
 function getLocalRecords(): Map<string, LocalRecord> {
   globalStore.__voiceforgeLocalData ??= new Map<string, LocalRecord>();
   return globalStore.__voiceforgeLocalData;
+}
+
+function getLocalSchemas(): NormalizedLocalEntitySchema[] {
+  const raw = process.env.VOICEFORGE_PLATFORM_SCHEMA_JSON;
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map(normalizeLocalEntitySchema)
+    .filter((schema): schema is NormalizedLocalEntitySchema => Boolean(schema));
+}
+
+function getLocalEntity(entityKey: string): NormalizedLocalEntitySchema | null {
+  const schemas = getLocalSchemas();
+  if (schemas.length === 0) {
+    return {
+      key: normalizeEntityKey(entityKey),
+      name: entityKey,
+      fields: [],
+    };
+  }
+  const normalizedKey = normalizeEntityKey(entityKey);
+  return schemas.find((schema) => schema.key === normalizedKey) ?? null;
+}
+
+function normalizeLocalEntitySchema(
+  input: unknown,
+): NormalizedLocalEntitySchema | null {
+  const entity = input as LocalEntitySchema;
+  const key = normalizeEntityKey(
+    stringValue(entity.key) || stringValue(entity.name) || "item",
+  );
+  const fields = Array.isArray(entity.fields)
+    ? entity.fields
+        .map(normalizeLocalFieldSchema)
+        .filter((field): field is NormalizedLocalFieldSchema => Boolean(field))
+    : [];
+  return {
+    key,
+    name: stringValue(entity.name) || stringValue(entity.displayName) || key,
+    fields,
+  };
+}
+
+function normalizeLocalFieldSchema(
+  input: unknown,
+): NormalizedLocalFieldSchema | null {
+  const field = input as LocalFieldSchema;
+  const label = stringValue(field.label) || stringValue(field.key);
+  if (!label) return null;
+  const options = Array.isArray(field.options)
+    ? field.options.map(stringValue).filter(Boolean)
+    : [];
+  return {
+    key: normalizeEntityKey(stringValue(field.key) || label),
+    label,
+    type: stringValue(field.type) || "text",
+    required: field.required === true,
+    options,
+  };
+}
+
+function validateLocalRecordData(
+  entity: NormalizedLocalEntitySchema,
+  input: unknown,
+): { ok: true; data: Record<string, unknown> } | { ok: false; issues: string[] } {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, issues: ["Record data must be a JSON object."] };
+  }
+
+  const data = input as Record<string, unknown>;
+  if (entity.fields.length === 0) return { ok: true, data };
+
+  const issues: string[] = [];
+  const knownKeys = new Set(entity.fields.map((field) => field.key));
+  for (const key of Object.keys(data)) {
+    if (!knownKeys.has(key)) {
+      issues.push(`Unknown field "${key}".`);
+    }
+  }
+
+  for (const field of entity.fields) {
+    const value = data[field.key];
+    if (isMissing(value)) {
+      if (field.required) issues.push(`${field.label} is required.`);
+      continue;
+    }
+    const issue = validateLocalFieldValue(field, value);
+    if (issue) issues.push(issue);
+  }
+
+  return issues.length > 0 ? { ok: false, issues } : { ok: true, data };
+}
+
+function validateLocalFieldValue(
+  field: NormalizedLocalFieldSchema,
+  value: unknown,
+): string | null {
+  switch (field.type) {
+    case "text":
+    case "long_text":
+    case "image":
+    case "file":
+    case "relation":
+      return typeof value === "string" ? null : `${field.label} must be text.`;
+    case "date":
+      return typeof value === "string" && isValidDateValue(value)
+        ? null
+        : `${field.label} must be a valid date.`;
+    case "datetime":
+      return typeof value === "string" && !Number.isNaN(Date.parse(value))
+        ? null
+        : `${field.label} must be a valid date and time.`;
+    case "number":
+      return typeof value === "number" && Number.isFinite(value)
+        ? null
+        : `${field.label} must be a number.`;
+    case "boolean":
+      return typeof value === "boolean"
+        ? null
+        : `${field.label} must be true or false.`;
+    case "select":
+      if (typeof value !== "string") return `${field.label} must be text.`;
+      return field.options.length === 0 || field.options.includes(value)
+        ? null
+        : `${field.label} must be one of: ${field.options.join(", ")}.`;
+    case "multi_select":
+      if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+        return `${field.label} must be a list of text values.`;
+      }
+      if (
+        field.options.length > 0 &&
+        value.some((item) => !field.options.includes(item))
+      ) {
+        return `${field.label} contains an unsupported option.`;
+      }
+      return null;
+    default:
+      return null;
+  }
+}
+
+function isMissing(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === null ||
+    (typeof value === "string" && value.trim().length === 0) ||
+    (Array.isArray(value) && value.length === 0)
+  );
+}
+
+function isValidDateValue(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
+}
+
+function normalizeEntityKey(value: string): string {
+  const key = value
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
+  return key || "item";
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function localPlatformError(
+  status: number,
+  code: string,
+  error: string,
+  details?: unknown,
+) {
+  return NextResponse.json({ error, code, details }, { status });
 }
 
 function buildLoginUrl(base: string, appId: string, returnTo: string): string {

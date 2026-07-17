@@ -29,7 +29,7 @@ export function platformEntityFromSpec(
             label: field.label || field.name || key,
             type: field.type,
             required: field.required,
-            options: [],
+            options: inferFieldOptions(field),
             validation: field.validation,
             relation:
               field.type === "relation"
@@ -51,6 +51,22 @@ export function platformEntityFromSpec(
             validation: "A short name for this record.",
           },
         ];
+  for (const relationship of entity.relationships) {
+    if (relationship.type !== "belongs_to") continue;
+    const relationKey = normalizeEntityKey(`${relationship.targetEntity} id`);
+    if (fields.some((field) => field.key === relationKey)) continue;
+    fields.push({
+      key: uniqueKey(relationKey, usedKeys),
+      label: `${relationship.targetEntity} ID`,
+      type: "relation",
+      required: true,
+      options: [],
+      validation: `Related ${relationship.targetEntity} record id.`,
+      relation: {
+        entityKey: normalizeEntityKey(relationship.targetEntity),
+      },
+    });
+  }
   if (spec && shouldAddCompletionField(entity, spec, fields)) {
     fields.push({
       key: "bought",
@@ -94,6 +110,26 @@ export async function seedPlatformEntitySchemasFromSpec(
     });
   }
   return entities;
+}
+
+function inferFieldOptions(
+  field: AppSpec["dataEntities"][number]["fields"][number],
+): string[] {
+  if (field.type !== "select" && field.type !== "multi_select") return [];
+  const match = field.validation.match(
+    /(?:choose\s+one\s+of|choose\s+from|one\s+of|options?\s+are)\s*:?\s*([^.;]+)/i,
+  );
+  if (!match?.[1]) return [];
+  return [
+    ...new Set(
+      match[1]
+        .replace(/\bor\b/gi, ",")
+        .replace(/\band\b/gi, ",")
+        .split(",")
+        .map((option) => option.trim().replace(/^["']|["']$/g, ""))
+        .filter(Boolean),
+    ),
+  ];
 }
 
 function shouldAddCompletionField(

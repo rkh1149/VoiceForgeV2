@@ -35,6 +35,10 @@ export type Runner = {
   dispose(): Promise<void>;
 };
 
+type RunnerOptions = {
+  env?: Record<string, string>;
+};
+
 const OUTPUT_TAIL = 8000;
 
 const STEPS: Record<
@@ -55,18 +59,24 @@ const STEPS: Record<
   e2e: { cmd: "npm", args: ["run", "test:e2e"], timeoutMs: 10 * 60_000 },
 };
 
-export async function createRunner(buildRunId: string): Promise<Runner> {
+export async function createRunner(
+  buildRunId: string,
+  options: RunnerOptions = {},
+): Promise<Runner> {
   if (process.env.VERCEL) {
-    return createSandboxRunner();
+    return createSandboxRunner(options);
   }
-  return createLocalRunner(buildRunId);
+  return createLocalRunner(buildRunId, options);
 }
 
 // ---------------------------------------------------------------------------
 // Local backend
 // ---------------------------------------------------------------------------
 
-async function createLocalRunner(buildRunId: string): Promise<Runner> {
+async function createLocalRunner(
+  buildRunId: string,
+  options: RunnerOptions,
+): Promise<Runner> {
   const base =
     process.env.BUILD_WORKSPACE_DIR ??
     path.join(os.tmpdir(), "voiceforge-v2-builds");
@@ -101,6 +111,7 @@ async function createLocalRunner(buildRunId: string): Promise<Runner> {
             CI: "true",
             NEXT_TELEMETRY_DISABLED: "1",
             VOICEFORGE_DATA_LOCAL_FALLBACK: "1",
+            ...options.env,
           } as unknown as NodeJS.ProcessEnv,
           shell: false,
         });
@@ -147,7 +158,7 @@ async function createLocalRunner(buildRunId: string): Promise<Runner> {
 // Vercel Sandbox backend
 // ---------------------------------------------------------------------------
 
-async function createSandboxRunner(): Promise<Runner> {
+async function createSandboxRunner(options: RunnerOptions): Promise<Runner> {
   // Dynamic import keeps @vercel/sandbox out of local dev bundles.
   const { Sandbox } = await import("@vercel/sandbox");
   const sandbox = await Sandbox.create({
@@ -187,6 +198,9 @@ async function createSandboxRunner(): Promise<Runner> {
           "CI=true",
           "NEXT_TELEMETRY_DISABLED=1",
           "VOICEFORGE_DATA_LOCAL_FALLBACK=1",
+          ...Object.entries(options.env ?? {}).map(
+            ([key, value]) => `${key}=${value}`,
+          ),
           cmd,
           ...args,
         ]);

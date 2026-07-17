@@ -11,6 +11,7 @@ import {
   selectChangeWorkflow,
   type ChangeWorkflow,
 } from "@/lib/agents/change-workflow";
+import { platformEntityFromSpec } from "@/lib/platform/spec-seeding";
 import { APPROVED_DEPENDENCY_GUIDANCE } from "../build/dependencies";
 
 /**
@@ -28,7 +29,7 @@ const SHARED_RULES = `Rules for all files you mutate:
 - You may ONLY mutate approved generated-app files via write_file, patch_file, delete_file, or rename_file: src/app/, src/components/, src/lib/, and e2e/generated/. package.json, configs, src/app/globals.css, src/lib/template.test.ts, e2e/smoke.spec.ts, and all API routes are locked.
 - The app must work through browser code plus locked platform endpoints only: no direct databases, no API keys, no arbitrary external services. If data is personal/browser-only, use localStorage inside client components ("use client") with a typed wrapper in src/lib/storage.ts. If the architecture data model uses storage:"platformData", use the locked src/lib/platform-data.ts client and the locked /api/data endpoint as the source of truth instead of localStorage.
 - src/app/api/ai/route.ts and src/app/api/data/route.ts are LOCKED platform files — never modify, overwrite, or reimplement them, and never create any other file under src/app/api/.
-- For platform data, import from src/lib/platform-data.ts. Call listPlatformRecords, createPlatformRecord, updatePlatformRecord, and deletePlatformRecord from client components. For apps that require sign-in or roles, also call getPlatformSession, signInToPlatform, and signOutPlatformSession; show signed-out, no-access, current-user, and read-only viewer states, and hide/disable write controls when session.canWrite is false. Use the entity keys named in the architecture/spec. Always show loading and error states. NEVER reference VOICEFORGE_APP_TOKEN, VOICEFORGE_PUBLIC_URL, or the VoiceForge platform URL in browser code.
+- For platform data, import from src/lib/platform-data.ts. Call listPlatformRecords, createPlatformRecord, updatePlatformRecord, and deletePlatformRecord from client components. For apps that require sign-in or roles, also call getPlatformSession, signInToPlatform, and signOutPlatformSession; show signed-out, no-access, current-user, and read-only viewer states, and hide/disable write controls when session.canWrite is false. Use the exact platform entity keys and field keys from PLATFORM DATA SCHEMA KEYS, not display labels, plural guesses, PascalCase names, or camelCase aliases. Always show loading and error states. NEVER reference VOICEFORGE_APP_TOKEN, VOICEFORGE_PUBLIC_URL, or the VoiceForge platform URL in browser code.
 - Stage 10 reusable modules are available in the locked template. Prefer importing from src/lib/voiceforge-modules.ts and src/components/voiceforge-reusable.tsx for common CRUD helpers, search/filter/sort, comments, activity history, dashboard charts, CSV import/export, date/calendar controls, drag/drop lists, and role-aware shells.
 - You may import only approved packages from the catalogue below. Never ask to add a package, never edit package.json, and never use CDN/external script URLs.
 ${APPROVED_DEPENDENCY_GUIDANCE}
@@ -218,6 +219,19 @@ ${JSON.stringify(architecture, null, 2)}
 Use the architecture plan as the source of implementation structure: routes, components, data model, file plan, workflow coverage, and tests. Do not implement services marked unavailable or future-platform. If a detail conflicts with the shared rules, the shared rules win.`;
 }
 
+export function platformDataSchemaNote(spec: AppSpec): string {
+  if (spec.dataEntities.length === 0) return "";
+  const entities = spec.dataEntities.map((entity) =>
+    platformEntityFromSpec(entity, spec),
+  );
+  return `
+
+PLATFORM DATA SCHEMA KEYS:
+${JSON.stringify(entities, null, 2)}
+
+When using platform data, every list/create/update/delete call must use entity.key exactly, and every record payload must contain only field.key properties exactly. UI labels may be friendly, but persisted data must use these keys. Add tests around save workflows that assert createPlatformRecord receives these exact schema keys; local browser tests validate against this schema.`;
+}
+
 export async function runCodeAgent(input: {
   spec: AppSpec;
   architecture?: ArchitecturePlan;
@@ -333,6 +347,7 @@ Use inspect_test_results, inspect_type_errors, or inspect_browser_failure as app
 
 APP SPECIFICATION:
 ${JSON.stringify(input.spec, null, 2)}
+${platformDataSchemaNote(input.spec)}
 
 ERROR OUTPUT TAIL:
 ${input.errorOutput}
@@ -403,6 +418,7 @@ ${change}${previous}
 APP SPECIFICATION:
 ${JSON.stringify(input.spec, null, 2)}
 ${architectureNote(input.architecture)}
+${platformDataSchemaNote(input.spec)}
 
 Use the file tools instead of assuming file contents. ${
     input.mode === "change"

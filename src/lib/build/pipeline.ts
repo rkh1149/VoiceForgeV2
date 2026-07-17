@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   architecturePlans,
@@ -297,6 +297,9 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     }
 
     const usesPlatformData = architectureUsesPlatformData(architectureForStorage);
+    let seededPlatformEntities: Awaited<
+      ReturnType<typeof seedPlatformEntitySchemasFromSpec>
+    > = [];
     if (usesPlatformData) {
       await log(buildRunId, "Seeding platform data schemas…");
       const seededEntities = await seedPlatformEntitySchemasFromSpec(db, {
@@ -304,6 +307,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         user: { id: app.ownerId, role: "user" },
         spec,
       });
+      seededPlatformEntities = seededEntities;
       await audit({
         userId: app.ownerId,
         appId: app.id,
@@ -361,9 +365,29 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         userId: app.ownerId,
         appId: app.id,
       });
+      const [sourceRun] = await db
+        .select({ branch: buildRuns.branch, status: buildRuns.status })
+        .from(buildRuns)
+        .where(
+          and(
+            eq(buildRuns.appId, app.id),
+            ne(buildRuns.id, buildRunId),
+            isNotNull(buildRuns.branch),
+            inArray(buildRuns.status, ["awaiting_user_test", "complete"]),
+          ),
+        )
+        .orderBy(desc(buildRuns.createdAt))
+        .limit(1);
+      const sourceBranch = sourceRun?.branch ?? repo.defaultBranch;
+      await log(
+        buildRunId,
+        sourceRun?.branch
+          ? `Using source from latest successful build branch ${sourceBranch} (${sourceRun.status}).`
+          : `Using source from default branch ${sourceBranch}.`,
+      );
       const currentSrc = await getRepoSrcFiles({
         repo: repo.repo,
-        branch: repo.defaultBranch,
+        branch: sourceBranch,
       });
       // Current app code replaces template placeholders; configs stay fresh.
       Object.assign(files, currentSrc);
@@ -439,7 +463,15 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     }
 
     // 2. Test gauntlet with bounded debug loop.
-    runner = await createRunner(buildRunId);
+    runner = await createRunner(buildRunId, {
+      env:
+        seededPlatformEntities.length > 0
+          ? {
+              VOICEFORGE_PLATFORM_SCHEMA_JSON:
+                JSON.stringify(seededPlatformEntities),
+            }
+          : undefined,
+    });
     await log(
       buildRunId,
       runner.kind === "sandbox"

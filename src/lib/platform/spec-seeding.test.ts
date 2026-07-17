@@ -54,6 +54,72 @@ describe("platform entity seeding", () => {
     ]);
   });
 
+  it("infers select options from plain-English validation text", () => {
+    const spec = normalizeAppSpec({
+      appName: "Activity Planner",
+      purpose: "Plan activities together.",
+      targetUsers: "A family",
+      screens: [{ name: "Home", description: "Manage activities." }],
+      features: ["Add activities"],
+      dataToStore: ["activities with category"],
+      needsLogin: false,
+      sharingModel: "shared",
+      aiFeatures: [],
+      testPlan: ["Add an activity"],
+      deploymentNotes: "",
+    });
+    const entity = platformEntityFromSpec({
+      ...spec.dataEntities[0],
+      fields: [
+        {
+          name: "category",
+          label: "Category",
+          type: "select",
+          required: true,
+          validation: "Choose one of: Outdoors, Food, or Games.",
+        },
+      ],
+    });
+
+    expect(entity.fields[0].options).toEqual(["Outdoors", "Food", "Games"]);
+  });
+
+  it("adds a relation field for belongs-to relationships", () => {
+    const spec = normalizeAppSpec({
+      appName: "Activity Planner",
+      purpose: "Plan activities together.",
+      targetUsers: "A family",
+      screens: [{ name: "Home", description: "Manage comments." }],
+      features: ["Comment on activities"],
+      dataToStore: ["comments attached to activities"],
+      needsLogin: false,
+      sharingModel: "shared",
+      aiFeatures: [],
+      testPlan: ["Add a comment"],
+      deploymentNotes: "",
+    });
+    const entity = platformEntityFromSpec({
+      ...spec.dataEntities[0],
+      name: "Comment",
+      relationships: [
+        {
+          type: "belongs_to",
+          targetEntity: "Activity",
+          description: "Each comment belongs to an activity.",
+        },
+      ],
+    });
+
+    expect(entity.fields).toContainEqual(
+      expect.objectContaining({
+        key: "activity_id",
+        type: "relation",
+        required: true,
+        relation: { entityKey: "activity" },
+      }),
+    );
+  });
+
   it("adds a completion boolean when workflows require marking records done", () => {
     const spec = normalizeAppSpec({
       appName: "Family Grocery List",
