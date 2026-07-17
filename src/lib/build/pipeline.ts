@@ -41,6 +41,11 @@ import {
 import { getGeneratedAppName } from "@/lib/generated-apps";
 import { seedPlatformEntitySchemasFromSpec } from "@/lib/platform/spec-seeding";
 import { randomBytes } from "crypto";
+import {
+  createDebugBudget,
+  recordDebugAttempt,
+  reserveDebugRound,
+} from "./debug-budget";
 import { validateGeneratedAppDependencies } from "./dependencies";
 import { loadTemplate, type FileMap } from "./template";
 import { createRunner, type Runner, type StepName } from "./runner";
@@ -62,7 +67,8 @@ const STEP_ORDER: PipelineStepName[] = [
   "build",
   "e2e",
 ];
-const MAX_DEBUG_ROUNDS = 5;
+const MAX_DEBUG_ROUNDS_PER_STEP = 5;
+const MAX_TOTAL_DEBUG_ROUNDS = 12;
 
 class ArchitectureBlockedError extends Error {
   constructor(
@@ -414,9 +420,11 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     await runner.writeFiles(files);
     await setStatus(buildRunId, "testing");
 
-    let debugRounds = 0;
+    const debugBudget = createDebugBudget({
+      maxRoundsPerStep: MAX_DEBUG_ROUNDS_PER_STEP,
+      maxTotalRounds: MAX_TOTAL_DEBUG_ROUNDS,
+    });
     let stepIdx = 0;
-    const debugNotes: string[] = [];
     while (stepIdx < STEP_ORDER.length) {
       const step = STEP_ORDER[stepIdx];
 
@@ -454,29 +462,31 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         continue;
       }
 
-      debugRounds++;
-      if (debugRounds > MAX_DEBUG_ROUNDS) {
-        throw new Error(
-          `${step} still failing after ${MAX_DEBUG_ROUNDS} debug rounds`,
-        );
-      }
+      const { stepRound, previousAttempts } = reserveDebugRound(
+        debugBudget,
+        step,
+      );
 
       await setStatus(buildRunId, "debugging");
       await log(
         buildRunId,
-        `${step} failed — debug round ${debugRounds}/${MAX_DEBUG_ROUNDS}…`,
+        `${step} failed — debug round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP} for this step (${debugBudget.totalRounds}/${MAX_TOTAL_DEBUG_ROUNDS} total)…`,
       );
       const fix = await runDebugAgent({
         spec,
         currentFiles: agentVisibleFiles(files),
         failedStep: step,
         errorOutput: result.output,
-        previousAttempts: debugNotes,
+        previousAttempts,
       });
       if (fix.filesWritten.length === 0) {
         throw new Error(`Debug agent could not produce a fix for ${step}`);
       }
-      debugNotes.push(fix.notes || `(rewrote ${fix.filesWritten.join(", ")})`);
+      recordDebugAttempt(
+        debugBudget,
+        step,
+        fix.notes || `(rewrote ${fix.filesWritten.join(", ")})`,
+      );
       applyCodegenResult(files, fix);
       await runner.deleteFiles(fix.deletedFiles);
       await runner.writeFiles(fix.files);
