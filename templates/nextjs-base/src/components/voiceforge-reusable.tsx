@@ -27,6 +27,7 @@ import {
   YAxis,
 } from "recharts";
 import { twMerge } from "tailwind-merge";
+import type { PlatformSession } from "@/lib/platform-data";
 
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
@@ -62,6 +63,61 @@ export function RoleAwareShell({
       )}
       <div className="mt-4">{children}</div>
     </section>
+  );
+}
+
+export function PlatformSignInGate({
+  session,
+  appName,
+  description,
+  error,
+  isLoading = false,
+  onSignIn,
+}: {
+  session: PlatformSession | null;
+  appName: string;
+  description: string;
+  error?: string;
+  isLoading?: boolean;
+  onSignIn: (session: PlatformSession) => void;
+}) {
+  const canStartSignIn = Boolean(session?.loginUrl) && !isLoading;
+
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-slate-50 p-4 text-slate-950">
+      <section className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+        <p className="text-sm font-semibold text-emerald-800">
+          VoiceForge sign-in
+        </p>
+        <h1 className="mt-2 text-2xl font-bold">{appName}</h1>
+        <p className="mt-3 text-sm text-slate-700">{description}</p>
+        {error && (
+          <p role="alert" className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-800">
+            {error}
+          </p>
+        )}
+        <button
+          type="button"
+          disabled={!canStartSignIn}
+          onClick={() => {
+            if (session) onSignIn(session);
+          }}
+          className="mt-5 w-full rounded-md bg-emerald-700 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+        >
+          {isLoading ? "Checking access..." : "Sign in with VoiceForge"}
+        </button>
+        {!isLoading && !session?.loginUrl && session?.status !== "no_access" && (
+          <p className="mt-3 text-sm text-red-700">
+            Sign-in is not ready yet. Refresh the page if this message remains visible.
+          </p>
+        )}
+        {session?.status === "no_access" && (
+          <p className="mt-3 text-sm text-red-700">
+            You do not have access to this app. Ask the owner for an invitation.
+          </p>
+        )}
+      </section>
+    </main>
   );
 }
 
