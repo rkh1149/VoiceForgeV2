@@ -131,4 +131,28 @@ describe("platform data starter generator", () => {
     );
     expect(canUsePlatformDataStarter({ spec, architecture })).toBe(false);
   });
+
+  it("does not use the simple starter for notification workflows", () => {
+    const base = normalizeAppSpec({
+      ...sharedGroceryInput,
+      features: [...sharedGroceryInput.features, "Send a reminder to the family"],
+    });
+    const spec = {
+      ...base,
+      notifications: [
+        {
+          name: "Weekly grocery reminder",
+          trigger: "Every Sunday evening",
+          recipients: ["Family members"],
+          channel: "both" as const,
+        },
+      ],
+    };
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+
+    expect(canUsePlatformDataStarter({ spec, architecture })).toBe(false);
+  });
 });

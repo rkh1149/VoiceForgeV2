@@ -128,19 +128,19 @@ describe("architecture planning", () => {
     expect(validation.blockingIssues).toEqual([]);
   });
 
-  it("blocks required unavailable platform services even if the agent misses them", () => {
+  it("blocks required unavailable integrations even if the agent misses them", () => {
     const spec = normalizeAppSpec(personalSpecInput);
     const complexity = computeSpecComplexity(spec);
     const plan = createFallbackArchitecturePlan(spec, complexity);
-    const planWithEmail: ArchitecturePlan = {
+    const planWithIntegration: ArchitecturePlan = {
       ...plan,
       platformServices: [
         ...plan.platformServices,
         {
-          service: "email",
+          service: "integrations",
           required: true,
           availability: "later",
-          reason: "Email needs notification delivery.",
+          reason: "Calendar sync needs an external integration.",
         },
       ],
       capabilityValidation: {
@@ -150,15 +150,15 @@ describe("architecture planning", () => {
       },
     };
 
-    const validation = validateArchitecturePlan(planWithEmail);
+    const validation = validateArchitecturePlan(planWithIntegration);
 
     expect(validation.canBuildNow).toBe(false);
     expect(validation.blockingIssues).toContain(
-      "email: Email needs notification delivery.",
+      "integrations: Calendar sync needs an external integration.",
     );
   });
 
-  it("allows personal apps with in-app reminders because they are local UI state", () => {
+  it("allows personal apps with in-app reminders through platform jobs", () => {
     const base = normalizeAppSpec(personalSpecInput);
     const spec = {
       ...base,
@@ -177,12 +177,19 @@ describe("architecture planning", () => {
 
     expect(validation.canBuildNow).toBe(true);
     expect(validation.blockingIssues).toEqual([]);
+    expect(plan.platformServices).toContainEqual(
+      expect.objectContaining({
+        service: "jobs",
+        availability: "available",
+        required: true,
+      }),
+    );
     expect(validation.warnings.some((warning) => warning.startsWith("jobs:"))).toBe(
-      true,
+      false,
     );
   });
 
-  it("blocks email reminders until platform notifications exist", () => {
+  it("allows email reminders through locked notification delivery", () => {
     const base = normalizeAppSpec(personalSpecInput);
     const spec = {
       ...base,
@@ -199,9 +206,14 @@ describe("architecture planning", () => {
     const plan = createFallbackArchitecturePlan(spec, complexity);
     const validation = validateArchitecturePlan(plan);
 
-    expect(validation.canBuildNow).toBe(false);
-    expect(validation.blockingIssues).toContain(
-      "email: Email and notifications are planned for Stage 11B.",
+    expect(validation.canBuildNow).toBe(true);
+    expect(validation.blockingIssues).toEqual([]);
+    expect(plan.platformServices).toContainEqual(
+      expect.objectContaining({
+        service: "email",
+        availability: "available",
+        required: true,
+      }),
     );
   });
 });

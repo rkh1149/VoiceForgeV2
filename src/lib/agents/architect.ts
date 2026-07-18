@@ -20,15 +20,15 @@ Current platform capabilities available to generated apps:
 - Locked /api/ai endpoint for AI text and image features
 - Locked /api/data endpoint for shared/public platform JSONB records, with optional VoiceForge member sign-in
 - Locked /api/files endpoint for generated app uploads, attachments, downloads, metadata, and delete/archive
+- Locked /api/notifications endpoint for approved in-app/email notification templates, preferences, and scheduled notification job metadata
 - VoiceForge member sign-in for generated apps, including owner/editor/viewer role enforcement
 - Anonymous shared-link apps can allow collaboration; anonymous public apps are read-only
 - Approved dependency profiles for richer UI, charts, tables, calendars, drag/drop, and CSV/PDF export
 - Unit tests, build tests, and locked browser/accessibility smoke tests
 
 Current platform capabilities NOT available yet:
-- Email notifications
-- Scheduled jobs
 - External integrations
+- Arbitrary background workers, custom cron code, custom email templates, custom recipient email addresses, or direct email provider/API calls
 - Arbitrary dependencies or generated API routes
 
 Rules:
@@ -38,6 +38,7 @@ Rules:
 - If a personal/browser-only approximation would be misleading for the user, block instead of downgrading silently.
 - Use empty arrays where a section does not apply.
 - Do not invent new platform capabilities.
+- Notifications must use the locked platform notification service only. Mark email/jobs available when the need fits approved templates, recipient groups, preferences, and platform-managed scheduled notification metadata.
 
 ${APPROVED_DEPENDENCY_GUIDANCE}`;
 

@@ -40,6 +40,7 @@ import {
   setProjectEnvVars,
 } from "@/lib/vercel";
 import { getGeneratedAppName } from "@/lib/generated-apps";
+import { sendVoiceForgeBuildNotification } from "@/lib/platform/notifications";
 import { seedPlatformEntitySchemasFromSpec } from "@/lib/platform/spec-seeding";
 import { randomBytes } from "crypto";
 import {
@@ -201,6 +202,17 @@ function architectureUsesPlatformFiles(architecture: ArchitecturePlan): boolean 
   );
 }
 
+function architectureUsesPlatformNotifications(
+  architecture: ArchitecturePlan,
+): boolean {
+  return architecture.platformServices.some(
+    (service) =>
+      (service.service === "email" || service.service === "jobs") &&
+      service.required &&
+      service.availability === "available",
+  );
+}
+
 /**
  * Runs the full pipeline. Call without awaiting from request handlers:
  *   void startBuildPipeline(id).catch(...)
@@ -307,6 +319,8 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
 
     const usesPlatformData = architectureUsesPlatformData(architectureForStorage);
     const usesPlatformFiles = architectureUsesPlatformFiles(architectureForStorage);
+    const usesPlatformNotifications =
+      architectureUsesPlatformNotifications(architectureForStorage);
     let seededPlatformEntities: Awaited<
       ReturnType<typeof seedPlatformEntitySchemasFromSpec>
     > = [];
@@ -620,7 +634,12 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
 
     // Platform-enabled apps: provision server-side env vars on the app's own
     // Vercel project. Secrets never appear in generated browser code.
-    if (spec.aiFeatures.length > 0 || usesPlatformData || usesPlatformFiles) {
+    if (
+      spec.aiFeatures.length > 0 ||
+      usesPlatformData ||
+      usesPlatformFiles ||
+      usesPlatformNotifications
+    ) {
       let platformToken = app.platformToken ?? app.aiToken;
       if (!platformToken) platformToken = randomBytes(24).toString("hex");
       const tokenUpdate: {
@@ -663,6 +682,12 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       if (usesPlatformFiles) {
         await log(buildRunId, "Platform files are enabled for this generated app.");
       }
+      if (usesPlatformNotifications) {
+        await log(
+          buildRunId,
+          "Platform notifications and scheduled job metadata are enabled for this generated app.",
+        );
+      }
       if (spec.aiFeatures.length > 0) {
         await log(
           buildRunId,
@@ -674,7 +699,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       } else if (!publicUrl) {
         await log(
           buildRunId,
-          "Warning: VOICEFORGE_PUBLIC_URL is not set, so platform data/files will not work in the deployed app.",
+          "Warning: VOICEFORGE_PUBLIC_URL is not set, so platform data/files/notifications will not work in the deployed app.",
         );
       }
     }
@@ -757,8 +782,33 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       action: "build.failed",
       payload: { error: message },
     });
+    await notifyBuildFailure(db, {
+      appId: app.id,
+      buildRunId,
+      message,
+    });
   } finally {
     await runner?.dispose();
+  }
+}
+
+async function notifyBuildFailure(
+  db: ReturnType<typeof getDb>,
+  input: { appId: string; buildRunId: string; message: string },
+): Promise<void> {
+  try {
+    await sendVoiceForgeBuildNotification(db, {
+      appId: input.appId,
+      templateKey: "build_failed",
+      title: "Build failed",
+      message: `Your app build failed: ${input.message}`,
+      payload: {
+        buildRunId: input.buildRunId,
+        error: input.message,
+      },
+    });
+  } catch (error) {
+    console.error("Build failure notification failed:", error);
   }
 }
 

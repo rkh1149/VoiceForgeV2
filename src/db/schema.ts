@@ -504,6 +504,136 @@ export const appFiles = pgTable(
   ],
 );
 
+/** Per-user notification preferences for generated apps. */
+export const appNotificationPreferences = pgTable(
+  "app_notification_preferences",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    emailEnabled: boolean("email_enabled").notNull().default(true),
+    inAppEnabled: boolean("in_app_enabled").notNull().default(true),
+    digestEnabled: boolean("digest_enabled").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("app_notification_preferences_app_user_idx").on(t.appId, t.userId),
+    index("app_notification_preferences_app_idx").on(t.appId),
+  ],
+);
+
+/** Notification outbox for in-app and email messages requested by apps. */
+export const appNotifications = pgTable(
+  "app_notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    recordId: uuid("record_id").references(() => appRecords.id),
+    senderUserId: uuid("sender_user_id").references(() => users.id),
+    recipientUserId: uuid("recipient_user_id").references(() => users.id),
+    recipientEmail: text("recipient_email"),
+    channel: text("channel").notNull(),
+    templateKey: text("template_key").notNull(),
+    subject: text("subject").notNull(),
+    body: text("body").notNull(),
+    payload: jsonb("payload"),
+    status: text("status").notNull().default("queued"),
+    provider: text("provider").notNull().default("outbox"),
+    providerMessageId: text("provider_message_id"),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("app_notifications_app_idx").on(t.appId),
+    index("app_notifications_recipient_idx").on(t.recipientUserId),
+    index("app_notifications_status_idx").on(t.status),
+    index("app_notifications_created_idx").on(t.createdAt),
+  ],
+);
+
+/** Platform-owned scheduled notification jobs for generated apps. */
+export const appScheduledJobs = pgTable(
+  "app_scheduled_jobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    jobKey: text("job_key").notNull(),
+    displayName: text("display_name").notNull(),
+    templateKey: text("template_key").notNull(),
+    channel: text("channel").notNull().default("in_app"),
+    recipientGroup: text("recipient_group").notNull().default("owner"),
+    intervalMinutes: integer("interval_minutes").notNull(),
+    payload: jsonb("payload"),
+    status: text("status").notNull().default("active"),
+    createdBy: uuid("created_by").references(() => users.id),
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("app_scheduled_jobs_app_key_idx").on(t.appId, t.jobKey),
+    index("app_scheduled_jobs_app_idx").on(t.appId),
+    index("app_scheduled_jobs_status_next_idx").on(t.status, t.nextRunAt),
+  ],
+);
+
+/** Execution history for platform-managed generated-app jobs. */
+export const appJobRuns = pgTable(
+  "app_job_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => appScheduledJobs.id),
+    status: text("status").notNull().default("running"),
+    attempts: integer("attempts").notNull().default(1),
+    payload: jsonb("payload"),
+    errorMessage: text("error_message"),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("app_job_runs_app_idx").on(t.appId),
+    index("app_job_runs_job_idx").on(t.jobId),
+    index("app_job_runs_status_idx").on(t.status),
+  ],
+);
+
 /** One row per AI request made by a generated app (gate + usage report). */
 export const aiUsage = pgTable(
   "ai_usage",
@@ -564,5 +694,10 @@ export type AppRecord = typeof appRecords.$inferSelect;
 export type AppRecordVersion = typeof appRecordVersions.$inferSelect;
 export type AppRecordEvent = typeof appRecordEvents.$inferSelect;
 export type AppFile = typeof appFiles.$inferSelect;
+export type AppNotificationPreference =
+  typeof appNotificationPreferences.$inferSelect;
+export type AppNotification = typeof appNotifications.$inferSelect;
+export type AppScheduledJob = typeof appScheduledJobs.$inferSelect;
+export type AppJobRun = typeof appJobRuns.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type AiUsage = typeof aiUsage.$inferSelect;

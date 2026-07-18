@@ -24,6 +24,7 @@ export function canUsePlatformDataStarter(input: {
   return (
     !needsRichStage10Ui &&
     input.spec.fileRequirements.length === 0 &&
+    input.spec.notifications.every((notification) => notification.channel === "none") &&
     input.spec.dataEntities.length > 0 &&
     input.architecture.dataModel.some((entity) => entity.storage === "platformData")
   );

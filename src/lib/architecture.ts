@@ -107,7 +107,7 @@ export const architecturePlanSchema = z.object({
 
 export type ArchitecturePlan = z.infer<typeof architecturePlanSchema>;
 
-const AVAILABLE_SERVICES = new Set(["ai", "data", "users", "files"]);
+const AVAILABLE_SERVICES = new Set(["ai", "data", "users", "files", "email", "jobs"]);
 
 export function createFallbackArchitecturePlan(
   spec: AppSpec,
@@ -195,6 +195,24 @@ export function createFallbackArchitecturePlan(
             },
           ]
         : []),
+      ...(hasPlatformNotifications(spec)
+        ? [
+            {
+              path: "src/lib/platform-notifications.ts",
+              kind: "locked" as const,
+              purpose:
+                "Typed client for approved in-app/email notifications, preferences, and scheduled notification jobs.",
+              dependsOn: ["src/app/api/notifications/route.ts"],
+            },
+            {
+              path: "src/app/api/notifications/route.ts",
+              kind: "locked" as const,
+              purpose:
+                "Same-origin server proxy that forwards notification operations to VoiceForge.",
+              dependsOn: ["VOICEFORGE_APP_TOKEN", "VOICEFORGE_PUBLIC_URL"],
+            },
+          ]
+        : []),
     ],
     dependencyProfile: inferDependencyProfiles(spec),
     buildPhases: [
@@ -202,6 +220,9 @@ export function createFallbackArchitecturePlan(
       "Seed platform entity schemas",
       ...(spec.fileRequirements.length > 0
         ? ["Wire locked platform file uploads and attachments"]
+        : []),
+      ...(hasPlatformNotifications(spec)
+        ? ["Wire locked platform notifications and scheduled job metadata"]
         : []),
       "Generate typed data shapes",
       "Generate UI components",
@@ -229,6 +250,11 @@ export function createFallbackArchitecturePlan(
         ...(spec.fileRequirements.length > 0
           ? ["Uploaded files respect type, size, quota, and role checks."]
           : []),
+        ...(hasPlatformNotifications(spec)
+          ? [
+              "Notifications use approved templates, recipient groups, preferences, quotas, and platform-managed jobs only.",
+            ]
+          : []),
       ],
     },
     acceptanceTests: spec.acceptanceCriteria.map(
@@ -237,7 +263,7 @@ export function createFallbackArchitecturePlan(
     ),
     riskNotes: needsFuturePlatform
       ? [
-          "Current generated apps can use shared platform records, file attachments, and VoiceForge member sign-in, but email, jobs, and integrations arrive in later stages.",
+          "Current generated apps can use shared platform records, file attachments, VoiceForge member sign-in, and approved notifications, but integrations arrive in later stages.",
         ]
       : [],
     unsupportedCapabilities: blockingIssues,
@@ -245,8 +271,10 @@ export function createFallbackArchitecturePlan(
       canBuildNow: !needsFuturePlatform,
       approach: needsFuturePlatform
         ? "Stop before code generation so the user can revise or wait for platform services."
-        : needsServerData(spec) || spec.fileRequirements.length > 0
-          ? "Build with locked platform data/file APIs and the generated app template."
+        : needsServerData(spec) ||
+            spec.fileRequirements.length > 0 ||
+            hasPlatformNotifications(spec)
+          ? "Build with locked platform data/file/notification APIs and the generated app template."
           : "Build as a personal browser app using the locked template.",
       blockingIssues,
       warnings: [],
@@ -334,28 +362,33 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
         "Locked platform file upload, metadata, download, and archive APIs are available for generated apps.",
     });
   }
-  const emailNotifications = spec.notifications.filter(
+  const activeNotifications = spec.notifications.filter(
+    (notification) => notification.channel !== "none",
+  );
+  const emailNotifications = activeNotifications.filter(
     (notification) =>
       notification.channel === "email" || notification.channel === "both",
   );
-  const inAppNotifications = spec.notifications.filter(
-    (notification) => notification.channel === "in_app",
+  const inAppNotifications = activeNotifications.filter(
+    (notification) =>
+      notification.channel === "in_app" || notification.channel === "both",
   );
   if (emailNotifications.length > 0) {
     services.push({
       service: "email",
       required: true,
-      availability: "later",
-      reason: "Email and notifications are planned for Stage 11B.",
+      availability: "available",
+      reason:
+        "Locked template-based email/in-app notification outbox is available for generated apps.",
     });
   }
   if (inAppNotifications.length > 0) {
     services.push({
       service: "jobs",
-      required: false,
-      availability: "not_available",
+      required: true,
+      availability: "available",
       reason:
-        "In-app reminders can be calculated while the browser app is open; background scheduled jobs arrive in a later stage.",
+        "Platform-managed scheduled notification jobs are available with quotas, intervals, retry tracking, and audit records.",
     });
   }
   if (spec.integrations.length > 0) {
@@ -375,6 +408,10 @@ function needsServerData(spec: AppSpec): boolean {
     spec.sharingModel !== "private" ||
     spec.dataEntities.some((entity) => entity.ownership !== "per_user")
   );
+}
+
+function hasPlatformNotifications(spec: AppSpec): boolean {
+  return spec.notifications.some((notification) => notification.channel !== "none");
 }
 
 export function needsGeneratedAppUsers(spec: AppSpec): boolean {

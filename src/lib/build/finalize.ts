@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { apps, buildRuns, changeRequests, deployments, testResults } from "@/db/schema";
 import { audit } from "@/lib/audit";
+import { sendVoiceForgeBuildNotification } from "@/lib/platform/notifications";
 import { getDeployment, smokeTest } from "@/lib/vercel";
 
 /**
@@ -73,6 +74,11 @@ export async function finalizePendingDeployment(appId: string): Promise<void> {
         updatedAt: new Date(),
       })
       .where(eq(apps.id, appId));
+    await notifyBuildFailure(db, {
+      appId,
+      buildRunId: run.id,
+      message,
+    });
     return;
   }
 
@@ -104,6 +110,11 @@ export async function finalizePendingDeployment(appId: string): Promise<void> {
           updatedAt: new Date(),
         })
         .where(eq(apps.id, appId));
+      await notifyBuildFailure(db, {
+        appId,
+        buildRunId: run.id,
+        message,
+      });
       return;
     }
 
@@ -131,6 +142,11 @@ export async function finalizePendingDeployment(appId: string): Promise<void> {
       buildRunId: run.id,
       action: "build.previewReady",
       payload: { previewUrl },
+    });
+    await notifyPreviewReady(db, {
+      appId,
+      buildRunId: run.id,
+      previewUrl,
     });
     await logLine(
       `Preview is live: ${previewUrl} — try the app, then press Publish to put it online for real.`,
@@ -161,4 +177,44 @@ export async function finalizePendingDeployment(appId: string): Promise<void> {
     payload: { productionUrl },
   });
   await logLine(`Your app is live: ${productionUrl}`);
+}
+
+async function notifyPreviewReady(
+  db: ReturnType<typeof getDb>,
+  input: { appId: string; buildRunId: string; previewUrl: string },
+): Promise<void> {
+  try {
+    await sendVoiceForgeBuildNotification(db, {
+      appId: input.appId,
+      templateKey: "build_preview_ready",
+      title: "Preview ready",
+      message: `Your app preview is ready to test: ${input.previewUrl}`,
+      payload: {
+        buildRunId: input.buildRunId,
+        previewUrl: input.previewUrl,
+      },
+    });
+  } catch (error) {
+    console.error("Preview-ready notification failed:", error);
+  }
+}
+
+async function notifyBuildFailure(
+  db: ReturnType<typeof getDb>,
+  input: { appId: string; buildRunId: string; message: string },
+): Promise<void> {
+  try {
+    await sendVoiceForgeBuildNotification(db, {
+      appId: input.appId,
+      templateKey: "build_failed",
+      title: "Build failed",
+      message: `Your app build failed: ${input.message}`,
+      payload: {
+        buildRunId: input.buildRunId,
+        error: input.message,
+      },
+    });
+  } catch (error) {
+    console.error("Build failure notification failed:", error);
+  }
 }
