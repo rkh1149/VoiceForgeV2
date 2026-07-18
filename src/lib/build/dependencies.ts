@@ -251,9 +251,35 @@ export function validateGeneratedAppDependencies(files: FileMap): DependencyChec
         });
       }
     }
+    validatePdfExports(filePath, content, problems);
   }
 
   return { ok: problems.length === 0, problems };
+}
+
+function validatePdfExports(
+  filePath: string,
+  content: string,
+  problems: DependencyCheckProblem[],
+): void {
+  if (
+    filePath === "src/lib/voiceforge-modules.ts" ||
+    !/\bapplication\/pdf\b/.test(content)
+  ) {
+    return;
+  }
+
+  const createsPdfBlob =
+    /\bnew\s+Blob\s*\([\s\S]{0,600}\btype\s*:\s*["']application\/pdf["']/.test(
+      content,
+    );
+  if (createsPdfBlob) {
+    problems.push({
+      path: filePath,
+      message:
+        "PDF exports must generate real PDF bytes with jsPDF or the locked downloadSimplePdf/downloadRecordsPdf helpers; do not label plain text Blobs as application/pdf.",
+    });
+  }
 }
 
 function validatePackageJson(

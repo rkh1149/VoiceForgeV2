@@ -78,6 +78,27 @@ export default function Page() { return <Calendar aria-label="Calendar" />; }`,
     ).toBe(true);
   });
 
+  it("rejects fake PDF exports that download plain text as application/pdf", () => {
+    const result = validateGeneratedAppDependencies({
+      "package.json": basePackageJson,
+      "src/components/exports.tsx": `export function Exports() {
+  function pdf() {
+    const text = "Report";
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([text], { type: "application/pdf" }));
+    link.download = "report.pdf";
+    link.click();
+  }
+  return <button onClick={pdf}>PDF</button>;
+}`,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems.map((problem) => problem.message)).toContain(
+      "PDF exports must generate real PDF bytes with jsPDF or the locked downloadSimplePdf/downloadRecordsPdf helpers; do not label plain text Blobs as application/pdf.",
+    );
+  });
+
   it("infers richer Stage 10 profiles from complex specs", () => {
     const spec = normalizeAppSpec(specInput);
     const profiles = inferDependencyProfiles(spec);
