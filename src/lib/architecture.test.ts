@@ -216,4 +216,57 @@ describe("architecture planning", () => {
       }),
     );
   });
+
+  it("does not block when the planner labels VoiceForge platform services as integrations", () => {
+    const base = normalizeAppSpec(sharedSpecInput);
+    const spec = {
+      ...base,
+      integrations: [
+        {
+          name: "VoiceForge sign-in and member roles",
+          purpose:
+            "Require invited member access and enforce owner, editor, and viewer permissions.",
+          direction: "two_way" as const,
+          requiredForLaunch: true,
+        },
+        {
+          name: "VoiceForge platform notifications",
+          purpose:
+            "Send immediate email and in-app reminder notifications according to member preferences.",
+          direction: "two_way" as const,
+          requiredForLaunch: true,
+        },
+        {
+          name: "VoiceForge platform scheduled jobs",
+          purpose:
+            "Run owner-created daily and weekly reminder notification jobs and provide job status.",
+          direction: "two_way" as const,
+          requiredForLaunch: true,
+        },
+      ],
+      notifications: [
+        {
+          name: "Immediate reminder notification",
+          trigger: "A reminder is created.",
+          recipients: ["Family members"],
+          channel: "both" as const,
+        },
+      ],
+    };
+    const complexity = computeSpecComplexity(spec);
+    const plan = createFallbackArchitecturePlan(spec, complexity);
+    const validation = validateArchitecturePlan(plan);
+
+    expect(validation.canBuildNow).toBe(true);
+    expect(validation.blockingIssues).toEqual([]);
+    expect(plan.platformServices).not.toContainEqual(
+      expect.objectContaining({ service: "integrations" }),
+    );
+    expect(plan.platformServices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ service: "email", availability: "available" }),
+        expect.objectContaining({ service: "jobs", availability: "available" }),
+      ]),
+    );
+  });
 });

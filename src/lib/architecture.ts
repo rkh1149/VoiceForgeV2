@@ -1,5 +1,9 @@
 import { z } from "zod";
-import type { AppSpec, ComplexityResult } from "@/lib/spec";
+import {
+  isExternalIntegrationRequirement,
+  type AppSpec,
+  type ComplexityResult,
+} from "./spec";
 import {
   DEPENDENCY_PROFILE_VALUES,
   inferDependencyProfiles,
@@ -391,7 +395,10 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
         "Platform-managed scheduled notification jobs are available with quotas, intervals, retry tracking, and audit records.",
     });
   }
-  if (spec.integrations.length > 0) {
+  const externalIntegrations = spec.integrations.filter(
+    isExternalIntegrationRequirement,
+  );
+  if (externalIntegrations.length > 0) {
     services.push({
       service: "integrations",
       required: true,

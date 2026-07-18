@@ -355,7 +355,10 @@ export function computeSpecComplexity(spec: AppSpec): ComplexityResult {
   add(spec.permissionRules.length * 2, "server-enforced permission rules");
   add(spec.searchRequirements.length * 3, "search/filtering");
   add(spec.fileRequirements.length * 6, "file handling");
-  add(spec.integrations.length * 10, "external integrations");
+  add(
+    spec.integrations.filter(isExternalIntegrationRequirement).length * 10,
+    "external integrations",
+  );
   add(spec.notifications.length * 5, "notifications");
   add(spec.reports.length * 5, "reports/exports");
   add(spec.aiFeatures.length * 4, "AI features");
@@ -366,6 +369,30 @@ export function computeSpecComplexity(spec: AppSpec): ComplexityResult {
   const level: ComplexityLevel =
     score <= 15 ? "simple" : score <= 35 ? "intermediate" : "advanced";
   return { score, level, signals };
+}
+
+export function isExternalIntegrationRequirement(
+  integration: Pick<AppSpec["integrations"][number], "name" | "purpose">,
+): boolean {
+  const text = `${integration.name} ${integration.purpose}`.toLowerCase();
+  const internalVoiceForgeSignals = [
+    "voiceforge sign",
+    "voiceforge member",
+    "voiceforge role",
+    "voiceforge platform",
+    "platform data",
+    "platform file",
+    "platform notification",
+    "platform scheduled",
+    "platform job",
+    "member sign-in",
+    "member login",
+    "owner/editor/viewer",
+  ];
+  if (internalVoiceForgeSignals.some((signal) => text.includes(signal))) {
+    return false;
+  }
+  return true;
 }
 
 function inferCapabilityTier(input: {

@@ -39,6 +39,7 @@ Rules:
 - Use empty arrays where a section does not apply.
 - Do not invent new platform capabilities.
 - Notifications must use the locked platform notification service only. Mark email/jobs available when the need fits approved templates, recipient groups, preferences, and platform-managed scheduled notification metadata.
+- Do not treat VoiceForge's own sign-in, roles, platform data, platform files, platform notifications, or platform scheduled notification jobs as external integrations.
 
 ${APPROVED_DEPENDENCY_GUIDANCE}`;
 
