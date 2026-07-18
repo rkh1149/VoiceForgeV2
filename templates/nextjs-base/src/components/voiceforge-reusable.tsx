@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ChangeEvent, type ReactNode } from "react";
 import { closestCenter, DndContext, type DragEndEvent } from "@dnd-kit/core";
 import {
   arrayMove,
@@ -15,7 +15,7 @@ import * as Select from "@radix-ui/react-select";
 import * as Tabs from "@radix-ui/react-tabs";
 import { flexRender, type Table as ReactTable } from "@tanstack/react-table";
 import { clsx, type ClassValue } from "clsx";
-import { Download, GripVertical, Plus, Search } from "lucide-react";
+import { Download, GripVertical, Plus, Search, Upload } from "lucide-react";
 import { DayPicker } from "react-day-picker";
 import {
   Bar,
@@ -221,6 +221,68 @@ export function CsvExportButton({
       <Download className="h-4 w-4" />
       Export CSV
     </button>
+  );
+}
+
+export function PlatformFileUploadInput({
+  canWrite,
+  onUpload,
+  accept = "image/jpeg,image/png,image/gif,image/webp,application/pdf,text/plain,text/csv",
+  label = "Add attachment",
+  disabled = false,
+}: {
+  canWrite: boolean;
+  onUpload: (file: File) => Promise<void> | void;
+  accept?: string;
+  label?: string;
+  disabled?: boolean;
+}) {
+  const [isUploading, setIsUploading] = useState(false);
+  const [error, setError] = useState("");
+
+  if (!canWrite) return null;
+
+  async function handleChange(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setError("");
+    try {
+      await onUpload(file);
+    } catch (uploadError) {
+      setError(
+        uploadError instanceof Error
+          ? uploadError.message
+          : "Could not upload that file.",
+      );
+    } finally {
+      input.value = "";
+      setIsUploading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+        <Upload className="h-4 w-4" />
+        <span>{isUploading ? "Uploading..." : label}</span>
+        <input
+          aria-label={label}
+          accept={accept}
+          className="sr-only"
+          disabled={disabled || isUploading}
+          type="file"
+          onChange={handleChange}
+        />
+      </label>
+      {error && (
+        <p aria-live="polite" className="text-sm text-red-700">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 
