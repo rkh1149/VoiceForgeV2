@@ -472,6 +472,38 @@ export const appRecordEvents = pgTable(
   ],
 );
 
+/** Platform-managed files and attachments owned by generated apps. */
+export const appFiles = pgTable(
+  "app_files",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    recordId: uuid("record_id").references(() => appRecords.id),
+    ownerId: uuid("owner_id").references(() => users.id),
+    fileName: text("file_name").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    storageProvider: text("storage_provider").notNull().default("neon"),
+    storageKey: text("storage_key").notNull(),
+    dataBase64: text("data_base64").notNull(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("app_files_app_idx").on(t.appId),
+    index("app_files_record_idx").on(t.recordId),
+    index("app_files_owner_idx").on(t.ownerId),
+    index("app_files_deleted_idx").on(t.deletedAt),
+  ],
+);
+
 /** One row per AI request made by a generated app (gate + usage report). */
 export const aiUsage = pgTable(
   "ai_usage",
@@ -531,5 +563,6 @@ export type AppMembership = typeof appMemberships.$inferSelect;
 export type AppRecord = typeof appRecords.$inferSelect;
 export type AppRecordVersion = typeof appRecordVersions.$inferSelect;
 export type AppRecordEvent = typeof appRecordEvents.$inferSelect;
+export type AppFile = typeof appFiles.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type AiUsage = typeof aiUsage.$inferSelect;

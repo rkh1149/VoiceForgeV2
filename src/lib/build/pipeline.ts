@@ -192,6 +192,15 @@ function architectureUsesPlatformData(architecture: ArchitecturePlan): boolean {
   );
 }
 
+function architectureUsesPlatformFiles(architecture: ArchitecturePlan): boolean {
+  return architecture.platformServices.some(
+    (service) =>
+      service.service === "files" &&
+      service.required &&
+      service.availability === "available",
+  );
+}
+
 /**
  * Runs the full pipeline. Call without awaiting from request handlers:
  *   void startBuildPipeline(id).catch(...)
@@ -297,6 +306,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     }
 
     const usesPlatformData = architectureUsesPlatformData(architectureForStorage);
+    const usesPlatformFiles = architectureUsesPlatformFiles(architectureForStorage);
     let seededPlatformEntities: Awaited<
       ReturnType<typeof seedPlatformEntitySchemasFromSpec>
     > = [];
@@ -610,7 +620,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
 
     // Platform-enabled apps: provision server-side env vars on the app's own
     // Vercel project. Secrets never appear in generated browser code.
-    if (spec.aiFeatures.length > 0 || usesPlatformData) {
+    if (spec.aiFeatures.length > 0 || usesPlatformData || usesPlatformFiles) {
       let platformToken = app.platformToken ?? app.aiToken;
       if (!platformToken) platformToken = randomBytes(24).toString("hex");
       const tokenUpdate: {
@@ -650,6 +660,9 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       if (usesPlatformData) {
         await log(buildRunId, "Platform data is enabled for this generated app.");
       }
+      if (usesPlatformFiles) {
+        await log(buildRunId, "Platform files are enabled for this generated app.");
+      }
       if (spec.aiFeatures.length > 0) {
         await log(
           buildRunId,
@@ -661,7 +674,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       } else if (!publicUrl) {
         await log(
           buildRunId,
-          "Warning: VOICEFORGE_PUBLIC_URL is not set, so platform data will not work in the deployed app.",
+          "Warning: VOICEFORGE_PUBLIC_URL is not set, so platform data/files will not work in the deployed app.",
         );
       }
     }

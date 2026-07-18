@@ -23,6 +23,7 @@ export function canUsePlatformDataStarter(input: {
     ) || hasExplicitRichUiRequest(input.spec);
   return (
     !needsRichStage10Ui &&
+    input.spec.fileRequirements.length === 0 &&
     input.spec.dataEntities.length > 0 &&
     input.architecture.dataModel.some((entity) => entity.storage === "platformData")
   );

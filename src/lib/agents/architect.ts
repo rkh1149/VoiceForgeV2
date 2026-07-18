@@ -19,13 +19,13 @@ Current platform capabilities available to generated apps:
 - localStorage persistence for personal/browser-only data
 - Locked /api/ai endpoint for AI text and image features
 - Locked /api/data endpoint for shared/public platform JSONB records, with optional VoiceForge member sign-in
+- Locked /api/files endpoint for generated app uploads, attachments, downloads, metadata, and delete/archive
 - VoiceForge member sign-in for generated apps, including owner/editor/viewer role enforcement
 - Anonymous shared-link apps can allow collaboration; anonymous public apps are read-only
 - Approved dependency profiles for richer UI, charts, tables, calendars, drag/drop, and CSV/PDF export
 - Unit tests, build tests, and locked browser/accessibility smoke tests
 
 Current platform capabilities NOT available yet:
-- File/blob storage
 - Email notifications
 - Scheduled jobs
 - External integrations

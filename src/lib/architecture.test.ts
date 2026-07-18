@@ -107,19 +107,40 @@ describe("architecture planning", () => {
     expect(validation.blockingIssues).toEqual([]);
   });
 
+  it("allows apps with file requirements to use platform files", () => {
+    const spec = normalizeAppSpec({
+      ...sharedSpecInput,
+      features: [...sharedSpecInput.features, "Attach receipts"],
+      dataToStore: [...sharedSpecInput.dataToStore, "receipt files"],
+    });
+    const complexity = computeSpecComplexity(spec);
+    const plan = createFallbackArchitecturePlan(spec, complexity);
+    const validation = validateArchitecturePlan(plan);
+
+    expect(plan.platformServices).toContainEqual(
+      expect.objectContaining({
+        service: "files",
+        availability: "available",
+        required: true,
+      }),
+    );
+    expect(validation.canBuildNow).toBe(true);
+    expect(validation.blockingIssues).toEqual([]);
+  });
+
   it("blocks required unavailable platform services even if the agent misses them", () => {
     const spec = normalizeAppSpec(personalSpecInput);
     const complexity = computeSpecComplexity(spec);
     const plan = createFallbackArchitecturePlan(spec, complexity);
-    const planWithFiles: ArchitecturePlan = {
+    const planWithEmail: ArchitecturePlan = {
       ...plan,
       platformServices: [
         ...plan.platformServices,
         {
-          service: "files",
+          service: "email",
           required: true,
           availability: "later",
-          reason: "Files need platform blob storage.",
+          reason: "Email needs notification delivery.",
         },
       ],
       capabilityValidation: {
@@ -129,11 +150,11 @@ describe("architecture planning", () => {
       },
     };
 
-    const validation = validateArchitecturePlan(planWithFiles);
+    const validation = validateArchitecturePlan(planWithEmail);
 
     expect(validation.canBuildNow).toBe(false);
     expect(validation.blockingIssues).toContain(
-      "files: Files need platform blob storage.",
+      "email: Email needs notification delivery.",
     );
   });
 

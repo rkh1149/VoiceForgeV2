@@ -107,7 +107,7 @@ export const architecturePlanSchema = z.object({
 
 export type ArchitecturePlan = z.infer<typeof architecturePlanSchema>;
 
-const AVAILABLE_SERVICES = new Set(["ai", "data", "users"]);
+const AVAILABLE_SERVICES = new Set(["ai", "data", "users", "files"]);
 
 export function createFallbackArchitecturePlan(
   spec: AppSpec,
@@ -177,11 +177,32 @@ export function createFallbackArchitecturePlan(
         purpose: "Unit and workflow tests for generated features.",
         dependsOn: ["src/app/page.tsx", "src/components/*"],
       },
+      ...(spec.fileRequirements.length > 0
+        ? [
+            {
+              path: "src/lib/platform-files.ts",
+              kind: "locked" as const,
+              purpose:
+                "Typed client for listing, uploading, downloading, and deleting platform files.",
+              dependsOn: ["src/app/api/files/route.ts"],
+            },
+            {
+              path: "src/app/api/files/route.ts",
+              kind: "locked" as const,
+              purpose:
+                "Same-origin server proxy that forwards file operations to VoiceForge.",
+              dependsOn: ["VOICEFORGE_APP_TOKEN", "VOICEFORGE_PUBLIC_URL"],
+            },
+          ]
+        : []),
     ],
     dependencyProfile: inferDependencyProfiles(spec),
     buildPhases: [
       "Validate requested capabilities",
       "Seed platform entity schemas",
+      ...(spec.fileRequirements.length > 0
+        ? ["Wire locked platform file uploads and attachments"]
+        : []),
       "Generate typed data shapes",
       "Generate UI components",
       "Generate pages and workflows",
@@ -203,7 +224,12 @@ export function createFallbackArchitecturePlan(
       workflow: spec.acceptanceCriteria.map((criterion) => criterion.name),
       browser: ["Home page loads cleanly and main controls do not crash."],
       accessibility: ["No serious or critical axe violations."],
-      security: ["No external network calls except locked platform endpoints."],
+      security: [
+        "No external network calls except locked platform endpoints.",
+        ...(spec.fileRequirements.length > 0
+          ? ["Uploaded files respect type, size, quota, and role checks."]
+          : []),
+      ],
     },
     acceptanceTests: spec.acceptanceCriteria.map(
       (criterion) =>
@@ -211,7 +237,7 @@ export function createFallbackArchitecturePlan(
     ),
     riskNotes: needsFuturePlatform
       ? [
-          "Current generated apps can use shared platform records and VoiceForge member sign-in, but files, email, jobs, and integrations arrive in later stages.",
+          "Current generated apps can use shared platform records, file attachments, and VoiceForge member sign-in, but email, jobs, and integrations arrive in later stages.",
         ]
       : [],
     unsupportedCapabilities: blockingIssues,
@@ -219,8 +245,8 @@ export function createFallbackArchitecturePlan(
       canBuildNow: !needsFuturePlatform,
       approach: needsFuturePlatform
         ? "Stop before code generation so the user can revise or wait for platform services."
-        : needsServerData(spec)
-          ? "Build with locked platform data APIs and the generated app template."
+        : needsServerData(spec) || spec.fileRequirements.length > 0
+          ? "Build with locked platform data/file APIs and the generated app template."
           : "Build as a personal browser app using the locked template.",
       blockingIssues,
       warnings: [],
@@ -303,8 +329,9 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
     services.push({
       service: "files",
       required: true,
-      availability: "later",
-      reason: "Platform file storage is planned for Stage 11A.",
+      availability: "available",
+      reason:
+        "Locked platform file upload, metadata, download, and archive APIs are available for generated apps.",
     });
   }
   const emailNotifications = spec.notifications.filter(

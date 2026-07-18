@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { POST } from "../../../templates/nextjs-base/src/app/api/data/route";
+import { POST as dataPOST } from "../../../templates/nextjs-base/src/app/api/data/route";
+import { POST as filesPOST } from "../../../templates/nextjs-base/src/app/api/files/route";
 
 const schema = [
   {
@@ -41,7 +42,7 @@ describe("generated app local platform fallback", () => {
     process.env.VOICEFORGE_DATA_LOCAL_FALLBACK = "1";
     process.env.VOICEFORGE_PLATFORM_SCHEMA_JSON = JSON.stringify(schema);
 
-    const invalid = await POST(
+    const invalid = await dataPOST(
       new Request("http://local.test/api/data", {
         method: "POST",
         body: JSON.stringify({
@@ -62,7 +63,7 @@ describe("generated app local platform fallback", () => {
       details: ['Unknown field "plannedDate".', 'Unknown field "estimatedCost".'],
     });
 
-    const valid = await POST(
+    const valid = await dataPOST(
       new Request("http://local.test/api/data", {
         method: "POST",
         body: JSON.stringify({
@@ -78,5 +79,53 @@ describe("generated app local platform fallback", () => {
     );
 
     expect(valid.status).toBe(201);
+  });
+
+  it("supports local file upload, download, and archive for browser tests", async () => {
+    process.env.VOICEFORGE_DATA_LOCAL_FALLBACK = "1";
+
+    const upload = await filesPOST(
+      new Request("http://local.test/api/files", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "uploadFile",
+          fileName: "receipt.txt",
+          contentType: "text/plain",
+          dataBase64: btoa("field trip receipt"),
+        }),
+      }),
+    );
+
+    expect(upload.status).toBe(201);
+    const uploadPayload = (await upload.json()) as {
+      file: { id: string; fileName: string; sizeBytes: number };
+    };
+    expect(uploadPayload.file.fileName).toBe("receipt.txt");
+    expect(uploadPayload.file.sizeBytes).toBeGreaterThan(0);
+
+    const download = await filesPOST(
+      new Request("http://local.test/api/files", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "downloadFile",
+          fileId: uploadPayload.file.id,
+        }),
+      }),
+    );
+    expect(download.status).toBe(200);
+    await expect(download.json()).resolves.toMatchObject({
+      dataBase64: btoa("field trip receipt"),
+    });
+
+    const deleted = await filesPOST(
+      new Request("http://local.test/api/files", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "deleteFile",
+          fileId: uploadPayload.file.id,
+        }),
+      }),
+    );
+    expect(deleted.status).toBe(200);
   });
 });
