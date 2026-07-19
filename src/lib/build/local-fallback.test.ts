@@ -42,10 +42,14 @@ describe("generated app local platform fallback", () => {
       __voiceforgeLocalNotifications?: Map<string, unknown>;
       __voiceforgeLocalNotificationPrefs?: Map<string, unknown>;
       __voiceforgeLocalJobs?: Map<string, unknown>;
+      __voiceforgeLocalData?: Map<string, unknown>;
+      __voiceforgeLocalSavedFilters?: Map<string, unknown>;
     };
+    delete globalStore.__voiceforgeLocalData;
     delete globalStore.__voiceforgeLocalNotifications;
     delete globalStore.__voiceforgeLocalNotificationPrefs;
     delete globalStore.__voiceforgeLocalJobs;
+    delete globalStore.__voiceforgeLocalSavedFilters;
   });
 
   it("validates local records against seeded platform schema keys", async () => {
@@ -137,6 +141,131 @@ describe("generated app local platform fallback", () => {
       }),
     );
     expect(deleted.status).toBe(200);
+  });
+
+  it("supports local search, saved filters, reports, and CSV exports", async () => {
+    process.env.VOICEFORGE_DATA_LOCAL_FALLBACK = "1";
+    process.env.VOICEFORGE_PLATFORM_SCHEMA_JSON = JSON.stringify(schema);
+
+    for (const data of [
+      {
+        name: "Family picnic",
+        planned_date: "2026-08-01",
+        estimated_cost: 35,
+      },
+      {
+        name: "Museum visit",
+        planned_date: "2026-07-24",
+        estimated_cost: 50,
+      },
+    ]) {
+      const created = await dataPOST(
+        new Request("http://local.test/api/data", {
+          method: "POST",
+          body: JSON.stringify({
+            action: "createRecord",
+            entityKey: "activity",
+            data,
+          }),
+        }),
+      );
+      expect(created.status).toBe(201);
+    }
+
+    const search = await dataPOST(
+      new Request("http://local.test/api/data", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "searchRecords",
+          entityKey: "activity",
+          query: {
+            query: "picnic",
+            fields: ["name"],
+            sort: [{ fieldKey: "planned_date", direction: "asc" }],
+          },
+        }),
+      }),
+    );
+    expect(search.status).toBe(200);
+    await expect(search.json()).resolves.toMatchObject({
+      total: 1,
+      records: [
+        {
+          data: { name: "Family picnic" },
+        },
+      ],
+    });
+
+    const saved = await dataPOST(
+      new Request("http://local.test/api/data", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "saveFilter",
+          entityKey: "activity",
+          name: "Picnic search",
+          definition: { query: "picnic", fields: ["name"] },
+        }),
+      }),
+    );
+    expect(saved.status).toBe(201);
+
+    const filters = await dataPOST(
+      new Request("http://local.test/api/data", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "listSavedFilters",
+          entityKey: "activity",
+        }),
+      }),
+    );
+    expect(filters.status).toBe(200);
+    await expect(filters.json()).resolves.toMatchObject({
+      filters: [
+        {
+          name: "Picnic search",
+          definition: { query: "picnic" },
+        },
+      ],
+    });
+
+    const report = await dataPOST(
+      new Request("http://local.test/api/data", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "runReport",
+          entityKey: "activity",
+          report: {
+            metric: "sum",
+            metricFieldKey: "estimated_cost",
+          },
+        }),
+      }),
+    );
+    expect(report.status).toBe(200);
+    await expect(report.json()).resolves.toMatchObject({
+      report: {
+        totalRecords: 2,
+        rows: [{ label: "All records", count: 2, sum: 85 }],
+      },
+    });
+
+    const exported = await dataPOST(
+      new Request("http://local.test/api/data", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "exportRecordsCsv",
+          entityKey: "activity",
+          fileName: "activity-export",
+        }),
+      }),
+    );
+    expect(exported.status).toBe(200);
+    const payload = (await exported.json()) as {
+      export: { fileName: string; csv: string; rowCount: number };
+    };
+    expect(payload.export.fileName).toBe("activity-export.csv");
+    expect(payload.export.csv).toContain("Family picnic");
+    expect(payload.export.rowCount).toBe(2);
   });
 
   it("supports local notification send, inbox, preferences, and scheduled jobs", async () => {

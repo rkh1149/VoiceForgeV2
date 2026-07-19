@@ -472,6 +472,65 @@ export const appRecordEvents = pgTable(
   ],
 );
 
+/** Per-entity search/report metadata selected from the app architecture. */
+export const appRecordSearchConfigs = pgTable(
+  "app_record_search_configs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    entityKey: text("entity_key").notNull(),
+    indexedFields: jsonb("indexed_fields").notNull().default([]),
+    defaultSort: jsonb("default_sort").notNull().default([]),
+    createdBy: uuid("created_by").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("app_record_search_configs_app_entity_idx").on(
+      t.appId,
+      t.entityKey,
+    ),
+    index("app_record_search_configs_app_idx").on(t.appId),
+  ],
+);
+
+/** Saved query/filter definitions for generated app record views. */
+export const appSavedRecordFilters = pgTable(
+  "app_saved_record_filters",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    entityKey: text("entity_key").notNull(),
+    name: text("name").notNull(),
+    definition: jsonb("definition").notNull(),
+    visibility: text("visibility").notNull().default("app"),
+    createdBy: uuid("created_by").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("app_saved_record_filters_app_entity_name_idx").on(
+      t.appId,
+      t.entityKey,
+      t.name,
+    ),
+    index("app_saved_record_filters_app_idx").on(t.appId),
+    index("app_saved_record_filters_entity_idx").on(t.appId, t.entityKey),
+  ],
+);
+
 /** Platform-managed files and attachments owned by generated apps. */
 export const appFiles = pgTable(
   "app_files",
@@ -763,6 +822,8 @@ export type AppMembership = typeof appMemberships.$inferSelect;
 export type AppRecord = typeof appRecords.$inferSelect;
 export type AppRecordVersion = typeof appRecordVersions.$inferSelect;
 export type AppRecordEvent = typeof appRecordEvents.$inferSelect;
+export type AppRecordSearchConfig = typeof appRecordSearchConfigs.$inferSelect;
+export type AppSavedRecordFilter = typeof appSavedRecordFilters.$inferSelect;
 export type AppFile = typeof appFiles.$inferSelect;
 export type AppNotificationPreference =
   typeof appNotificationPreferences.$inferSelect;

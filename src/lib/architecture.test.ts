@@ -193,6 +193,48 @@ describe("architecture planning", () => {
     );
   });
 
+  it("allows Stage 12B platform search and reports for shared records", () => {
+    const base = normalizeAppSpec(sharedSpecInput);
+    const spec = {
+      ...base,
+      capabilityTier: "advanced" as const,
+      searchRequirements: [
+        {
+          target: "Chores",
+          fields: ["title", "assignee"],
+          filters: ["status", "due date"],
+        },
+      ],
+      reports: [
+        {
+          name: "Chore status report",
+          description: "Count chores by status.",
+          dataNeeded: ["status"],
+          exportFormats: ["screen", "csv"] as Array<"screen" | "csv">,
+        },
+      ],
+    };
+    const complexity = computeSpecComplexity(spec);
+    const plan = createFallbackArchitecturePlan(spec, complexity);
+    const validation = validateArchitecturePlan(plan, spec);
+
+    expect(validation.canBuildNow).toBe(true);
+    expect(plan.platformServices).toContainEqual(
+      expect.objectContaining({
+        service: "search",
+        availability: "available",
+        required: true,
+      }),
+    );
+    expect(plan.platformServices).toContainEqual(
+      expect.objectContaining({
+        service: "reports",
+        availability: "available",
+        required: true,
+      }),
+    );
+  });
+
   it("keeps unsupported external providers blocked after Stage 12A", () => {
     const base = normalizeAppSpec(personalSpecInput);
     const spec = {

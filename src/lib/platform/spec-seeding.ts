@@ -2,16 +2,24 @@ import type { getDb } from "../../db";
 import type { AppSpec } from "../spec";
 import {
   normalizeEntityKey,
+  upsertRecordSearchConfig,
   upsertEntitySchema,
   type PlatformEntityDefinition,
   type PlatformFieldDefinition,
 } from "./data";
+import { normalizeRecordFieldKey, type RecordQuerySort } from "./records-query";
 
 type Database = ReturnType<typeof getDb>;
 
 type PlatformSeedUser = {
   id: string;
   role: "admin" | "user";
+};
+
+export type PlatformSearchConfigDefinition = {
+  entityKey: string;
+  indexedFields: string[];
+  defaultSort: RecordQuerySort[];
 };
 
 export function platformEntityFromSpec(
@@ -112,6 +120,86 @@ export async function seedPlatformEntitySchemasFromSpec(
   return entities;
 }
 
+export function platformSearchConfigFromSpec(
+  entity: AppSpec["dataEntities"][number],
+  spec: AppSpec,
+): PlatformSearchConfigDefinition {
+  const platformEntity = platformEntityFromSpec(entity, spec);
+  const knownFields = new Set(platformEntity.fields.map((field) => field.key));
+  const requestedFields = new Set<string>();
+  const entityNeedles = [
+    entity.name,
+    entity.description,
+    platformEntity.key,
+  ].map((value) => value.toLowerCase());
+
+  for (const requirement of spec.searchRequirements) {
+    const target = requirement.target.toLowerCase();
+    const targetMatches =
+      entityNeedles.some((needle) => target.includes(needle)) ||
+      target.includes("saved") ||
+      target.includes("record") ||
+      target.includes("all");
+    if (!targetMatches) continue;
+    for (const field of requirement.fields) {
+      const fieldKey = normalizeRecordFieldKey(field);
+      if (knownFields.has(fieldKey)) requestedFields.add(fieldKey);
+    }
+    for (const filter of requirement.filters) {
+      const filterKey = normalizeRecordFieldKey(filter);
+      if (knownFields.has(filterKey)) requestedFields.add(filterKey);
+    }
+  }
+
+  for (const report of spec.reports) {
+    for (const field of report.dataNeeded) {
+      const fieldKey = normalizeRecordFieldKey(field);
+      if (knownFields.has(fieldKey)) requestedFields.add(fieldKey);
+    }
+  }
+
+  if (requestedFields.size === 0) {
+    for (const field of platformEntity.fields) {
+      if (isSearchableField(field)) requestedFields.add(field.key);
+      if (requestedFields.size >= 10) break;
+    }
+  }
+
+  const dateSortField = platformEntity.fields.find(
+    (field) => field.type === "date" || field.type === "datetime",
+  );
+  return {
+    entityKey: platformEntity.key,
+    indexedFields: [...requestedFields],
+    defaultSort: dateSortField
+      ? [{ fieldKey: dateSortField.key, direction: "asc" }]
+      : [],
+  };
+}
+
+export async function seedPlatformSearchConfigsFromSpec(
+  db: Database,
+  input: {
+    appId: string;
+    user: PlatformSeedUser;
+    spec: AppSpec;
+  },
+): Promise<PlatformSearchConfigDefinition[]> {
+  const configs = input.spec.dataEntities.map((entity) =>
+    platformSearchConfigFromSpec(entity, input.spec),
+  );
+  for (const config of configs) {
+    await upsertRecordSearchConfig(db, {
+      appId: input.appId,
+      user: input.user,
+      entityKey: config.entityKey,
+      indexedFields: config.indexedFields,
+      defaultSort: config.defaultSort,
+    });
+  }
+  return configs;
+}
+
 function inferFieldOptions(
   field: AppSpec["dataEntities"][number]["fields"][number],
 ): string[] {
@@ -130,6 +218,19 @@ function inferFieldOptions(
         .filter(Boolean),
     ),
   ];
+}
+
+function isSearchableField(field: PlatformFieldDefinition): boolean {
+  return (
+    field.type === "text" ||
+    field.type === "long_text" ||
+    field.type === "number" ||
+    field.type === "boolean" ||
+    field.type === "date" ||
+    field.type === "datetime" ||
+    field.type === "select" ||
+    field.type === "multi_select"
+  );
 }
 
 function shouldAddCompletionField(

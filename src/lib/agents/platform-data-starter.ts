@@ -44,6 +44,10 @@ function hasExplicitRichUiRequest(spec: AppSpec): boolean {
   return [
     "chart",
     "dashboard",
+    "search",
+    "filter",
+    "saved filter",
+    "report",
     "sortable",
     "table",
     "calendar",

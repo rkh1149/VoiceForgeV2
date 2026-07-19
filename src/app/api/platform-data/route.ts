@@ -9,14 +9,26 @@ import {
   createRecord,
   consumePlatformDataRateLimit,
   deleteRecord,
+  deleteSavedRecordFilter,
+  exportPlatformRecordsCsv,
   getRecord,
   getAppDataRole,
+  listRecordSearchConfigs,
   listEntitySchemas,
   listRecords,
+  listSavedRecordFilters,
   platformDataErrorResponse,
   PlatformDataError,
+  runPlatformRecordReport,
+  saveRecordFilter,
+  searchPlatformRecords,
   updateRecord,
 } from "@/lib/platform/data";
+import {
+  platformRecordQuerySchema,
+  recordReportInputSchema,
+  savedRecordFilterDefinitionSchema,
+} from "@/lib/platform/records-query";
 import {
   getAnonymousPlatformSession,
   verifyPlatformSessionToken,
@@ -57,6 +69,13 @@ const bodySchema = z.discriminatedUnion("action", [
   }),
   z.object({
     ...baseActionSchema,
+    action: z.literal("searchRecords"),
+    entityKey: z.string().min(1).max(80),
+    includeDeleted: z.boolean().default(false),
+    query: platformRecordQuerySchema.optional(),
+  }),
+  z.object({
+    ...baseActionSchema,
     action: z.literal("getRecord"),
     recordId: z.string().uuid(),
   }),
@@ -76,6 +95,41 @@ const bodySchema = z.discriminatedUnion("action", [
     ...baseActionSchema,
     action: z.literal("deleteRecord"),
     recordId: z.string().uuid(),
+  }),
+  z.object({
+    ...baseActionSchema,
+    action: z.literal("listSearchConfigs"),
+    entityKey: z.string().min(1).max(80).optional(),
+  }),
+  z.object({
+    ...baseActionSchema,
+    action: z.literal("listSavedFilters"),
+    entityKey: z.string().min(1).max(80).optional(),
+  }),
+  z.object({
+    ...baseActionSchema,
+    action: z.literal("saveFilter"),
+    entityKey: z.string().min(1).max(80),
+    name: z.string().min(1).max(120),
+    definition: savedRecordFilterDefinitionSchema,
+  }),
+  z.object({
+    ...baseActionSchema,
+    action: z.literal("deleteSavedFilter"),
+    filterId: z.string().uuid(),
+  }),
+  z.object({
+    ...baseActionSchema,
+    action: z.literal("runReport"),
+    entityKey: z.string().min(1).max(80),
+    report: recordReportInputSchema,
+  }),
+  z.object({
+    ...baseActionSchema,
+    action: z.literal("exportRecordsCsv"),
+    entityKey: z.string().min(1).max(80),
+    query: platformRecordQuerySchema.optional(),
+    fileName: z.string().min(1).max(120).optional(),
   }),
 ]);
 
@@ -143,6 +197,23 @@ export async function POST(req: Request) {
         });
         return NextResponse.json({ records });
       }
+      case "searchRecords": {
+        if (parsed.data.includeDeleted && !auth.session.canManage) {
+          throw new PlatformDataError(
+            403,
+            "not_owner",
+            "Only app owners can include deleted records.",
+          );
+        }
+        const result = await searchPlatformRecords(db, {
+          appId: app.id,
+          entityKey: parsed.data.entityKey,
+          includeDeleted: parsed.data.includeDeleted,
+          query: parsed.data.query,
+          user: platformUser,
+        });
+        return NextResponse.json(result);
+      }
       case "getRecord": {
         const record = await getRecord(db, {
           recordId: parsed.data.recordId,
@@ -179,6 +250,60 @@ export async function POST(req: Request) {
           user: platformUser,
         });
         return NextResponse.json({ record });
+      }
+      case "listSearchConfigs": {
+        const configs = await listRecordSearchConfigs(db, {
+          appId: app.id,
+          entityKey: parsed.data.entityKey,
+          user: platformUser,
+        });
+        return NextResponse.json({ configs });
+      }
+      case "listSavedFilters": {
+        const filters = await listSavedRecordFilters(db, {
+          appId: app.id,
+          entityKey: parsed.data.entityKey,
+          user: platformUser,
+        });
+        return NextResponse.json({ filters });
+      }
+      case "saveFilter": {
+        assertPlatformSessionCanWrite(auth.session);
+        const filter = await saveRecordFilter(db, {
+          appId: app.id,
+          entityKey: parsed.data.entityKey,
+          name: parsed.data.name,
+          definition: parsed.data.definition,
+          user: platformUser,
+        });
+        return NextResponse.json({ filter }, { status: 201 });
+      }
+      case "deleteSavedFilter": {
+        assertPlatformSessionCanManage(auth.session);
+        const filter = await deleteSavedRecordFilter(db, {
+          filterId: parsed.data.filterId,
+          user: platformUser,
+        });
+        return NextResponse.json({ filter });
+      }
+      case "runReport": {
+        const report = await runPlatformRecordReport(db, {
+          appId: app.id,
+          entityKey: parsed.data.entityKey,
+          report: parsed.data.report,
+          user: platformUser,
+        });
+        return NextResponse.json({ report });
+      }
+      case "exportRecordsCsv": {
+        const exportResult = await exportPlatformRecordsCsv(db, {
+          appId: app.id,
+          entityKey: parsed.data.entityKey,
+          query: parsed.data.query,
+          fileName: parsed.data.fileName,
+          user: platformUser,
+        });
+        return NextResponse.json({ export: exportResult });
       }
     }
   } catch (error) {
@@ -278,6 +403,16 @@ function assertPlatformSessionCanWrite(input: { canWrite: boolean }): void {
       403,
       "read_only",
       "You can view this app, but you cannot change its data.",
+    );
+  }
+}
+
+function assertPlatformSessionCanManage(input: { canManage: boolean }): void {
+  if (!input.canManage) {
+    throw new PlatformDataError(
+      403,
+      "not_owner",
+      "Only app owners can manage saved filters.",
     );
   }
 }

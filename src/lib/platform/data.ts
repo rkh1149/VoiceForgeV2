@@ -6,11 +6,28 @@ import {
   appMemberships,
   appRecordEvents,
   appRecordVersions,
+  appRecordSearchConfigs,
   appRecords,
+  appSavedRecordFilters,
   apps,
   users,
+  type AppRecordSearchConfig,
+  type AppSavedRecordFilter,
   type User,
 } from "../../db/schema";
+import {
+  PLATFORM_RECORD_EXPORT_MAX_RECORDS,
+  buildPlatformRecordReport,
+  normalizeFieldList,
+  normalizeRecordQuery,
+  normalizeRecordReportInput,
+  normalizeSavedFilterDefinition,
+  platformRecordsToCsv,
+  queryPlatformRecords,
+  type PlatformRecordQuery,
+  type RecordReportResult,
+  type SavedRecordFilterDefinition,
+} from "./records-query";
 
 type Database = ReturnType<typeof getDb>;
 type PlatformUser = Pick<User, "id" | "role">;
@@ -24,6 +41,7 @@ export const PLATFORM_DATA_MAX_ENTITY_SCHEMAS_PER_APP = 50;
 export const PLATFORM_DATA_MAX_RECORDS_PER_APP = 5_000;
 export const PLATFORM_DATA_MAX_RECORD_PAYLOAD_BYTES = 64 * 1024;
 export const PLATFORM_DATA_MAX_RECORDS_PER_RESPONSE = 200;
+export const PLATFORM_DATA_MAX_RECORDS_PER_QUERY = 5_000;
 export const PLATFORM_DATA_RATE_LIMIT_WINDOW_MS = 60_000;
 export const PLATFORM_DATA_RATE_LIMIT_MAX_REQUESTS = 120;
 
@@ -102,6 +120,28 @@ export type PlatformEntityDefinition = {
   description: string;
   fields: PlatformFieldDefinition[];
   relationships: PlatformRelationshipDefinition[];
+};
+
+export type PlatformRecordSearchConfig = Omit<
+  AppRecordSearchConfig,
+  "indexedFields" | "defaultSort"
+> & {
+  indexedFields: string[];
+  defaultSort: PlatformRecordQuery["sort"];
+};
+
+export type PlatformSavedRecordFilter = Omit<
+  AppSavedRecordFilter,
+  "definition"
+> & {
+  definition: SavedRecordFilterDefinition;
+};
+
+export type PlatformRecordCsvExport = {
+  fileName: string;
+  contentType: "text/csv";
+  csv: string;
+  rowCount: number;
 };
 
 const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
@@ -459,6 +499,285 @@ export async function listRecords(
     .where(and(...filters))
     .orderBy(desc(appRecords.updatedAt))
     .limit(limit);
+}
+
+export async function listRecordSearchConfigs(
+  db: Database,
+  input: { appId: string; user: PlatformUser; entityKey?: string },
+): Promise<PlatformRecordSearchConfig[]> {
+  await assertCanReadAppData(db, input.appId, input.user);
+  const filters = [eq(appRecordSearchConfigs.appId, input.appId)];
+  if (input.entityKey) {
+    filters.push(
+      eq(appRecordSearchConfigs.entityKey, normalizeEntityKey(input.entityKey)),
+    );
+  }
+  const rows = await db
+    .select()
+    .from(appRecordSearchConfigs)
+    .where(and(...filters))
+    .orderBy(asc(appRecordSearchConfigs.entityKey));
+  return rows.map(normalizeSearchConfigRow);
+}
+
+export async function upsertRecordSearchConfig(
+  db: Database,
+  input: {
+    appId: string;
+    user: PlatformUser;
+    entityKey: string;
+    indexedFields: string[];
+    defaultSort?: PlatformRecordQuery["sort"];
+  },
+): Promise<PlatformRecordSearchConfig> {
+  await assertCanManageAppData(db, input.appId, input.user);
+  const entity = await getEntityDefinition(db, input.appId, input.entityKey);
+  const knownFields = new Set(entity.fields.map((field) => field.key));
+  const indexedFields = normalizeFieldList(input.indexedFields).filter((field) =>
+    knownFields.has(field),
+  );
+  const defaultSort = normalizeRecordQuery({
+    sort: input.defaultSort ?? [],
+  }).sort.filter((sort) => knownFields.has(sort.fieldKey));
+  const [row] = await db
+    .insert(appRecordSearchConfigs)
+    .values({
+      appId: input.appId,
+      entityKey: entity.key,
+      indexedFields,
+      defaultSort,
+      createdBy: input.user.id,
+    })
+    .onConflictDoUpdate({
+      target: [appRecordSearchConfigs.appId, appRecordSearchConfigs.entityKey],
+      set: {
+        indexedFields,
+        defaultSort,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+  await db.insert(appRecordEvents).values({
+    appId: input.appId,
+    userId: input.user.id,
+    eventType: "record_search_config_upsert",
+    payload: { entityKey: entity.key, indexedFields, defaultSort },
+  });
+  return normalizeSearchConfigRow(row);
+}
+
+export async function searchPlatformRecords(
+  db: Database,
+  input: {
+    appId: string;
+    entityKey: string;
+    user: PlatformUser;
+    query?: unknown;
+    includeDeleted?: boolean;
+  },
+) {
+  const role = await assertCanReadAppData(db, input.appId, input.user);
+  if (input.includeDeleted && !canManageAppData(role)) {
+    throw new PlatformDataError(
+      403,
+      "not_owner",
+      "Only app owners can include deleted records.",
+    );
+  }
+  const entityKey = normalizeEntityKey(input.entityKey);
+  await getEntityDefinition(db, input.appId, entityKey);
+  const records = await selectQueryableRecords(db, {
+    appId: input.appId,
+    entityKey,
+    includeDeleted: input.includeDeleted,
+  });
+  const config = await getRecordSearchConfig(db, input.appId, entityKey);
+  const query = normalizeRecordQuery({
+    ...(isPlainObject(input.query) ? input.query : {}),
+    sort:
+      isPlainObject(input.query) && Array.isArray(input.query.sort)
+        ? input.query.sort
+        : config.defaultSort,
+  });
+  return queryPlatformRecords(records, query, config.indexedFields);
+}
+
+export async function listSavedRecordFilters(
+  db: Database,
+  input: { appId: string; user: PlatformUser; entityKey?: string },
+): Promise<PlatformSavedRecordFilter[]> {
+  await assertCanReadAppData(db, input.appId, input.user);
+  const filters = [eq(appSavedRecordFilters.appId, input.appId)];
+  if (input.entityKey) {
+    filters.push(
+      eq(appSavedRecordFilters.entityKey, normalizeEntityKey(input.entityKey)),
+    );
+  }
+  const rows = await db
+    .select()
+    .from(appSavedRecordFilters)
+    .where(and(...filters))
+    .orderBy(asc(appSavedRecordFilters.name));
+  return rows.map(normalizeSavedFilterRow);
+}
+
+export async function saveRecordFilter(
+  db: Database,
+  input: {
+    appId: string;
+    entityKey: string;
+    user: PlatformUser;
+    name: string;
+    definition: unknown;
+  },
+): Promise<PlatformSavedRecordFilter> {
+  await assertCanWriteAppData(db, input.appId, input.user);
+  const entity = await getEntityDefinition(db, input.appId, input.entityKey);
+  const definition = normalizeSavedFilterDefinition(input.definition);
+  const name = truncateClean(input.name, 120);
+  if (!name) {
+    throw new PlatformDataError(
+      400,
+      "invalid_filter_name",
+      "Saved filter name is required.",
+    );
+  }
+  const [row] = await db
+    .insert(appSavedRecordFilters)
+    .values({
+      appId: input.appId,
+      entityKey: entity.key,
+      name,
+      definition,
+      createdBy: input.user.id,
+    })
+    .onConflictDoUpdate({
+      target: [
+        appSavedRecordFilters.appId,
+        appSavedRecordFilters.entityKey,
+        appSavedRecordFilters.name,
+      ],
+      set: {
+        definition,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+  await db.insert(appRecordEvents).values({
+    appId: input.appId,
+    userId: input.user.id,
+    eventType: "saved_filter_upsert",
+    payload: { entityKey: entity.key, name, definition },
+  });
+  return normalizeSavedFilterRow(row);
+}
+
+export async function deleteSavedRecordFilter(
+  db: Database,
+  input: { filterId: string; user: PlatformUser },
+): Promise<PlatformSavedRecordFilter> {
+  const [filter] = await db
+    .select()
+    .from(appSavedRecordFilters)
+    .where(eq(appSavedRecordFilters.id, input.filterId))
+    .limit(1);
+  if (!filter) {
+    throw new PlatformDataError(
+      404,
+      "saved_filter_not_found",
+      "Saved filter not found.",
+    );
+  }
+  await assertCanManageAppData(db, filter.appId, input.user);
+  await db
+    .delete(appSavedRecordFilters)
+    .where(eq(appSavedRecordFilters.id, filter.id));
+  await db.insert(appRecordEvents).values({
+    appId: filter.appId,
+    userId: input.user.id,
+    eventType: "saved_filter_delete",
+    payload: { entityKey: filter.entityKey, name: filter.name },
+  });
+  return normalizeSavedFilterRow(filter);
+}
+
+export async function runPlatformRecordReport(
+  db: Database,
+  input: {
+    appId: string;
+    entityKey: string;
+    user: PlatformUser;
+    report: unknown;
+  },
+): Promise<RecordReportResult> {
+  await assertCanReadAppData(db, input.appId, input.user);
+  const entityKey = normalizeEntityKey(input.entityKey);
+  await getEntityDefinition(db, input.appId, entityKey);
+  const records = await selectQueryableRecords(db, {
+    appId: input.appId,
+    entityKey,
+  });
+  const config = await getRecordSearchConfig(db, input.appId, entityKey);
+  const reportInput = normalizeRecordReportInput(input.report);
+  const report = buildPlatformRecordReport(
+    records,
+    reportInput,
+    config.indexedFields,
+  );
+  await db.insert(appRecordEvents).values({
+    appId: input.appId,
+    userId: input.user.id,
+    eventType: "record_report_run",
+    payload: {
+      entityKey,
+      totalRecords: report.totalRecords,
+      groupByFieldKey: report.groupByFieldKey,
+      metric: report.metric,
+      metricFieldKey: report.metricFieldKey,
+    },
+  });
+  return report;
+}
+
+export async function exportPlatformRecordsCsv(
+  db: Database,
+  input: {
+    appId: string;
+    entityKey: string;
+    user: PlatformUser;
+    query?: unknown;
+    fileName?: string;
+  },
+): Promise<PlatformRecordCsvExport> {
+  await assertCanReadAppData(db, input.appId, input.user);
+  const entityKey = normalizeEntityKey(input.entityKey);
+  await getEntityDefinition(db, input.appId, entityKey);
+  const search = await searchPlatformRecords(db, {
+    appId: input.appId,
+    entityKey,
+    user: input.user,
+    query: {
+      ...(isPlainObject(input.query) ? input.query : {}),
+      limit: PLATFORM_RECORD_EXPORT_MAX_RECORDS,
+    },
+  });
+  const fields = isPlainObject(input.query) && Array.isArray(input.query.fields)
+    ? input.query.fields.filter((field): field is string => typeof field === "string")
+    : [];
+  const csv = platformRecordsToCsv(search.records, fields);
+  const fileName = `${normalizeExportFileName(input.fileName ?? entityKey)}.csv`;
+  await db.insert(appRecordEvents).values({
+    appId: input.appId,
+    userId: input.user.id,
+    eventType: "record_csv_export",
+    payload: { entityKey, rowCount: search.records.length, fileName },
+  });
+  return {
+    fileName,
+    contentType: "text/csv",
+    csv,
+    rowCount: search.records.length,
+  };
 }
 
 export async function getRecord(
@@ -825,6 +1144,92 @@ export function platformDataErrorResponse(error: unknown): {
       code: "platform_data_error",
     },
   };
+}
+
+async function selectQueryableRecords(
+  db: Database,
+  input: {
+    appId: string;
+    entityKey: string;
+    includeDeleted?: boolean;
+  },
+) {
+  const filters = [
+    eq(appRecords.appId, input.appId),
+    eq(appRecords.entityKey, normalizeEntityKey(input.entityKey)),
+  ];
+  if (!input.includeDeleted) filters.push(isNull(appRecords.deletedAt));
+  return db
+    .select()
+    .from(appRecords)
+    .where(and(...filters))
+    .orderBy(desc(appRecords.updatedAt))
+    .limit(PLATFORM_DATA_MAX_RECORDS_PER_QUERY);
+}
+
+async function getRecordSearchConfig(
+  db: Database,
+  appId: string,
+  entityKey: string,
+): Promise<Pick<PlatformRecordSearchConfig, "indexedFields" | "defaultSort">> {
+  const normalizedEntityKey = normalizeEntityKey(entityKey);
+  const [row] = await db
+    .select()
+    .from(appRecordSearchConfigs)
+    .where(
+      and(
+        eq(appRecordSearchConfigs.appId, appId),
+        eq(appRecordSearchConfigs.entityKey, normalizedEntityKey),
+      ),
+    )
+    .limit(1);
+  if (!row) return { indexedFields: [], defaultSort: [] };
+  return normalizeSearchConfigRow(row);
+}
+
+function normalizeSearchConfigRow(
+  row: AppRecordSearchConfig,
+): PlatformRecordSearchConfig {
+  return {
+    ...row,
+    indexedFields: Array.isArray(row.indexedFields)
+      ? normalizeFieldList(
+          row.indexedFields.filter(
+            (field): field is string => typeof field === "string",
+          ),
+        )
+      : [],
+    defaultSort: normalizeRecordQuery({
+      sort: Array.isArray(row.defaultSort) ? row.defaultSort : [],
+    }).sort,
+  };
+}
+
+function normalizeSavedFilterRow(
+  row: AppSavedRecordFilter,
+): PlatformSavedRecordFilter {
+  return {
+    ...row,
+    definition: normalizeSavedFilterDefinition(row.definition),
+  };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function truncateClean(value: string, length: number): string {
+  return value.trim().replace(/\s+/g, " ").slice(0, length);
+}
+
+function normalizeExportFileName(value: string): string {
+  const name = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return name || "records";
 }
 
 async function getEntityDefinition(

@@ -41,7 +41,10 @@ import {
 } from "@/lib/vercel";
 import { getGeneratedAppName } from "@/lib/generated-apps";
 import { sendVoiceForgeBuildNotification } from "@/lib/platform/notifications";
-import { seedPlatformEntitySchemasFromSpec } from "@/lib/platform/spec-seeding";
+import {
+  seedPlatformEntitySchemasFromSpec,
+  seedPlatformSearchConfigsFromSpec,
+} from "@/lib/platform/spec-seeding";
 import { randomBytes } from "crypto";
 import {
   createDebugBudget,
@@ -224,6 +227,17 @@ function architectureUsesPlatformIntegrations(
   );
 }
 
+function architectureUsesPlatformSearchReports(
+  architecture: ArchitecturePlan,
+): boolean {
+  return architecture.platformServices.some(
+    (service) =>
+      (service.service === "search" || service.service === "reports") &&
+      service.required &&
+      service.availability === "available",
+  );
+}
+
 /**
  * Runs the full pipeline. Call without awaiting from request handlers:
  *   void startBuildPipeline(id).catch(...)
@@ -334,6 +348,8 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       architectureUsesPlatformNotifications(architectureForStorage);
     const usesPlatformIntegrations =
       architectureUsesPlatformIntegrations(architectureForStorage);
+    const usesPlatformSearchReports =
+      architectureUsesPlatformSearchReports(architectureForStorage);
     let seededPlatformEntities: Awaited<
       ReturnType<typeof seedPlatformEntitySchemasFromSpec>
     > = [];
@@ -358,6 +374,26 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         buildRunId,
         `Platform data schemas ready: ${seededEntities.map((entity) => entity.key).join(", ") || "none"}.`,
       );
+      if (usesPlatformSearchReports) {
+        const configs = await seedPlatformSearchConfigsFromSpec(db, {
+          appId: app.id,
+          user: { id: app.ownerId, role: "user" },
+          spec,
+        });
+        await audit({
+          userId: app.ownerId,
+          appId: app.id,
+          buildRunId,
+          action: "platformData.searchConfigsSeeded",
+          payload: {
+            entities: configs.map((config) => config.entityKey),
+          },
+        });
+        await log(
+          buildRunId,
+          `Platform search/report configs ready: ${configs.map((config) => config.entityKey).join(", ") || "none"}.`,
+        );
+      }
     }
 
     // Change mode: the app was built before, so modify its current code.

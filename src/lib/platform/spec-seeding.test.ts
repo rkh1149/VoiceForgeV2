@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { normalizeAppSpec } from "../spec";
-import { platformEntityFromSpec } from "./spec-seeding";
+import {
+  platformEntityFromSpec,
+  platformSearchConfigFromSpec,
+} from "./spec-seeding";
 
 describe("platform entity seeding", () => {
   it("maps approved spec entities into platform entity definitions", () => {
@@ -141,5 +144,84 @@ describe("platform entity seeding", () => {
     expect(entity.fields.find((field) => field.key === "bought")?.type).toBe(
       "boolean",
     );
+  });
+
+  it("selects indexed fields and default sort for platform search/report configs", () => {
+    const spec = normalizeAppSpec({
+      appName: "Activity Planner",
+      purpose: "Plan activities together.",
+      targetUsers: "A family",
+      screens: [{ name: "Home", description: "Manage activities." }],
+      features: ["Add activities", "Search activities", "Export CSV"],
+      dataToStore: ["activities with name, category, planned date, and cost"],
+      needsLogin: false,
+      sharingModel: "shared",
+      aiFeatures: [],
+      testPlan: ["Search and export activities"],
+      deploymentNotes: "",
+    });
+    const entity = {
+      ...spec.dataEntities[0],
+      name: "Activity",
+      fields: [
+        {
+          name: "name",
+          label: "Name",
+          type: "text" as const,
+          required: true,
+          validation: "",
+        },
+        {
+          name: "category",
+          label: "Category",
+          type: "select" as const,
+          required: false,
+          validation: "Choose one of: Outdoors, Learning.",
+        },
+        {
+          name: "planned date",
+          label: "Planned date",
+          type: "date" as const,
+          required: false,
+          validation: "",
+        },
+        {
+          name: "cost",
+          label: "Cost",
+          type: "number" as const,
+          required: false,
+          validation: "",
+        },
+      ],
+    };
+    const config = platformSearchConfigFromSpec(
+      entity,
+      {
+        ...spec,
+        searchRequirements: [
+          {
+            target: "Activity",
+            fields: ["name", "category"],
+            filters: ["planned date", "cost"],
+          },
+        ],
+        reports: [
+          {
+            name: "Activity cost report",
+            description: "Cost by category.",
+            dataNeeded: ["category", "cost"],
+            exportFormats: ["screen", "csv"],
+          },
+        ],
+      },
+    );
+
+    expect(config.entityKey).toBe("activity");
+    expect(config.indexedFields).toEqual(
+      expect.arrayContaining(["name", "category", "planned_date", "cost"]),
+    );
+    expect(config.defaultSort).toEqual([
+      { fieldKey: "planned_date", direction: "asc" },
+    ]);
   });
 });

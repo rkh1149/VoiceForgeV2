@@ -112,7 +112,16 @@ export const architecturePlanSchema = z.object({
 
 export type ArchitecturePlan = z.infer<typeof architecturePlanSchema>;
 
-const AVAILABLE_SERVICES = new Set(["ai", "data", "users", "files", "email", "jobs"]);
+const AVAILABLE_SERVICES = new Set([
+  "ai",
+  "data",
+  "users",
+  "files",
+  "email",
+  "jobs",
+  "search",
+  "reports",
+]);
 
 export function createFallbackArchitecturePlan(
   spec: AppSpec,
@@ -250,6 +259,9 @@ export function createFallbackArchitecturePlan(
       ...(hasApprovedPlatformIntegrations(spec)
         ? ["Wire locked platform integrations"]
         : []),
+      ...(hasPlatformSearchReports(spec)
+        ? ["Seed platform search/report metadata", "Wire platform search, saved filters, reports, and CSV export"]
+        : []),
       "Generate typed data shapes",
       "Generate UI components",
       "Generate pages and workflows",
@@ -286,6 +298,11 @@ export function createFallbackArchitecturePlan(
               "Integrations use approved provider/action keys through the locked platform integration endpoint; generated code never handles raw credentials.",
             ]
           : []),
+        ...(hasPlatformSearchReports(spec)
+          ? [
+              "Search, saved filters, reports, and CSV exports use the locked platform data endpoint over validated JSONB records.",
+            ]
+          : []),
       ],
     },
     acceptanceTests: spec.acceptanceCriteria.map(
@@ -305,8 +322,9 @@ export function createFallbackArchitecturePlan(
         : needsServerData(spec) ||
             spec.fileRequirements.length > 0 ||
             hasPlatformNotifications(spec) ||
-            hasApprovedPlatformIntegrations(spec)
-          ? "Build with locked platform data/file/notification/integration APIs and the generated app template."
+            hasApprovedPlatformIntegrations(spec) ||
+            hasPlatformSearchReports(spec)
+          ? "Build with locked platform data/search/report/file/notification/integration APIs and the generated app template."
           : "Build as a personal browser app using the locked template.",
       blockingIssues,
       warnings: [],
@@ -416,6 +434,24 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
       reason: "Locked platform JSONB records are available for generated apps.",
     });
   }
+  if (hasPlatformSearch(spec)) {
+    services.push({
+      service: "search",
+      required: true,
+      availability: "available",
+      reason:
+        "Platform indexed-field metadata, saved filters, server-side search/sort/filtering, and CSV export are available for generated app records.",
+    });
+  }
+  if (hasPlatformReports(spec)) {
+    services.push({
+      service: "reports",
+      required: true,
+      availability: "available",
+      reason:
+        "Basic platform record reports over JSONB data are available for generated apps.",
+    });
+  }
   if (needsGeneratedAppUsers(spec)) {
     services.push({
       service: "users",
@@ -506,6 +542,18 @@ function needsServerData(spec: AppSpec): boolean {
 
 function hasPlatformNotifications(spec: AppSpec): boolean {
   return spec.notifications.some((notification) => notification.channel !== "none");
+}
+
+function hasPlatformSearch(spec: AppSpec): boolean {
+  return needsServerData(spec) && spec.searchRequirements.length > 0;
+}
+
+function hasPlatformReports(spec: AppSpec): boolean {
+  return needsServerData(spec) && spec.reports.length > 0;
+}
+
+function hasPlatformSearchReports(spec: AppSpec): boolean {
+  return hasPlatformSearch(spec) || hasPlatformReports(spec);
 }
 
 function hasApprovedPlatformIntegrations(spec: AppSpec): boolean {

@@ -28,6 +28,103 @@ export type PlatformEntitySchema = {
   updatedAt: string;
 };
 
+export type PlatformRecordFilterOperator =
+  | "equals"
+  | "not_equals"
+  | "contains"
+  | "not_contains"
+  | "starts_with"
+  | "in"
+  | "empty"
+  | "not_empty"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "between";
+
+export type PlatformRecordQueryFilter = {
+  fieldKey: string;
+  operator: PlatformRecordFilterOperator;
+  value?: unknown;
+  valueTo?: unknown;
+};
+
+export type PlatformRecordQuerySort = {
+  fieldKey: string;
+  direction: "asc" | "desc";
+};
+
+export type PlatformRecordQuery = {
+  query?: string;
+  fields?: string[];
+  filters?: PlatformRecordQueryFilter[];
+  sort?: PlatformRecordQuerySort[];
+  limit?: number;
+  offset?: number;
+};
+
+export type PlatformRecordSearchResult<TData extends object> = {
+  records: Array<PlatformRecord<TData>>;
+  total: number;
+  offset: number;
+  limit: number;
+};
+
+export type PlatformRecordSearchConfig = {
+  id: string;
+  appId: string;
+  entityKey: string;
+  indexedFields: string[];
+  defaultSort: PlatformRecordQuerySort[];
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PlatformSavedRecordFilter = {
+  id: string;
+  appId: string;
+  entityKey: string;
+  name: string;
+  definition: Omit<PlatformRecordQuery, "limit" | "offset">;
+  visibility: string;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PlatformRecordReportInput = Omit<
+  PlatformRecordQuery,
+  "limit" | "offset"
+> & {
+  groupByFieldKey?: string;
+  metric?: "count" | "sum" | "average";
+  metricFieldKey?: string;
+  limit?: number;
+};
+
+export type PlatformRecordReport = {
+  totalRecords: number;
+  groupByFieldKey: string | null;
+  metric: "count" | "sum" | "average";
+  metricFieldKey: string | null;
+  rows: Array<{
+    label: string;
+    count: number;
+    sum: number | null;
+    average: number | null;
+  }>;
+  generatedAt: string;
+};
+
+export type PlatformRecordCsvExport = {
+  fileName: string;
+  contentType: "text/csv";
+  csv: string;
+  rowCount: number;
+};
+
 export type PlatformSession = {
   status: "anonymous" | "signed_in" | "signed_out" | "no_access";
   user: {
@@ -52,10 +149,32 @@ type RequestBody =
       includeDeleted?: boolean;
       limit?: number;
     }
+  | {
+      action: "searchRecords";
+      entityKey: string;
+      includeDeleted?: boolean;
+      query?: PlatformRecordQuery;
+    }
   | { action: "getRecord"; recordId: string }
   | { action: "createRecord"; entityKey: string; data: object }
   | { action: "updateRecord"; recordId: string; data: object }
-  | { action: "deleteRecord"; recordId: string };
+  | { action: "deleteRecord"; recordId: string }
+  | { action: "listSearchConfigs"; entityKey?: string }
+  | { action: "listSavedFilters"; entityKey?: string }
+  | {
+      action: "saveFilter";
+      entityKey: string;
+      name: string;
+      definition: Omit<PlatformRecordQuery, "limit" | "offset">;
+    }
+  | { action: "deleteSavedFilter"; filterId: string }
+  | { action: "runReport"; entityKey: string; report: PlatformRecordReportInput }
+  | {
+      action: "exportRecordsCsv";
+      entityKey: string;
+      query?: PlatformRecordQuery;
+      fileName?: string;
+    };
 
 const SESSION_STORAGE_KEY = "voiceforge.platformSessionToken";
 
@@ -154,6 +273,87 @@ export async function listPlatformRecords<TData extends object>(
     ...options,
   });
   return result.records;
+}
+
+export async function searchPlatformRecords<TData extends object>(
+  entityKey: string,
+  query: PlatformRecordQuery = {},
+  options: { includeDeleted?: boolean } = {},
+): Promise<PlatformRecordSearchResult<TData>> {
+  return request<PlatformRecordSearchResult<TData>>({
+    action: "searchRecords",
+    entityKey,
+    query,
+    ...options,
+  });
+}
+
+export async function listPlatformRecordSearchConfigs(
+  entityKey?: string,
+): Promise<PlatformRecordSearchConfig[]> {
+  const result = await request<{ configs: PlatformRecordSearchConfig[] }>({
+    action: "listSearchConfigs",
+    entityKey,
+  });
+  return result.configs;
+}
+
+export async function listPlatformSavedFilters(
+  entityKey?: string,
+): Promise<PlatformSavedRecordFilter[]> {
+  const result = await request<{ filters: PlatformSavedRecordFilter[] }>({
+    action: "listSavedFilters",
+    entityKey,
+  });
+  return result.filters;
+}
+
+export async function savePlatformRecordFilter(
+  entityKey: string,
+  name: string,
+  definition: Omit<PlatformRecordQuery, "limit" | "offset">,
+): Promise<PlatformSavedRecordFilter> {
+  const result = await request<{ filter: PlatformSavedRecordFilter }>({
+    action: "saveFilter",
+    entityKey,
+    name,
+    definition,
+  });
+  return result.filter;
+}
+
+export async function deletePlatformSavedFilter(
+  filterId: string,
+): Promise<PlatformSavedRecordFilter> {
+  const result = await request<{ filter: PlatformSavedRecordFilter }>({
+    action: "deleteSavedFilter",
+    filterId,
+  });
+  return result.filter;
+}
+
+export async function runPlatformRecordReport(
+  entityKey: string,
+  report: PlatformRecordReportInput,
+): Promise<PlatformRecordReport> {
+  const result = await request<{ report: PlatformRecordReport }>({
+    action: "runReport",
+    entityKey,
+    report,
+  });
+  return result.report;
+}
+
+export async function exportPlatformRecordsCsv(
+  entityKey: string,
+  options: { query?: PlatformRecordQuery; fileName?: string } = {},
+): Promise<PlatformRecordCsvExport> {
+  const result = await request<{ export: PlatformRecordCsvExport }>({
+    action: "exportRecordsCsv",
+    entityKey,
+    ...options,
+  });
+  return result.export;
 }
 
 export async function getPlatformRecord<TData extends object>(

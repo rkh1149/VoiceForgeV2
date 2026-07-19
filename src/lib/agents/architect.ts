@@ -19,6 +19,7 @@ Current platform capabilities available to generated apps:
 - localStorage persistence for personal/browser-only data
 - Locked /api/ai endpoint for AI text and image features
 - Locked /api/data endpoint for shared/public platform JSONB records, with optional VoiceForge member sign-in
+- Platform search/report actions through the locked /api/data endpoint: server-side search, filters, sorts, saved filters, basic grouped reports, and CSV export over platform JSONB records
 - Locked /api/files endpoint for generated app uploads, attachments, downloads, metadata, and delete/archive
 - Locked /api/notifications endpoint for approved in-app/email notification templates, preferences, and scheduled notification job metadata
 - Locked /api/integrations endpoint for approved integration catalogue providers and actions only. Stage 12A approved provider: demo_directory (Demo Directory) with actions list_contacts, lookup_contact, and record_contact_note.
