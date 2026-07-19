@@ -213,6 +213,17 @@ function architectureUsesPlatformNotifications(
   );
 }
 
+function architectureUsesPlatformIntegrations(
+  architecture: ArchitecturePlan,
+): boolean {
+  return architecture.platformServices.some(
+    (service) =>
+      service.service === "integrations" &&
+      service.required &&
+      service.availability === "available",
+  );
+}
+
 /**
  * Runs the full pipeline. Call without awaiting from request handlers:
  *   void startBuildPipeline(id).catch(...)
@@ -268,7 +279,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     const architecture = shouldUseArchitectAgent()
       ? await runArchitectAgent({ spec, complexity })
       : createFallbackArchitecturePlan(spec, complexity);
-    const architectureValidation = validateArchitecturePlan(architecture);
+    const architectureValidation = validateArchitecturePlan(architecture, spec);
     const architectureForStorage = {
       ...architecture,
       capabilityValidation: {
@@ -321,6 +332,8 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     const usesPlatformFiles = architectureUsesPlatformFiles(architectureForStorage);
     const usesPlatformNotifications =
       architectureUsesPlatformNotifications(architectureForStorage);
+    const usesPlatformIntegrations =
+      architectureUsesPlatformIntegrations(architectureForStorage);
     let seededPlatformEntities: Awaited<
       ReturnType<typeof seedPlatformEntitySchemasFromSpec>
     > = [];
@@ -638,7 +651,8 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       spec.aiFeatures.length > 0 ||
       usesPlatformData ||
       usesPlatformFiles ||
-      usesPlatformNotifications
+      usesPlatformNotifications ||
+      usesPlatformIntegrations
     ) {
       let platformToken = app.platformToken ?? app.aiToken;
       if (!platformToken) platformToken = randomBytes(24).toString("hex");
@@ -688,6 +702,12 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
           "Platform notifications and scheduled job metadata are enabled for this generated app.",
         );
       }
+      if (usesPlatformIntegrations) {
+        await log(
+          buildRunId,
+          "Approved platform integrations are enabled for this generated app.",
+        );
+      }
       if (spec.aiFeatures.length > 0) {
         await log(
           buildRunId,
@@ -699,7 +719,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       } else if (!publicUrl) {
         await log(
           buildRunId,
-          "Warning: VOICEFORGE_PUBLIC_URL is not set, so platform data/files/notifications will not work in the deployed app.",
+          "Warning: VOICEFORGE_PUBLIC_URL is not set, so platform data/files/notifications/integrations will not work in the deployed app.",
         );
       }
     }

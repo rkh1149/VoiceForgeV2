@@ -9,6 +9,7 @@ const isPublicApi = createRouteMatcher([
   "/api/platform-data",
   "/api/platform-files",
   "/api/platform-notifications",
+  "/api/platform-integrations",
   "/api/platform-jobs/run",
 ]);
 

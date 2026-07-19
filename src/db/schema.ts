@@ -634,6 +634,76 @@ export const appJobRuns = pgTable(
   ],
 );
 
+/** Per-app credentials for approved external integrations. */
+export const appIntegrationCredentials = pgTable(
+  "app_integration_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    providerKey: text("provider_key").notNull(),
+    credentialLabel: text("credential_label").notNull().default("Default"),
+    authType: text("auth_type").notNull(),
+    scopes: jsonb("scopes").notNull().default([]),
+    encryptedPayload: jsonb("encrypted_payload"),
+    status: text("status").notNull().default("active"),
+    createdBy: uuid("created_by").references(() => users.id),
+    lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("app_integration_credentials_app_provider_label_idx").on(
+      t.appId,
+      t.providerKey,
+      t.credentialLabel,
+    ),
+    index("app_integration_credentials_app_idx").on(t.appId),
+    index("app_integration_credentials_provider_idx").on(t.providerKey),
+    index("app_integration_credentials_status_idx").on(t.status),
+  ],
+);
+
+/** Sanitized audit trail for approved integration actions and failures. */
+export const appIntegrationEvents = pgTable(
+  "app_integration_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    credentialId: uuid("credential_id").references(
+      () => appIntegrationCredentials.id,
+    ),
+    userId: uuid("user_id").references(() => users.id),
+    providerKey: text("provider_key").notNull(),
+    actionKey: text("action_key").notNull(),
+    status: text("status").notNull().default("succeeded"),
+    durationMs: integer("duration_ms").notNull().default(0),
+    requestSummary: jsonb("request_summary"),
+    responseSummary: jsonb("response_summary"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("app_integration_events_app_idx").on(t.appId),
+    index("app_integration_events_provider_idx").on(t.providerKey),
+    index("app_integration_events_status_idx").on(t.status),
+    index("app_integration_events_created_idx").on(t.createdAt),
+  ],
+);
+
 /** One row per AI request made by a generated app (gate + usage report). */
 export const aiUsage = pgTable(
   "ai_usage",
@@ -699,5 +769,8 @@ export type AppNotificationPreference =
 export type AppNotification = typeof appNotifications.$inferSelect;
 export type AppScheduledJob = typeof appScheduledJobs.$inferSelect;
 export type AppJobRun = typeof appJobRuns.$inferSelect;
+export type AppIntegrationCredential =
+  typeof appIntegrationCredentials.$inferSelect;
+export type AppIntegrationEvent = typeof appIntegrationEvents.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type AiUsage = typeof aiUsage.$inferSelect;

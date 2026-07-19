@@ -158,6 +158,63 @@ describe("architecture planning", () => {
     );
   });
 
+  it("allows approved Stage 12A catalogue integrations", () => {
+    const base = normalizeAppSpec(personalSpecInput);
+    const spec = {
+      ...base,
+      capabilityTier: "advanced" as const,
+      integrations: [
+        {
+          name: "Demo Directory",
+          purpose: "Search sample external contacts from the approved catalogue.",
+          direction: "import" as const,
+          requiredForLaunch: true,
+        },
+      ],
+    };
+    const complexity = computeSpecComplexity(spec);
+    const plan = createFallbackArchitecturePlan(spec, complexity);
+    const validation = validateArchitecturePlan(plan, spec);
+
+    expect(validation.canBuildNow).toBe(true);
+    expect(validation.blockingIssues).toEqual([]);
+    expect(plan.platformServices).toContainEqual(
+      expect.objectContaining({
+        service: "integrations",
+        availability: "available",
+        required: true,
+      }),
+    );
+    expect(plan.filePlan).toContainEqual(
+      expect.objectContaining({
+        path: "src/lib/platform-integrations.ts",
+        kind: "locked",
+      }),
+    );
+  });
+
+  it("keeps unsupported external providers blocked after Stage 12A", () => {
+    const base = normalizeAppSpec(personalSpecInput);
+    const spec = {
+      ...base,
+      capabilityTier: "advanced" as const,
+      integrations: [
+        {
+          name: "Google Calendar",
+          purpose: "Two-way calendar sync.",
+          direction: "two_way" as const,
+          requiredForLaunch: true,
+        },
+      ],
+    };
+    const complexity = computeSpecComplexity(spec);
+    const plan = createFallbackArchitecturePlan(spec, complexity);
+    const validation = validateArchitecturePlan(plan, spec);
+
+    expect(validation.canBuildNow).toBe(false);
+    expect(validation.blockingIssues.join(" ")).toContain("Google Calendar");
+  });
+
   it("allows personal apps with in-app reminders through platform jobs", () => {
     const base = normalizeAppSpec(personalSpecInput);
     const spec = {

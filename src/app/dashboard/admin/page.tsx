@@ -5,6 +5,8 @@ import { getDb } from "@/db";
 import {
   aiUsage,
   appEntitySchemas,
+  appIntegrationCredentials,
+  appIntegrationEvents,
   appMemberships,
   appRecords,
   apps,
@@ -47,6 +49,10 @@ export default async function AdminPage() {
     [{ platformEntityCount }],
     [{ platformRecordCount }],
     [{ platformMembershipCount }],
+    [{ integrationCredentialCount }],
+    [{ integrationEventCount }],
+    [{ integrationFailureCount }],
+    recentIntegrationEvents,
   ] = await Promise.all([
     db.select({ userCount: count() }).from(users),
     db.select({ appCount: count() }).from(apps),
@@ -128,6 +134,31 @@ export default async function AdminPage() {
     db.select({ platformEntityCount: count() }).from(appEntitySchemas),
     db.select({ platformRecordCount: count() }).from(appRecords),
     db.select({ platformMembershipCount: count() }).from(appMemberships),
+    db.select({ integrationCredentialCount: count() }).from(appIntegrationCredentials),
+    db.select({ integrationEventCount: count() }).from(appIntegrationEvents),
+    db
+      .select({ integrationFailureCount: count() })
+      .from(appIntegrationEvents)
+      .where(eq(appIntegrationEvents.status, "failed")),
+    db
+      .select({
+        id: appIntegrationEvents.id,
+        appId: apps.id,
+        appName: apps.name,
+        ownerEmail: users.email,
+        providerKey: appIntegrationEvents.providerKey,
+        actionKey: appIntegrationEvents.actionKey,
+        status: appIntegrationEvents.status,
+        durationMs: appIntegrationEvents.durationMs,
+        errorCode: appIntegrationEvents.errorCode,
+        errorMessage: appIntegrationEvents.errorMessage,
+        createdAt: appIntegrationEvents.createdAt,
+      })
+      .from(appIntegrationEvents)
+      .innerJoin(apps, eq(appIntegrationEvents.appId, apps.id))
+      .innerJoin(users, eq(apps.ownerId, users.id))
+      .orderBy(desc(appIntegrationEvents.createdAt))
+      .limit(20),
   ]);
 
   const stats = [
@@ -138,6 +169,9 @@ export default async function AdminPage() {
     { label: "Data entities", value: platformEntityCount },
     { label: "App records", value: platformRecordCount },
     { label: "App members", value: platformMembershipCount },
+    { label: "Integration creds", value: integrationCredentialCount },
+    { label: "Integration events", value: integrationEventCount },
+    { label: "Integration failures", value: integrationFailureCount },
   ];
 
   return (
@@ -148,7 +182,7 @@ export default async function AdminPage() {
       </p>
 
       {/* Stats */}
-      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {stats.map((s) => (
           <div
             key={s.label}
@@ -304,6 +338,71 @@ export default async function AdminPage() {
                       .toISOString()
                       .replace("T", " ")
                       .slice(0, 16)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Integration activity */}
+      <h2 className="mt-8 text-lg font-semibold text-forge-900">
+        Recent integration activity
+      </h2>
+      {recentIntegrationEvents.length === 0 ? (
+        <p className="mt-2 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-400">
+          No generated app integrations have been used yet.
+        </p>
+      ) : (
+        <div className="mt-2 overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <table className="w-full text-left text-sm">
+            <thead className="border-b border-slate-100 text-xs text-slate-400">
+              <tr>
+                <th className="px-4 py-2">App</th>
+                <th className="px-4 py-2">Owner</th>
+                <th className="px-4 py-2">Provider</th>
+                <th className="px-4 py-2">Action</th>
+                <th className="px-4 py-2">Status</th>
+                <th className="px-4 py-2">When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentIntegrationEvents.map((event) => (
+                <tr key={event.id} className="border-b border-slate-50">
+                  <td className="px-4 py-2">
+                    <Link
+                      href={`/dashboard/apps/${event.appId}`}
+                      className="font-medium text-forge-700 hover:underline"
+                    >
+                      {event.appName}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-2 text-slate-500">
+                    {event.ownerEmail}
+                  </td>
+                  <td className="px-4 py-2 font-mono text-xs text-slate-500">
+                    {event.providerKey}
+                  </td>
+                  <td className="px-4 py-2 font-mono text-xs text-slate-500">
+                    {event.actionKey}
+                  </td>
+                  <td className="px-4 py-2 text-slate-500">
+                    {event.status}
+                    {event.errorCode ? (
+                      <span className="ml-2 text-xs text-red-500">
+                        {event.errorCode}
+                      </span>
+                    ) : null}
+                    {event.errorMessage ? (
+                      <span className="ml-2 text-xs text-slate-400">
+                        {event.errorMessage.slice(0, 80)}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-slate-400">
+                    {event.createdAt.toISOString().replace("T", " ").slice(0, 16)}
+                    {event.durationMs ? ` · ${event.durationMs}ms` : ""}
                   </td>
                 </tr>
               ))}

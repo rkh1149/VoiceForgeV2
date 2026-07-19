@@ -32,12 +32,14 @@ const PROTECTED_FILES = new Set([
   "src/lib/platform-data.ts", // locked platform data browser client (Stage 9B)
   "src/lib/platform-files.ts", // locked platform files browser client (Stage 11A)
   "src/lib/platform-notifications.ts", // locked platform notification client (Stage 11B)
+  "src/lib/platform-integrations.ts", // locked platform integration client (Stage 12A)
   "src/lib/voiceforge-modules.ts", // locked reusable helpers (Stage 10)
   "src/components/voiceforge-reusable.tsx", // locked reusable UI components (Stage 10)
   "src/app/api/ai/route.ts", // locked AI endpoint (Stage 7)
   "src/app/api/data/route.ts", // locked platform data endpoint (Stage 9B)
   "src/app/api/files/route.ts", // locked platform files endpoint (Stage 11A)
   "src/app/api/notifications/route.ts", // locked platform notification endpoint (Stage 11B)
+  "src/app/api/integrations/route.ts", // locked platform integration endpoint (Stage 12A)
   "e2e/smoke.spec.ts", // locked browser/accessibility smoke test
 ]);
 

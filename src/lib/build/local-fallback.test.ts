@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { POST as dataPOST } from "../../../templates/nextjs-base/src/app/api/data/route";
 import { POST as filesPOST } from "../../../templates/nextjs-base/src/app/api/files/route";
+import { POST as integrationsPOST } from "../../../templates/nextjs-base/src/app/api/integrations/route";
 import { POST as notificationsPOST } from "../../../templates/nextjs-base/src/app/api/notifications/route";
 
 const schema = [
@@ -248,5 +249,60 @@ describe("generated app local platform fallback", () => {
         intervalMinutes: 60 * 24 * 7,
       },
     });
+  });
+
+  it("supports local approved integration catalogue and invocation", async () => {
+    process.env.VOICEFORGE_DATA_LOCAL_FALLBACK = "1";
+
+    const providers = await integrationsPOST(
+      new Request("http://local.test/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({ action: "listProviders" }),
+      }),
+    );
+
+    expect(providers.status).toBe(200);
+    await expect(providers.json()).resolves.toMatchObject({
+      providers: [
+        expect.objectContaining({
+          providerKey: "demo_directory",
+        }),
+      ],
+    });
+
+    const contacts = await integrationsPOST(
+      new Request("http://local.test/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "invoke",
+          providerKey: "demo_directory",
+          actionKey: "list_contacts",
+          input: { query: "avery" },
+        }),
+      }),
+    );
+
+    expect(contacts.status).toBe(200);
+    await expect(contacts.json()).resolves.toMatchObject({
+      result: {
+        contacts: [
+          expect.objectContaining({
+            id: "demo-avery",
+          }),
+        ],
+      },
+    });
+
+    const unsupported = await integrationsPOST(
+      new Request("http://local.test/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "invoke",
+          providerKey: "google_calendar",
+          actionKey: "list_events",
+        }),
+      }),
+    );
+    expect(unsupported.status).toBe(404);
   });
 });

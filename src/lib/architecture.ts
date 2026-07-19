@@ -8,6 +8,7 @@ import {
   DEPENDENCY_PROFILE_VALUES,
   inferDependencyProfiles,
 } from "./build/dependencies";
+import { isApprovedIntegrationRequirement } from "./platform/integration-catalog";
 
 const capabilityTierSchema = z.enum(["personal", "shared", "advanced"]);
 
@@ -217,6 +218,24 @@ export function createFallbackArchitecturePlan(
             },
           ]
         : []),
+      ...(hasApprovedPlatformIntegrations(spec)
+        ? [
+            {
+              path: "src/lib/platform-integrations.ts",
+              kind: "locked" as const,
+              purpose:
+                "Typed client for invoking approved external integration actions through VoiceForge.",
+              dependsOn: ["src/app/api/integrations/route.ts"],
+            },
+            {
+              path: "src/app/api/integrations/route.ts",
+              kind: "locked" as const,
+              purpose:
+                "Same-origin server proxy that forwards approved integration actions to VoiceForge.",
+              dependsOn: ["VOICEFORGE_APP_TOKEN", "VOICEFORGE_PUBLIC_URL"],
+            },
+          ]
+        : []),
     ],
     dependencyProfile: inferDependencyProfiles(spec),
     buildPhases: [
@@ -227,6 +246,9 @@ export function createFallbackArchitecturePlan(
         : []),
       ...(hasPlatformNotifications(spec)
         ? ["Wire locked platform notifications and scheduled job metadata"]
+        : []),
+      ...(hasApprovedPlatformIntegrations(spec)
+        ? ["Wire locked platform integrations"]
         : []),
       "Generate typed data shapes",
       "Generate UI components",
@@ -259,6 +281,11 @@ export function createFallbackArchitecturePlan(
               "Notifications use approved templates, recipient groups, preferences, quotas, and platform-managed jobs only.",
             ]
           : []),
+        ...(hasApprovedPlatformIntegrations(spec)
+          ? [
+              "Integrations use approved provider/action keys through the locked platform integration endpoint; generated code never handles raw credentials.",
+            ]
+          : []),
       ],
     },
     acceptanceTests: spec.acceptanceCriteria.map(
@@ -267,7 +294,7 @@ export function createFallbackArchitecturePlan(
     ),
     riskNotes: needsFuturePlatform
       ? [
-          "Current generated apps can use shared platform records, file attachments, VoiceForge member sign-in, and approved notifications, but integrations arrive in later stages.",
+          "Current generated apps can use shared platform records, file attachments, VoiceForge member sign-in, approved notifications, and approved integration catalogue providers. Unsupported external integrations remain blocked.",
         ]
       : [],
     unsupportedCapabilities: blockingIssues,
@@ -277,8 +304,9 @@ export function createFallbackArchitecturePlan(
         ? "Stop before code generation so the user can revise or wait for platform services."
         : needsServerData(spec) ||
             spec.fileRequirements.length > 0 ||
-            hasPlatformNotifications(spec)
-          ? "Build with locked platform data/file/notification APIs and the generated app template."
+            hasPlatformNotifications(spec) ||
+            hasApprovedPlatformIntegrations(spec)
+          ? "Build with locked platform data/file/notification/integration APIs and the generated app template."
           : "Build as a personal browser app using the locked template.",
       blockingIssues,
       warnings: [],
@@ -294,13 +322,53 @@ export type ArchitectureValidation = {
 
 export function validateArchitecturePlan(
   plan: ArchitecturePlan,
+  spec?: AppSpec,
 ): ArchitectureValidation {
-  const blockingIssues = plan.capabilityValidation.blockingIssues.filter(
+  let blockingIssues = plan.capabilityValidation.blockingIssues.filter(
     (issue) => !isAvailableServiceIssue(issue),
   );
   const warnings = [...plan.capabilityValidation.warnings];
+  let approvedSpecIntegrations = 0;
+  let unsupportedSpecIntegrations = 0;
+
+  if (spec) {
+    const externalIntegrations = spec.integrations.filter(
+      isExternalIntegrationRequirement,
+    );
+    const unsupportedIntegrations = externalIntegrations.filter(
+      (integration) => !isApprovedIntegrationRequirement(integration),
+    );
+    approvedSpecIntegrations = externalIntegrations.length - unsupportedIntegrations.length;
+    unsupportedSpecIntegrations = unsupportedIntegrations.length;
+    if (unsupportedIntegrations.length === 0) {
+      blockingIssues = blockingIssues.filter(
+        (issue) => issue.split(":", 1)[0]?.trim() !== "integrations",
+      );
+    } else {
+      const names = unsupportedIntegrations
+        .map((integration) => integration.name)
+        .filter(Boolean)
+        .join(", ");
+      blockingIssues.push(
+        names
+          ? `integrations: External integrations are only available for approved catalogue providers in Stage 12A. Not approved yet: ${names}.`
+          : "integrations: External integrations are only available for approved catalogue providers in Stage 12A.",
+      );
+    }
+  }
 
   for (const service of plan.platformServices) {
+    if (
+      service.service === "integrations" &&
+      service.availability !== "available" &&
+      approvedSpecIntegrations > 0 &&
+      unsupportedSpecIntegrations === 0
+    ) {
+      warnings.push(
+        "integrations: The architecture marked integrations as unavailable, but all requested providers are approved in the Stage 12A catalogue.",
+      );
+      continue;
+    }
     if (
       service.required &&
       service.availability !== "available" &&
@@ -395,15 +463,34 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
         "Platform-managed scheduled notification jobs are available with quotas, intervals, retry tracking, and audit records.",
     });
   }
-  const externalIntegrations = spec.integrations.filter(
-    isExternalIntegrationRequirement,
+  const externalIntegrations = spec.integrations.filter(isExternalIntegrationRequirement);
+  const approvedIntegrations = externalIntegrations.filter(
+    isApprovedIntegrationRequirement,
   );
-  if (externalIntegrations.length > 0) {
+  const unsupportedIntegrations = externalIntegrations.filter(
+    (integration) => !isApprovedIntegrationRequirement(integration),
+  );
+  if (approvedIntegrations.length > 0) {
+    services.push({
+      service: "integrations",
+      required: true,
+      availability: "available",
+      reason:
+        "Locked approved integration catalogue and invocation endpoint are available for generated apps.",
+    });
+  }
+  if (unsupportedIntegrations.length > 0) {
+    const names = unsupportedIntegrations
+      .map((integration) => integration.name)
+      .filter(Boolean)
+      .join(", ");
     services.push({
       service: "integrations",
       required: true,
       availability: "later",
-      reason: "External integrations are planned for Stage 12.",
+      reason: names
+        ? `External integrations are only available for approved catalogue providers in Stage 12A. Not approved yet: ${names}.`
+        : "External integrations are only available for approved catalogue providers in Stage 12A.",
     });
   }
   return services;
@@ -419,6 +506,12 @@ function needsServerData(spec: AppSpec): boolean {
 
 function hasPlatformNotifications(spec: AppSpec): boolean {
   return spec.notifications.some((notification) => notification.channel !== "none");
+}
+
+function hasApprovedPlatformIntegrations(spec: AppSpec): boolean {
+  return spec.integrations
+    .filter(isExternalIntegrationRequirement)
+    .some(isApprovedIntegrationRequirement);
 }
 
 export function needsGeneratedAppUsers(spec: AppSpec): boolean {

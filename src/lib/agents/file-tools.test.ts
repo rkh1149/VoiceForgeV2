@@ -24,12 +24,24 @@ describe("agent file tool path policy", () => {
     expect(isAgentWritablePath("src/lib/template.test.ts").ok).toBe(false);
     expect(isAgentWritablePath("src/lib/platform-data.ts").ok).toBe(false);
     expect(isAgentWritablePath("src/lib/platform-files.ts").ok).toBe(false);
+    expect(isAgentWritablePath("src/lib/platform-notifications.ts").ok).toBe(
+      false,
+    );
+    expect(isAgentWritablePath("src/lib/platform-integrations.ts").ok).toBe(
+      false,
+    );
     expect(isAgentWritablePath("src/lib/voiceforge-modules.ts").ok).toBe(false);
     expect(isAgentWritablePath("src/components/voiceforge-reusable.tsx").ok).toBe(
       false,
     );
     expect(isAgentWritablePath("src/app/api/data/route.ts").ok).toBe(false);
     expect(isAgentWritablePath("src/app/api/files/route.ts").ok).toBe(false);
+    expect(isAgentWritablePath("src/app/api/notifications/route.ts").ok).toBe(
+      false,
+    );
+    expect(isAgentWritablePath("src/app/api/integrations/route.ts").ok).toBe(
+      false,
+    );
     expect(isAgentWritablePath("e2e/smoke.spec.ts").ok).toBe(false);
     expect(isAgentWritablePath("src/app/api/custom/route.ts").ok).toBe(false);
     expect(isAgentWritablePath("package.json").ok).toBe(false);
