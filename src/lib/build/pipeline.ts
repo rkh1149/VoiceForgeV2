@@ -587,12 +587,12 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     for (const phase of generated.phases) {
       await log(
         buildRunId,
-        `Generation phase complete: ${phase.label} (${phase.filesWritten.length} changed, ${phase.filesDeleted.length} deleted). ${phase.notes}`,
+        `Generation phase complete: ${phase.label} [${phase.agentKey}] (${phase.filesWritten.length} changed, ${phase.filesDeleted.length} deleted). ${phase.notes}`,
       );
       await recordBuildAgentArtifact({
         appId: app.id,
         buildRunId,
-        agentKey: changeMode ? "change_agent" : "code_agent",
+        agentKey: phase.agentKey,
         phaseKey: phase.id,
         artifactType: "generation_phase",
         status: "passed",
@@ -602,6 +602,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
           filesDeleted: phase.filesDeleted,
         }),
         payload: {
+          agentKey: phase.agentKey,
           label: phase.label,
           notes: phase.notes,
           filesWritten: phase.filesWritten,

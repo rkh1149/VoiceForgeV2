@@ -11,6 +11,12 @@ import {
   selectChangeWorkflow,
   type ChangeWorkflow,
 } from "@/lib/agents/change-workflow";
+import {
+  CHANGE_GENERATION_PHASES,
+  CODE_GENERATION_PHASES,
+  DEEP_DIAGNOSTIC_CHANGE_PHASES,
+  type GenerationPhase,
+} from "@/lib/agents/code-phases";
 import { platformEntityFromSpec } from "@/lib/platform/spec-seeding";
 import { APPROVED_DEPENDENCY_GUIDANCE } from "../build/dependencies";
 
@@ -55,135 +61,10 @@ ${APPROVED_DEPENDENCY_GUIDANCE}
 - src/app/layout.tsx already exists with correct metadata; only rewrite it if the app truly needs a different shell, and keep the import of "./globals.css".
 - Every page must compile under strict TypeScript and pass eslint (next/core-web-vitals). No unused variables, no explicit any.`;
 
-type GenerationPhase = {
-  id: string;
-  label: string;
-  objective: string;
-  maxTurns: number;
-  allowMutations?: boolean;
-};
-
-export const CODE_GENERATION_PHASES: GenerationPhase[] = [
-  {
-    id: "foundation",
-    label: "Data, types, constants, and platform wrappers",
-    objective:
-      "Create typed domain models, constants, validation helpers, localStorage wrappers, and any AI/platform client helpers needed by later UI phases. Keep UI work minimal in this phase.",
-    maxTurns: 18,
-  },
-  {
-    id: "components",
-    label: "Reusable components",
-    objective:
-      "Create reusable components, hooks, and focused UI building blocks. Prefer small components with clear props. Read existing foundation files before importing from them.",
-    maxTurns: 22,
-  },
-  {
-    id: "pages-workflows",
-    label: "Pages, navigation, and workflows",
-    objective:
-      "Assemble App Router pages and wire the main workflows end to end. Replace the placeholder home page, add routes when the architecture calls for them, and make every button safe.",
-    maxTurns: 28,
-  },
-  {
-    id: "unit-workflow-tests",
-    label: "Unit and workflow tests",
-    objective:
-      "Add deterministic vitest tests under src/ for domain helpers, storage behavior, components, and acceptance-criterion workflows.",
-    maxTurns: 20,
-  },
-  {
-    id: "browser-acceptance-tests",
-    label: "Browser acceptance tests",
-    objective:
-      "Add Playwright acceptance tests under e2e/generated/ for core user-visible workflows that can be tested reliably. Keep them robust and avoid duplicating the locked smoke test.",
-    maxTurns: 16,
-  },
-];
-
-const CHANGE_GENERATION_PHASES: GenerationPhase[] = [
-  {
-    id: "inspect-change",
-    label: "Inspect current app for change impact",
-    objective:
-      "Inspect only the files likely to be affected by the requested change. Use list_files, read_file, and search_code. Do not mutate files in this phase.",
-    maxTurns: 10,
-    allowMutations: false,
-  },
-  {
-    id: "apply-change",
-    label: "Apply targeted source changes",
-    objective:
-      "Patch or rewrite only files that need to change. Preserve unrelated look, behavior, routes, and localStorage data shapes.",
-    maxTurns: 24,
-  },
-  {
-    id: "change-tests",
-    label: "Update tests for change",
-    objective:
-      "Add or update unit/workflow/browser acceptance tests that cover the requested change without making brittle assertions.",
-    maxTurns: 18,
-  },
-];
-
-const DEEP_DIAGNOSTIC_CHANGE_PHASES: GenerationPhase[] = [
-  {
-    id: "classify-change",
-    label: "Classify change and acceptance criteria",
-    objective:
-      "Step 1: classify whether the request is a bug fix or feature change, restate the exact user-visible failure/change, and define concrete acceptance criteria before touching code.",
-    maxTurns: 8,
-    allowMutations: false,
-  },
-  {
-    id: "map-current-app",
-    label: "Map current app codebase",
-    objective:
-      "Step 2: use inspect_app_map, list_files, search_code, and selective reads to map routes, components, domain libraries, tests, storage/platform-data calls, and workflow entry points. Broad source mapping is allowed in this diagnostic phase, but keep the notes focused.",
-    maxTurns: 16,
-    allowMutations: false,
-  },
-  {
-    id: "trace-workflow",
-    label: "Trace broken workflow end to end",
-    objective:
-      "Step 3: trace the requested workflow end to end through page, component, form/control handler, validation, data payload, platform-data or localStorage wrapper, state refresh, rendering, and persistence. Identify the likely root cause and the exact files to change.",
-    maxTurns: 18,
-    allowMutations: false,
-  },
-  {
-    id: "write-reproduction-tests",
-    label: "Write reproduction tests first",
-    objective:
-      "Step 4: add or update deterministic unit/workflow tests that reproduce the requested bug or prove the requested behavior before making the source fix. For Save-style issues, test fill fields, click Save, visible result, and persistence/refresh when practical.",
-    maxTurns: 20,
-  },
-  {
-    id: "apply-root-cause-fix",
-    label: "Apply root-cause fix",
-    objective:
-      "Step 5: patch the actual root cause identified by the workflow trace. Fix the workflow rather than only loosening tests. Preserve unrelated routes, styling, data shapes, and existing behavior.",
-    maxTurns: 30,
-  },
-  {
-    id: "browser-regression-tests",
-    label: "Add browser regression coverage",
-    objective:
-      "Step 6: add or update Playwright tests under e2e/generated/ for the user-visible workflow when it can be tested reliably. Cover the real browser path and avoid brittle selectors, duplicate smoke coverage, external requests, or arbitrary waits.",
-    maxTurns: 18,
-  },
-  {
-    id: "stabilize-escalation",
-    label: "Stabilize repeated-change fix",
-    objective:
-      "Step 7: when this mode was triggered by prior failed changes or bug-like wording, review the previous notes and tests, make final small corrections, and confirm the fix changed strategy from symptom-patching to root-cause repair.",
-    maxTurns: 14,
-  },
-];
-
 export type GenerationPhaseResult = {
   id: string;
   label: string;
+  agentKey: GenerationPhase["agentKey"];
   filesWritten: string[];
   filesDeleted: string[];
   notes: string;
@@ -370,6 +251,9 @@ Current files are available through list_files/read_file/search_code. Fix the pr
     phase: {
       id: "debug",
       label: `Debug ${input.failedStep}`,
+      agentKey: "debug_agent",
+      specialistRole:
+        "Debug agent: diagnose the failing gauntlet step, inspect the relevant files and diagnostics, and make the smallest source/test patch that addresses the root cause.",
       objective: "Fix the failing build step.",
       maxTurns: 25,
     },
@@ -395,11 +279,13 @@ async function runGenerationPhase(input: {
 }): Promise<GenerationPhaseResult> {
   const operationStart = input.operations.length;
   const agent = new Agent({
-    name: `VoiceForge ${input.mode === "new" ? "Code" : "Change"} Agent - ${input.phase.label}`,
+    name: `VoiceForge ${input.phase.agentKey} - ${input.phase.label}`,
     model: CODER_MODEL,
-    instructions: `${input.mode === "new" ? "You are building a new generated app" : "You are modifying an existing generated app"} in a controlled multi-phase pipeline. Complete only the current phase. Use list_files, read_file, and search_code to understand existing files before importing from or patching them. Reply with a concise phase summary and any limitations.
+    instructions: `${input.mode === "new" ? "You are building a new generated app" : "You are modifying an existing generated app"} in a controlled multi-agent pipeline. Complete only the current specialist phase. Use list_files, read_file, and search_code to understand existing files before importing from or patching them. Reply with a concise phase summary and any limitations.
 
 Current phase: ${input.phase.label}
+Specialist identity: ${input.phase.agentKey}
+Specialist role: ${input.phase.specialistRole}
 Objective: ${input.phase.objective}
 ${changeWorkflowInstruction(input.changeWorkflow)}
 
@@ -415,7 +301,7 @@ ${SHARED_RULES}`,
       ? `\nPREVIOUS PHASE NOTES:\n${input.previousPhases
           .map(
             (phase) =>
-              `- ${phase.label}: ${phase.notes || "no notes"} (${phase.filesWritten.length} changed, ${phase.filesDeleted.length} deleted)`,
+              `- ${phase.label} [${phase.agentKey}]: ${phase.notes || "no notes"} (${phase.filesWritten.length} changed, ${phase.filesDeleted.length} deleted)`,
           )
           .join("\n")}\n`
       : "";
@@ -491,6 +377,7 @@ function makePhaseResult(input: {
   return {
     id: input.phase.id,
     label: input.phase.label,
+    agentKey: input.phase.agentKey,
     filesWritten,
     filesDeleted,
     notes: input.notes,
@@ -510,7 +397,10 @@ function collectCodegenResult(
     if (content !== undefined) files[filePath] = content;
   }
   const notes = phases
-    .map((phase) => `${phase.label}: ${phase.notes || "No notes."}`)
+    .map(
+      (phase) =>
+        `${phase.label} [${phase.agentKey}]: ${phase.notes || "No notes."}`,
+    )
     .join("\n");
 
   return {

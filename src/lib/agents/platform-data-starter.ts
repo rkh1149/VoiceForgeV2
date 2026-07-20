@@ -115,6 +115,7 @@ export function generatePlatformDataStarterApp(input: {
       {
         id: "platform-data-starter",
         label: "Fast platform data starter",
+        agentKey: "backend_platform_planner",
         filesWritten,
         filesDeleted: [],
         notes:
