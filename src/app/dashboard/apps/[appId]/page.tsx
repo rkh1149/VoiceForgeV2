@@ -7,15 +7,19 @@ import {
   appMemberships,
   appRecords,
   apps,
+  approvals,
   buildRuns,
+  conversations,
   deployments,
   users,
 } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import BuildStatus from "@/components/BuildStatus";
+import ConversationHistory from "@/components/ConversationHistory";
 import DeleteAppButton from "@/components/DeleteAppButton";
 import PlatformMembersManager from "@/components/PlatformMembersManager";
 import VersionHistory from "@/components/VersionHistory";
+import { getConversationMessages } from "@/lib/conversation-history";
 import { getCurrentProductionDeploymentId } from "@/lib/vercel";
 
 export const dynamic = "force-dynamic";
@@ -81,6 +85,39 @@ export default async function AppDetailPage({
     .orderBy(desc(buildRuns.createdAt))
     .limit(15);
 
+  const appConversations = await db
+    .select({
+      id: conversations.id,
+      channel: conversations.channel,
+      transcript: conversations.transcript,
+      updatedAt: conversations.updatedAt,
+    })
+    .from(conversations)
+    .where(eq(conversations.appId, app.id))
+    .orderBy(desc(conversations.updatedAt))
+    .limit(10);
+
+  const latestTextConversation = appConversations.find(
+    (conversation) => conversation.channel === "text",
+  );
+
+  const [pendingBuildApproval] =
+    app.status === "draft"
+      ? await db
+          .select({ id: approvals.id })
+          .from(approvals)
+          .where(
+            and(
+              eq(approvals.appId, app.id),
+              eq(approvals.userId, user.id),
+              eq(approvals.type, "build"),
+              eq(approvals.status, "pending"),
+            ),
+          )
+          .orderBy(desc(approvals.createdAt))
+          .limit(1)
+      : [];
+
   const [
     [{ dataEntityCount }],
     [{ activeRecordCount }],
@@ -114,7 +151,35 @@ export default async function AppDetailPage({
       {app.description && (
         <p className="mt-1 mb-6 text-sm text-slate-500">{app.description}</p>
       )}
+
+      {pendingBuildApproval && latestTextConversation && (
+        <div className="mb-4 rounded-2xl border border-forge-100 bg-forge-50 p-5 shadow-sm">
+          <p className="font-semibold text-forge-900">
+            This app is waiting for your build approval.
+          </p>
+          <p className="mt-1 text-sm text-slate-600">
+            Return to the saved planning session to approve it or keep refining
+            the plan.
+          </p>
+          <Link
+            href={`/dashboard/create?conversationId=${latestTextConversation.id}`}
+            className="mt-3 inline-block rounded-xl bg-forge-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-forge-700"
+          >
+            Continue planning
+          </Link>
+        </div>
+      )}
+
       <BuildStatus appId={app.id} />
+
+      <ConversationHistory
+        conversations={appConversations.map((conversation) => ({
+          id: conversation.id,
+          channel: conversation.channel,
+          updatedAt: conversation.updatedAt,
+          messages: getConversationMessages(conversation.transcript),
+        }))}
+      />
 
       <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-slate-700">

@@ -19,16 +19,24 @@ const CHAT_MESSAGE_MAX_LENGTH = 4000;
 export default function PlannerChat({
   appId,
   appName,
+  initialConversationId,
+  initialMessages = [],
+  initialProposal = null,
 }: {
   /** When set, this chat plans a CHANGE to an existing app. */
   appId?: string;
   appName?: string;
+  initialConversationId?: string | null;
+  initialMessages?: ChatMessage[];
+  initialProposal?: Proposal | null;
 } = {}) {
   const router = useRouter();
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [input, setInput] = useState("");
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(
+    initialConversationId ?? null,
+  );
+  const [proposal, setProposal] = useState<Proposal | null>(initialProposal);
   const [decision, setDecision] = useState<"approved" | "rejected" | null>(null);
   const [forceDeepDiagnostic, setForceDeepDiagnostic] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -37,6 +45,14 @@ export default function PlannerChat({
 
   const scrollDown = () =>
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+
+  function rememberCreateConversation(nextConversationId: string) {
+    if (appId || typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("conversationId") === nextConversationId) return;
+    url.searchParams.set("conversationId", nextConversationId);
+    window.history.replaceState(null, "", `${url.pathname}?${url.searchParams}`);
+  }
 
   async function send() {
     const message = input.trim();
@@ -61,6 +77,7 @@ export default function PlannerChat({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Something went wrong.");
       setConversationId(data.conversationId);
+      rememberCreateConversation(data.conversationId);
       setMessages((m) => [...m, { role: "assistant", content: data.reply }]);
       if (data.proposal) {
         setProposal(data.proposal);
@@ -193,6 +210,12 @@ export default function PlannerChat({
 
       {/* Input */}
       <div className="border-t border-slate-200 p-3">
+        {!appId && conversationId && (
+          <p className="mb-3 rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800">
+            This planning session is saved. You can leave this page and resume
+            it from Create New App or My apps.
+          </p>
+        )}
         {appId && (
           <label className="mb-3 flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700">
             <input
