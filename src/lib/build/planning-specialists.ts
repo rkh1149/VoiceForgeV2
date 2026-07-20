@@ -2,6 +2,7 @@ import type { ArchitecturePlan, ArchitectureValidation } from "../architecture";
 import { type AppSpec, isExternalIntegrationRequirement } from "../spec";
 import { isApprovedIntegrationRequirement } from "../platform/integration-catalog";
 import { platformEntityFromSpec } from "../platform/spec-seeding";
+import { normalizeEntityKey } from "../platform/data";
 import type { BuildAgentArtifactStatus } from "./agent-artifact-utils";
 
 export type PlanningSpecialistReview = {
@@ -415,11 +416,7 @@ function needsServerData(spec: AppSpec): boolean {
 }
 
 function normalizeKey(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
+  return normalizeEntityKey(value);
 }
 
 function duplicates(values: string[]): string[] {

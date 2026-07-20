@@ -71,6 +71,82 @@ describe("planning specialist reviews", () => {
     );
   });
 
+  it("matches spaced spec entity names with PascalCase architecture names", () => {
+    const base = normalizeAppSpec(sharedSpecInput);
+    const taskEntity = base.dataEntities[0];
+    const spec: AppSpec = {
+      ...base,
+      dataEntities: [
+        {
+          ...taskEntity,
+          name: "Budget Item",
+          relationships: [
+            {
+              type: "belongs_to",
+              targetEntity: "Project",
+              description: "Budget item belongs to a project.",
+            },
+          ],
+        },
+        {
+          ...taskEntity,
+          name: "Status History",
+          relationships: [
+            {
+              type: "belongs_to",
+              targetEntity: "BudgetItem",
+              description: "History entry belongs to a budget item.",
+            },
+          ],
+        },
+        {
+          ...taskEntity,
+          name: "Project",
+          relationships: [
+            {
+              type: "one_to_many",
+              targetEntity: "BudgetItem",
+              description: "Project has many budget items.",
+            },
+            {
+              type: "one_to_many",
+              targetEntity: "StatusHistory",
+              description: "Project has many status history entries.",
+            },
+          ],
+        },
+      ],
+    };
+    const architecture = {
+      ...buildPlan(spec),
+      dataModel: [
+        {
+          name: "BudgetItem",
+          storage: "platformData" as const,
+          fields: ["title:text"],
+          relationships: ["belongs_to Project"],
+        },
+        {
+          name: "StatusHistory",
+          storage: "platformData" as const,
+          fields: ["title:text"],
+          relationships: ["belongs_to BudgetItem"],
+        },
+        {
+          name: "Project",
+          storage: "platformData" as const,
+          fields: ["title:text"],
+          relationships: ["one_to_many BudgetItem", "one_to_many StatusHistory"],
+        },
+      ],
+    };
+    const dataReview = findReview(review(spec, architecture), "data_modeler");
+
+    expect(dataReview.status).toBe("passed");
+    expect(dataReview.blockingIssues).toEqual([]);
+    expect(dataReview.warnings).toEqual([]);
+  });
+
   it("blocks when the platform plan omits a required service", () => {
     const spec = normalizeAppSpec(sharedSpecInput);
     const architecture = {
