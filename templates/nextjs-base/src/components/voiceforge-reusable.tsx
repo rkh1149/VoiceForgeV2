@@ -1,6 +1,12 @@
 "use client";
 
-import { useMemo, useState, type ChangeEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type ChangeEvent,
+  type ReactNode,
+} from "react";
 import { closestCenter, DndContext, type DragEndEvent } from "@dnd-kit/core";
 import {
   arrayMove,
@@ -27,10 +33,79 @@ import {
   YAxis,
 } from "recharts";
 import { twMerge } from "tailwind-merge";
-import type { PlatformSession } from "@/lib/platform-data";
+import { getPlatformSession, type PlatformSession } from "@/lib/platform-data";
+
+let cachedPlatformSession: PlatformSession | null = null;
 
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
+}
+
+export function clearPlatformSessionCache(): void {
+  cachedPlatformSession = null;
+}
+
+export function usePlatformSessionState(): {
+  session: PlatformSession | null;
+  isLoading: boolean;
+  error: string;
+  refresh: () => Promise<void>;
+} {
+  const [session, setSession] = useState<PlatformSession | null>(
+    () => cachedPlatformSession,
+  );
+  const [isLoading, setIsLoading] = useState(() => cachedPlatformSession === null);
+  const [error, setError] = useState("");
+
+  async function refresh() {
+    setIsLoading(cachedPlatformSession === null);
+    try {
+      const nextSession = await getPlatformSession();
+      cachedPlatformSession = nextSession;
+      setSession(nextSession);
+      setError("");
+    } catch (nextError) {
+      setError(
+        nextError instanceof Error ? nextError.message : "Could not check access.",
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    let active = true;
+    async function loadSession() {
+      if (cachedPlatformSession) {
+        setSession(cachedPlatformSession);
+        setIsLoading(false);
+      } else {
+        setIsLoading(true);
+      }
+      try {
+        const nextSession = await getPlatformSession();
+        cachedPlatformSession = nextSession;
+        if (!active) return;
+        setSession(nextSession);
+        setError("");
+      } catch (nextError) {
+        if (!active) return;
+        setError(
+          nextError instanceof Error
+            ? nextError.message
+            : "Could not check access.",
+        );
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    }
+    void loadSession();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  return { session, isLoading, error, refresh };
 }
 
 export type RoleAccess = {
@@ -83,6 +158,16 @@ export function PlatformSignInGate({
 }) {
   const canStartSignIn = Boolean(session?.loginUrl) && !isLoading;
 
+  if (isLoading && !session) {
+    return (
+      <PlatformAccessLoading
+        appName={appName}
+        description={description}
+        error={error}
+      />
+    );
+  }
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-50 p-4 text-slate-950">
       <section className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
@@ -114,6 +199,36 @@ export function PlatformSignInGate({
         {session?.status === "no_access" && (
           <p className="mt-3 text-sm text-red-700">
             You do not have access to this app. Ask the owner for an invitation.
+          </p>
+        )}
+      </section>
+    </main>
+  );
+}
+
+export function PlatformAccessLoading({
+  appName,
+  description,
+  error,
+}: {
+  appName: string;
+  description: string;
+  error?: string;
+}) {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-slate-50 p-4 text-slate-950">
+      <section className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+        <p className="text-sm font-semibold text-emerald-800">
+          Checking access
+        </p>
+        <h1 className="mt-2 text-2xl font-bold">{appName}</h1>
+        <p className="mt-3 text-sm text-slate-700">{description}</p>
+        {error && (
+          <p
+            role="alert"
+            className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-800"
+          >
+            {error}
           </p>
         )}
       </section>

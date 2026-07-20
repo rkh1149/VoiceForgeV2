@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { POST as dataPOST } from "../../../templates/nextjs-base/src/app/api/data/route";
 import { POST as filesPOST } from "../../../templates/nextjs-base/src/app/api/files/route";
@@ -433,5 +434,22 @@ describe("generated app local platform fallback", () => {
       }),
     );
     expect(unsupported.status).toBe(404);
+  });
+});
+
+describe("generated app auth template", () => {
+  it("keeps the sign-in screen out of the unknown auth loading state", () => {
+    const source = readFileSync(
+      "templates/nextjs-base/src/components/voiceforge-reusable.tsx",
+      "utf8",
+    );
+
+    expect(source).toContain("usePlatformSessionState");
+    expect(source).toContain("if (isLoading && !session)");
+    expect(source).toContain("Checking access");
+    expect(source).toContain("cachedPlatformSession");
+    expect(source.indexOf("if (isLoading && !session)")).toBeLessThan(
+      source.indexOf("VoiceForge sign-in"),
+    );
   });
 });
