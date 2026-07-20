@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "vitest run src/lib/spec.test.ts src/lib/architecture.test.ts src/lib/agents/coder.test.ts src/lib/agents/file-tools.test.ts src/lib/agents/platform-data-starter.test.ts src/lib/build/agent-artifacts.test.ts src/lib/build/debug-budget.test.ts src/lib/build/dependencies.test.ts src/lib/build/local-fallback.test.ts src/lib/github.test.ts src/lib/platform/data.test.ts src/lib/platform/files.test.ts src/lib/platform/integrations.test.ts src/lib/platform/notifications.test.ts src/lib/platform/records-query.test.ts src/lib/platform/session.test.ts src/lib/platform/spec-seeding.test.ts",
+    "test": "vitest run src/lib/spec.test.ts src/lib/architecture.test.ts src/lib/agents/coder.test.ts src/lib/agents/file-tools.test.ts src/lib/agents/platform-data-starter.test.ts src/lib/build/agent-artifacts.test.ts src/lib/build/debug-budget.test.ts src/lib/build/dependencies.test.ts src/lib/build/local-fallback.test.ts src/lib/build/planning-specialists.test.ts src/lib/github.test.ts src/lib/platform/data.test.ts src/lib/platform/files.test.ts src/lib/platform/integrations.test.ts src/lib/platform/notifications.test.ts src/lib/platform/records-query.test.ts src/lib/platform/session.test.ts src/lib/platform/spec-seeding.test.ts",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",

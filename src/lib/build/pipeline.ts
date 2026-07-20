@@ -56,6 +56,7 @@ import {
   artifactStatusFromIssues,
   summarizeArtifactFiles,
 } from "./agent-artifact-utils";
+import { runPlanningSpecialistReviews } from "./planning-specialists";
 import { validateGeneratedAppDependencies } from "./dependencies";
 import { loadTemplate, type FileMap } from "./template";
 import { createRunner, type Runner, type StepName } from "./runner";
@@ -104,6 +105,10 @@ const SUITE_FOR_STEP: Record<
 };
 
 type LogEntry = { ts: string; message: string };
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
 
 async function log(buildRunId: string, message: string): Promise<void> {
   const db = getDb();
@@ -295,17 +300,41 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     });
 
     await log(buildRunId, "Creating architecture plan…");
-    const architecture = shouldUseArchitectAgent()
+    const usedArchitectAgent = shouldUseArchitectAgent();
+    const architecture = usedArchitectAgent
       ? await runArchitectAgent({ spec, complexity })
       : createFallbackArchitecturePlan(spec, complexity);
     const architectureValidation = validateArchitecturePlan(architecture, spec);
+    const planningReviews = runPlanningSpecialistReviews({
+      spec,
+      architecture,
+      architectureValidation,
+    });
+    const planningBlockingIssues = uniqueStrings(
+      planningReviews.flatMap((review) => review.blockingIssues),
+    );
+    const planningWarnings = uniqueStrings(
+      planningReviews.flatMap((review) => review.warnings),
+    );
+    const combinedArchitectureValidation = {
+      canBuildNow:
+        architectureValidation.canBuildNow && planningBlockingIssues.length === 0,
+      blockingIssues: uniqueStrings([
+        ...architectureValidation.blockingIssues,
+        ...planningBlockingIssues,
+      ]),
+      warnings: uniqueStrings([
+        ...architectureValidation.warnings,
+        ...planningWarnings,
+      ]),
+    };
     const architectureForStorage = {
       ...architecture,
       capabilityValidation: {
         ...architecture.capabilityValidation,
-        canBuildNow: architectureValidation.canBuildNow,
-        blockingIssues: architectureValidation.blockingIssues,
-        warnings: architectureValidation.warnings,
+        canBuildNow: combinedArchitectureValidation.canBuildNow,
+        blockingIssues: combinedArchitectureValidation.blockingIssues,
+        warnings: combinedArchitectureValidation.warnings,
       },
     };
 
@@ -315,7 +344,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       buildRunId,
       capabilityTier: architectureForStorage.implementationTier,
       complexityScore: architectureForStorage.complexityScore,
-      canBuildNow: architectureValidation.canBuildNow,
+      canBuildNow: combinedArchitectureValidation.canBuildNow,
       summary: architectureForStorage.summary,
       plan: architectureForStorage,
     });
@@ -328,46 +357,58 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         requestedTier: architectureForStorage.requestedTier,
         implementationTier: architectureForStorage.implementationTier,
         complexityScore: architectureForStorage.complexityScore,
-        canBuildNow: architectureValidation.canBuildNow,
-        blockingIssues: architectureValidation.blockingIssues,
-        warnings: architectureValidation.warnings,
+        canBuildNow: combinedArchitectureValidation.canBuildNow,
+        blockingIssues: combinedArchitectureValidation.blockingIssues,
+        warnings: combinedArchitectureValidation.warnings,
       },
     });
     await recordBuildAgentArtifact({
       appId: app.id,
       buildRunId,
-      agentKey: shouldUseArchitectAgent() ? "architect" : "fallback_architect",
+      agentKey: usedArchitectAgent ? "architect" : "fallback_architect",
       phaseKey: "architecture",
       artifactType: "plan",
       status: artifactStatusFromIssues({
-        failed: !architectureValidation.canBuildNow,
-        warnings: architectureValidation.warnings,
+        failed: !combinedArchitectureValidation.canBuildNow,
+        warnings: combinedArchitectureValidation.warnings,
       }),
       summary: architectureForStorage.summary,
       payload: {
         requestedTier: architectureForStorage.requestedTier,
         implementationTier: architectureForStorage.implementationTier,
         complexityScore: architectureForStorage.complexityScore,
-        canBuildNow: architectureValidation.canBuildNow,
-        blockingIssues: architectureValidation.blockingIssues,
-        warnings: architectureValidation.warnings,
+        canBuildNow: combinedArchitectureValidation.canBuildNow,
+        blockingIssues: combinedArchitectureValidation.blockingIssues,
+        warnings: combinedArchitectureValidation.warnings,
         pages: architectureForStorage.pageMap.length,
         components: architectureForStorage.componentMap.length,
         dataEntities: architectureForStorage.dataModel.length,
         platformServices: architectureForStorage.platformServices,
       },
     });
+    for (const review of planningReviews) {
+      await recordBuildAgentArtifact({
+        appId: app.id,
+        buildRunId,
+        agentKey: review.agentKey,
+        phaseKey: review.phaseKey,
+        artifactType: review.artifactType,
+        status: review.status,
+        summary: review.summary,
+        payload: review.payload,
+      });
+    }
     await log(buildRunId, `Architecture: ${architectureForStorage.summary}`);
-    if (architectureValidation.warnings.length > 0) {
+    if (combinedArchitectureValidation.warnings.length > 0) {
       await log(
         buildRunId,
-        `Architecture warnings: ${architectureValidation.warnings.join(" ")}`,
+        `Architecture warnings: ${combinedArchitectureValidation.warnings.join(" ")}`,
       );
     }
-    if (!architectureValidation.canBuildNow) {
+    if (!combinedArchitectureValidation.canBuildNow) {
       throw new ArchitectureBlockedError(
-        `This app needs platform capabilities that are not available in VoiceForge V2 yet: ${architectureValidation.blockingIssues.join(" ")}`,
-        architectureValidation.blockingIssues,
+        `This app needs platform capabilities that are not available in VoiceForge V2 yet: ${combinedArchitectureValidation.blockingIssues.join(" ")}`,
+        combinedArchitectureValidation.blockingIssues,
       );
     }
 
