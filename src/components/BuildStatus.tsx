@@ -1,6 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import AgentArtifactsList, {
+  type AgentArtifactItem,
+} from "@/components/AgentArtifactsList";
 
 type LogEntry = { ts: string; message: string };
 
@@ -28,6 +31,7 @@ type StatusPayload = {
     summary: string | null;
     createdAt: string;
   }>;
+  agentArtifacts: AgentArtifactItem[];
   architecturePlan: {
     summary: string;
     capabilityTier: string;
@@ -292,6 +296,10 @@ export default function BuildStatus({ appId }: { appId: string }) {
             </ul>
           )}
         </div>
+      )}
+
+      {data.agentArtifacts.length > 0 && (
+        <AgentArtifactsList artifacts={data.agentArtifacts} />
       )}
 
       {/* Live app */}

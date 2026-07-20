@@ -51,6 +51,11 @@ import {
   recordDebugAttempt,
   reserveDebugRound,
 } from "./debug-budget";
+import { recordBuildAgentArtifact } from "./agent-artifacts";
+import {
+  artifactStatusFromIssues,
+  summarizeArtifactFiles,
+} from "./agent-artifact-utils";
 import { validateGeneratedAppDependencies } from "./dependencies";
 import { loadTemplate, type FileMap } from "./template";
 import { createRunner, type Runner, type StepName } from "./runner";
@@ -328,6 +333,30 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         warnings: architectureValidation.warnings,
       },
     });
+    await recordBuildAgentArtifact({
+      appId: app.id,
+      buildRunId,
+      agentKey: shouldUseArchitectAgent() ? "architect" : "fallback_architect",
+      phaseKey: "architecture",
+      artifactType: "plan",
+      status: artifactStatusFromIssues({
+        failed: !architectureValidation.canBuildNow,
+        warnings: architectureValidation.warnings,
+      }),
+      summary: architectureForStorage.summary,
+      payload: {
+        requestedTier: architectureForStorage.requestedTier,
+        implementationTier: architectureForStorage.implementationTier,
+        complexityScore: architectureForStorage.complexityScore,
+        canBuildNow: architectureValidation.canBuildNow,
+        blockingIssues: architectureValidation.blockingIssues,
+        warnings: architectureValidation.warnings,
+        pages: architectureForStorage.pageMap.length,
+        components: architectureForStorage.componentMap.length,
+        dataEntities: architectureForStorage.dataModel.length,
+        platformServices: architectureForStorage.platformServices,
+      },
+    });
     await log(buildRunId, `Architecture: ${architectureForStorage.summary}`);
     if (architectureValidation.warnings.length > 0) {
       await log(
@@ -519,6 +548,25 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         buildRunId,
         `Generation phase complete: ${phase.label} (${phase.filesWritten.length} changed, ${phase.filesDeleted.length} deleted). ${phase.notes}`,
       );
+      await recordBuildAgentArtifact({
+        appId: app.id,
+        buildRunId,
+        agentKey: changeMode ? "change_agent" : "code_agent",
+        phaseKey: phase.id,
+        artifactType: "generation_phase",
+        status: "passed",
+        summary: summarizeArtifactFiles({
+          label: phase.label,
+          filesWritten: phase.filesWritten,
+          filesDeleted: phase.filesDeleted,
+        }),
+        payload: {
+          label: phase.label,
+          notes: phase.notes,
+          filesWritten: phase.filesWritten,
+          filesDeleted: phase.filesDeleted,
+        },
+      });
     }
     await log(
       buildRunId,
@@ -614,6 +662,22 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         previousAttempts,
       });
       if (fix.filesWritten.length === 0) {
+        await recordBuildAgentArtifact({
+          appId: app.id,
+          buildRunId,
+          agentKey: "debug_agent",
+          phaseKey: `debug-${step}`,
+          artifactType: "debug_fix",
+          status: "failed",
+          summary: `Debug ${step} produced no file changes.`,
+          payload: {
+            failedStep: step,
+            stepRound,
+            totalRounds: debugBudget.totalRounds,
+            previousAttempts,
+            notes: fix.notes,
+          },
+        });
         throw new Error(`Debug agent could not produce a fix for ${step}`);
       }
       recordDebugAttempt(
@@ -628,6 +692,28 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         buildRunId,
         `Debug agent changed: ${fix.filesWritten.join(", ")}${fix.deletedFiles.length > 0 ? `; deleted: ${fix.deletedFiles.join(", ")}` : ""}. ${fix.notes}`,
       );
+      await recordBuildAgentArtifact({
+        appId: app.id,
+        buildRunId,
+        agentKey: "debug_agent",
+        phaseKey: `debug-${step}`,
+        artifactType: "debug_fix",
+        status: "warning",
+        summary: summarizeArtifactFiles({
+          label: `Debug ${step}`,
+          filesWritten: fix.filesWritten,
+          filesDeleted: fix.deletedFiles,
+        }),
+        payload: {
+          failedStep: step,
+          stepRound,
+          totalRounds: debugBudget.totalRounds,
+          previousAttempts,
+          notes: fix.notes,
+          filesWritten: fix.filesWritten,
+          filesDeleted: fix.deletedFiles,
+        },
+      });
       await setStatus(buildRunId, "testing");
       // Re-run from typecheck (install output can't be affected by src changes).
       stepIdx = Math.min(stepIdx, 1);

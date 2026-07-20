@@ -13,6 +13,7 @@ import {
   apps,
   approvals,
   auditLogs,
+  buildAgentArtifacts,
   buildRuns,
   changeRequests,
   conversations,
@@ -108,6 +109,9 @@ export async function DELETE(
     await db
       .delete(testResults)
       .where(inArray(testResults.buildRunId, runIds));
+    await db
+      .delete(buildAgentArtifacts)
+      .where(inArray(buildAgentArtifacts.buildRunId, runIds));
     await db
       .delete(architecturePlans)
       .where(inArray(architecturePlans.buildRunId, runIds));

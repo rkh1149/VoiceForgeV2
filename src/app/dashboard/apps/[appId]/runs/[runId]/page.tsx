@@ -2,9 +2,16 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { architecturePlans, apps, buildRuns, testResults } from "@/db/schema";
+import {
+  architecturePlans,
+  apps,
+  buildAgentArtifacts,
+  buildRuns,
+  testResults,
+} from "@/db/schema";
 import type { ArchitecturePlan } from "@/lib/architecture";
 import { getOrCreateCurrentUser } from "@/lib/users";
+import AgentArtifactsList from "@/components/AgentArtifactsList";
 
 export const dynamic = "force-dynamic";
 
@@ -58,6 +65,20 @@ export default async function BuildRunPage({
     .where(eq(architecturePlans.buildRunId, run.id))
     .limit(1);
   const architecture = architectureRow?.plan as ArchitecturePlan | undefined;
+  const agentArtifacts = await db
+    .select({
+      id: buildAgentArtifacts.id,
+      agentKey: buildAgentArtifacts.agentKey,
+      phaseKey: buildAgentArtifacts.phaseKey,
+      artifactType: buildAgentArtifacts.artifactType,
+      status: buildAgentArtifacts.status,
+      summary: buildAgentArtifacts.summary,
+      payload: buildAgentArtifacts.payload,
+      createdAt: buildAgentArtifacts.createdAt,
+    })
+    .from(buildAgentArtifacts)
+    .where(eq(buildAgentArtifacts.buildRunId, run.id))
+    .orderBy(buildAgentArtifacts.createdAt);
 
   const logs = (run.logs ?? []) as LogEntry[];
   const lastFailed = [...results].reverse().find((r) => r.status === "failed");
@@ -132,6 +153,12 @@ export default async function BuildRunPage({
               ))}
             </ul>
           )}
+        </div>
+      )}
+
+      {agentArtifacts.length > 0 && (
+        <div className="mt-4">
+          <AgentArtifactsList artifacts={agentArtifacts} />
         </div>
       )}
 

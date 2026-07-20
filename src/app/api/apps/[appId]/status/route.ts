@@ -2,7 +2,13 @@ import { NextResponse } from "next/server";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { architecturePlans, apps, buildRuns, testResults } from "@/db/schema";
+import {
+  architecturePlans,
+  apps,
+  buildAgentArtifacts,
+  buildRuns,
+  testResults,
+} from "@/db/schema";
 import type { ArchitecturePlan } from "@/lib/architecture";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import { failStaleRuns } from "@/lib/quota";
@@ -95,6 +101,22 @@ export async function GET(
         .where(eq(testResults.buildRunId, latestRun.id))
         .orderBy(testResults.createdAt)
     : [];
+  const agentArtifacts = latestRun
+    ? await db
+        .select({
+          id: buildAgentArtifacts.id,
+          agentKey: buildAgentArtifacts.agentKey,
+          phaseKey: buildAgentArtifacts.phaseKey,
+          artifactType: buildAgentArtifacts.artifactType,
+          status: buildAgentArtifacts.status,
+          summary: buildAgentArtifacts.summary,
+          payload: buildAgentArtifacts.payload,
+          createdAt: buildAgentArtifacts.createdAt,
+        })
+        .from(buildAgentArtifacts)
+        .where(eq(buildAgentArtifacts.buildRunId, latestRun.id))
+        .orderBy(buildAgentArtifacts.createdAt)
+    : [];
 
   // Attach output only for the most recent failed check (for diagnosis).
   const lastFailed = [...results].reverse().find((r) => r.status === "failed");
@@ -129,6 +151,7 @@ export async function GET(
       summary: r.summary,
       createdAt: r.createdAt,
     })),
+    agentArtifacts,
     architecturePlan,
     failedOutput,
   });

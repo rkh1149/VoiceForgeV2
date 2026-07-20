@@ -87,6 +87,13 @@ export const testStatus = pgEnum("test_status", [
   "skipped",
 ]);
 
+export const buildAgentArtifactStatus = pgEnum("build_agent_artifact_status", [
+  "passed",
+  "warning",
+  "failed",
+  "skipped",
+]);
+
 export const changeRequestStatus = pgEnum("change_request_status", [
   "intake",
   "clarifying",
@@ -317,6 +324,38 @@ export const testResults = pgTable(
       .defaultNow(),
   },
   (t) => [index("test_results_build_run_idx").on(t.buildRunId)],
+);
+
+/** Sanitized artifacts produced by build agents and review gates. */
+export const buildAgentArtifacts = pgTable(
+  "build_agent_artifacts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appId: uuid("app_id")
+      .notNull()
+      .references(() => apps.id),
+    buildRunId: uuid("build_run_id")
+      .notNull()
+      .references(() => buildRuns.id),
+    agentKey: text("agent_key").notNull(),
+    phaseKey: text("phase_key").notNull(),
+    artifactType: text("artifact_type").notNull(),
+    status: buildAgentArtifactStatus("status").notNull().default("passed"),
+    summary: text("summary").notNull(),
+    payload: jsonb("payload")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("build_agent_artifacts_build_run_idx").on(t.buildRunId),
+    index("build_agent_artifacts_app_idx").on(t.appId),
+    index("build_agent_artifacts_agent_idx").on(t.agentKey),
+    index("build_agent_artifacts_status_idx").on(t.status),
+  ],
 );
 
 /** "Change my recipe app to add printing" — future modifications by app. */
@@ -816,6 +855,7 @@ export type BuildRun = typeof buildRuns.$inferSelect;
 export type ArchitecturePlanRow = typeof architecturePlans.$inferSelect;
 export type Deployment = typeof deployments.$inferSelect;
 export type TestResult = typeof testResults.$inferSelect;
+export type BuildAgentArtifact = typeof buildAgentArtifacts.$inferSelect;
 export type ChangeRequest = typeof changeRequests.$inferSelect;
 export type AppEntitySchema = typeof appEntitySchemas.$inferSelect;
 export type AppMembership = typeof appMemberships.$inferSelect;
