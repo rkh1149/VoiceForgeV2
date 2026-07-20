@@ -5,10 +5,19 @@ import { getDb } from "@/db";
 import {
   aiUsage,
   appEntitySchemas,
+  appFiles,
+  appIntegrationCredentials,
+  appIntegrationEvents,
+  appJobRuns,
   appMemberships,
+  appNotificationPreferences,
+  appNotifications,
   appRecordEvents,
+  appRecordSearchConfigs,
   appRecordVersions,
   appRecords,
+  appSavedRecordFilters,
+  appScheduledJobs,
   architecturePlans,
   apps,
   approvals,
@@ -99,50 +108,76 @@ export async function DELETE(
   }
 
   // 3. VoiceForge records (order respects foreign keys).
-  const runs = await db
-    .select({ id: buildRuns.id })
-    .from(buildRuns)
-    .where(eq(buildRuns.appId, appId));
-  const runIds = runs.map((r) => r.id);
+  await db.transaction(async (tx) => {
+    const runs = await tx
+      .select({ id: buildRuns.id })
+      .from(buildRuns)
+      .where(eq(buildRuns.appId, appId));
+    const runIds = runs.map((r) => r.id);
 
-  if (runIds.length > 0) {
-    await db
-      .delete(testResults)
-      .where(inArray(testResults.buildRunId, runIds));
-    await db
-      .delete(buildAgentArtifacts)
-      .where(inArray(buildAgentArtifacts.buildRunId, runIds));
-    await db
-      .delete(architecturePlans)
-      .where(inArray(architecturePlans.buildRunId, runIds));
-    await db
+    if (runIds.length > 0) {
+      await tx
+        .delete(testResults)
+        .where(inArray(testResults.buildRunId, runIds));
+      await tx
+        .delete(buildAgentArtifacts)
+        .where(inArray(buildAgentArtifacts.buildRunId, runIds));
+      await tx
+        .delete(architecturePlans)
+        .where(inArray(architecturePlans.buildRunId, runIds));
+      await tx
+        .update(auditLogs)
+        .set({ buildRunId: null })
+        .where(inArray(auditLogs.buildRunId, runIds));
+    }
+
+    await tx.delete(aiUsage).where(eq(aiUsage.appId, appId));
+    await tx
+      .delete(appIntegrationEvents)
+      .where(eq(appIntegrationEvents.appId, appId));
+    await tx
+      .delete(appIntegrationCredentials)
+      .where(eq(appIntegrationCredentials.appId, appId));
+    await tx.delete(appJobRuns).where(eq(appJobRuns.appId, appId));
+    await tx
+      .delete(appScheduledJobs)
+      .where(eq(appScheduledJobs.appId, appId));
+    await tx
+      .delete(appNotificationPreferences)
+      .where(eq(appNotificationPreferences.appId, appId));
+    await tx
+      .delete(appNotifications)
+      .where(eq(appNotifications.appId, appId));
+    await tx.delete(appFiles).where(eq(appFiles.appId, appId));
+    await tx
+      .delete(appSavedRecordFilters)
+      .where(eq(appSavedRecordFilters.appId, appId));
+    await tx
+      .delete(appRecordSearchConfigs)
+      .where(eq(appRecordSearchConfigs.appId, appId));
+    await tx.delete(appRecordEvents).where(eq(appRecordEvents.appId, appId));
+    await tx
+      .delete(appRecordVersions)
+      .where(eq(appRecordVersions.appId, appId));
+    await tx.delete(appRecords).where(eq(appRecords.appId, appId));
+    await tx.delete(appMemberships).where(eq(appMemberships.appId, appId));
+    await tx.delete(appEntitySchemas).where(eq(appEntitySchemas.appId, appId));
+    await tx.delete(deployments).where(eq(deployments.appId, appId));
+    await tx.delete(buildRuns).where(eq(buildRuns.appId, appId));
+    await tx.delete(changeRequests).where(eq(changeRequests.appId, appId));
+    await tx.delete(approvals).where(eq(approvals.appId, appId));
+    await tx.delete(requirements).where(eq(requirements.appId, appId));
+    // Keep transcripts and audit history; clear their app reference.
+    await tx
+      .update(conversations)
+      .set({ appId: null })
+      .where(eq(conversations.appId, appId));
+    await tx
       .update(auditLogs)
-      .set({ buildRunId: null })
-      .where(inArray(auditLogs.buildRunId, runIds));
-  }
-  await db.delete(aiUsage).where(eq(aiUsage.appId, appId));
-  await db.delete(appRecordEvents).where(eq(appRecordEvents.appId, appId));
-  await db
-    .delete(appRecordVersions)
-    .where(eq(appRecordVersions.appId, appId));
-  await db.delete(appRecords).where(eq(appRecords.appId, appId));
-  await db.delete(appMemberships).where(eq(appMemberships.appId, appId));
-  await db.delete(appEntitySchemas).where(eq(appEntitySchemas.appId, appId));
-  await db.delete(deployments).where(eq(deployments.appId, appId));
-  await db.delete(buildRuns).where(eq(buildRuns.appId, appId));
-  await db.delete(changeRequests).where(eq(changeRequests.appId, appId));
-  await db.delete(approvals).where(eq(approvals.appId, appId));
-  await db.delete(requirements).where(eq(requirements.appId, appId));
-  // Keep transcripts and audit history; clear their app reference.
-  await db
-    .update(conversations)
-    .set({ appId: null })
-    .where(eq(conversations.appId, appId));
-  await db
-    .update(auditLogs)
-    .set({ appId: null })
-    .where(eq(auditLogs.appId, appId));
-  await db.delete(apps).where(eq(apps.id, appId));
+      .set({ appId: null })
+      .where(eq(auditLogs.appId, appId));
+    await tx.delete(apps).where(eq(apps.id, appId));
+  });
 
   await audit({
     userId: user.id,
