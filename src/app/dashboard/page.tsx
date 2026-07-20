@@ -1,9 +1,8 @@
 import Link from "next/link";
-import { and, desc, eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { apps, conversations } from "@/db/schema";
+import { apps } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
-import { getConversationPreview } from "@/lib/conversation-history";
 
 export const dynamic = "force-dynamic";
 
@@ -28,28 +27,6 @@ export default async function MyAppsPage() {
     .where(eq(apps.ownerId, user.id))
     .orderBy(desc(apps.updatedAt));
 
-  const planningSessions = await db
-    .select({
-      id: conversations.id,
-      appId: conversations.appId,
-      transcript: conversations.transcript,
-      updatedAt: conversations.updatedAt,
-    })
-    .from(conversations)
-    .where(and(eq(conversations.userId, user.id), eq(conversations.channel, "text")))
-    .orderBy(desc(conversations.updatedAt))
-    .limit(100);
-
-  const unlinkedPlanningSessions = planningSessions
-    .filter((session) => session.appId === null)
-    .slice(0, 3);
-  const planningSessionByAppId = new Map<string, string>();
-  for (const session of planningSessions) {
-    if (session.appId && !planningSessionByAppId.has(session.appId)) {
-      planningSessionByAppId.set(session.appId, session.id);
-    }
-  }
-
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
@@ -68,41 +45,6 @@ export default async function MyAppsPage() {
           + New app
         </Link>
       </div>
-
-      {unlinkedPlanningSessions.length > 0 && (
-        <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-sm font-semibold text-slate-700">
-            In-progress planning
-          </h2>
-          <ul className="mt-3 space-y-2">
-            {unlinkedPlanningSessions.map((session) => (
-              <li
-                key={session.id}
-                className="flex flex-col gap-1 border-t border-slate-100 pt-2 first:border-t-0 first:pt-0 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div>
-                  <p className="line-clamp-1 text-sm text-slate-700">
-                    {getConversationPreview(session.transcript)}
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Updated{" "}
-                    {session.updatedAt.toLocaleString("en-CA", {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    })}
-                  </p>
-                </div>
-                <Link
-                  href={`/dashboard/create?conversationId=${session.id}`}
-                  className="text-sm font-medium text-forge-600 hover:underline"
-                >
-                  Resume planning
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
 
       {myApps.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center">
@@ -125,11 +67,6 @@ export default async function MyAppsPage() {
         <ul className="grid gap-4 sm:grid-cols-2">
           {myApps.map((app) => {
             const status = statusLabels[app.status] ?? statusLabels.draft;
-            const planningSessionId = planningSessionByAppId.get(app.id);
-            const primaryHref =
-              app.status === "draft" && planningSessionId
-                ? `/dashboard/create?conversationId=${planningSessionId}`
-                : `/dashboard/apps/${app.id}`;
             return (
               <li
                 key={app.id}
@@ -137,7 +74,7 @@ export default async function MyAppsPage() {
               >
                 <div className="flex items-start justify-between">
                   <Link
-                    href={primaryHref}
+                    href={`/dashboard/apps/${app.id}`}
                     className="font-semibold text-slate-900 hover:text-forge-600 hover:underline"
                   >
                     {app.name}
@@ -154,14 +91,6 @@ export default async function MyAppsPage() {
                   </p>
                 )}
                 <div className="mt-4 flex gap-3 text-sm">
-                  {app.status === "draft" && planningSessionId && (
-                    <Link
-                      href={`/dashboard/create?conversationId=${planningSessionId}`}
-                      className="font-medium text-forge-600 hover:underline"
-                    >
-                      Resume planning
-                    </Link>
-                  )}
                   {["spec_approved", "building", "testing", "failed"].includes(
                     app.status,
                   ) && (

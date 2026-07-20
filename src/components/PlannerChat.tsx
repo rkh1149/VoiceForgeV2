@@ -212,8 +212,8 @@ export default function PlannerChat({
       <div className="border-t border-slate-200 p-3">
         {!appId && conversationId && (
           <p className="mb-3 rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800">
-            This planning session is saved. You can leave this page and resume
-            it from Create New App or My apps.
+            This planning session is saved in this page link. Keep the link if
+            you want to return before approving the build.
           </p>
         )}
         {appId && (

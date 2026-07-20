@@ -1,13 +1,12 @@
 import Link from "next/link";
+import BuildResumeList from "@/components/BuildResumeList";
 import PlannerChat from "@/components/PlannerChat";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { approvals, apps, conversations, requirements } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
-import {
-  getConversationMessages,
-  getConversationPreview,
-} from "@/lib/conversation-history";
+import { getConversationMessages } from "@/lib/conversation-history";
+import { getResumableBuildsForUser } from "@/lib/build-resume";
 
 export const dynamic = "force-dynamic";
 
@@ -16,13 +15,6 @@ const UUID_RE =
 
 function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
-}
-
-function formatWhen(value: Date): string {
-  return value.toLocaleString("en-CA", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
 }
 
 export default async function CreateAppPage({
@@ -96,24 +88,7 @@ export default async function CreateAppPage({
         }
       : null;
 
-  const recentPlanningSessions = (
-    await db
-      .select({
-        id: conversations.id,
-        transcript: conversations.transcript,
-        updatedAt: conversations.updatedAt,
-      })
-      .from(conversations)
-      .where(
-        and(
-          eq(conversations.userId, user.id),
-          eq(conversations.channel, "text"),
-          isNull(conversations.appId),
-        ),
-      )
-      .orderBy(desc(conversations.updatedAt))
-      .limit(6)
-  ).filter((session) => session.id !== activeConversation?.id);
+  const resumableBuilds = await getResumableBuildsForUser(user.id, "build");
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -130,36 +105,10 @@ export default async function CreateAppPage({
         </Link>
       </p>
 
-      {recentPlanningSessions.length > 0 && (
-        <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <h2 className="text-sm font-semibold text-slate-700">
-            Saved planning sessions
-          </h2>
-          <ul className="mt-3 space-y-2">
-            {recentPlanningSessions.map((session) => (
-              <li
-                key={session.id}
-                className="flex flex-col gap-1 border-t border-slate-100 pt-2 first:border-t-0 first:pt-0 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div>
-                  <p className="line-clamp-1 text-sm text-slate-700">
-                    {getConversationPreview(session.transcript)}
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Saved {formatWhen(session.updatedAt)}
-                  </p>
-                </div>
-                <Link
-                  href={`/dashboard/create?conversationId=${session.id}`}
-                  className="text-sm font-medium text-forge-600 hover:underline"
-                >
-                  Resume planning
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <BuildResumeList
+        builds={resumableBuilds}
+        title="App builds in progress"
+      />
 
       <PlannerChat
         key={activeConversation?.id ?? "new"}

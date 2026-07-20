@@ -3,6 +3,8 @@ import { desc, eq, isNotNull, and } from "drizzle-orm";
 import { getDb } from "@/db";
 import { apps } from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
+import BuildResumeList from "@/components/BuildResumeList";
+import { getResumableBuildsForUser } from "@/lib/build-resume";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +19,10 @@ export default async function ChangeAppPage() {
     .from(apps)
     .where(and(eq(apps.ownerId, user.id), isNotNull(apps.githubRepoUrl)))
     .orderBy(desc(apps.updatedAt));
+  const resumableChangeBuilds = await getResumableBuildsForUser(
+    user.id,
+    "change",
+  );
 
   return (
     <div className="mx-auto max-w-xl">
@@ -25,6 +31,13 @@ export default async function ChangeAppPage() {
         Pick an app, then tell VoiceForge what you&rsquo;d like changed.
         You&rsquo;ll see a plan and a preview before anything goes live.
       </p>
+
+      <div className="mt-6">
+        <BuildResumeList
+          builds={resumableChangeBuilds}
+          title="Change builds in progress"
+        />
+      </div>
 
       {changeable.length === 0 ? (
         <div className="mt-8 rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
