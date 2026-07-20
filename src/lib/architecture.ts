@@ -369,8 +369,8 @@ export function validateArchitecturePlan(
         .join(", ");
       blockingIssues.push(
         names
-          ? `integrations: External integrations are only available for approved catalogue providers in Stage 12A. Not approved yet: ${names}.`
-          : "integrations: External integrations are only available for approved catalogue providers in Stage 12A.",
+          ? `integrations: External integrations are only available for approved catalogue providers in Stage 12C. Not approved yet: ${names}.`
+          : "integrations: External integrations are only available for approved catalogue providers in Stage 12C.",
       );
     }
   }
@@ -383,7 +383,7 @@ export function validateArchitecturePlan(
       unsupportedSpecIntegrations === 0
     ) {
       warnings.push(
-        "integrations: The architecture marked integrations as unavailable, but all requested providers are approved in the Stage 12A catalogue.",
+        "integrations: The architecture marked integrations as unavailable, but all requested providers are approved in the Stage 12C catalogue.",
       );
       continue;
     }
@@ -525,8 +525,8 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
       required: true,
       availability: "later",
       reason: names
-        ? `External integrations are only available for approved catalogue providers in Stage 12A. Not approved yet: ${names}.`
-        : "External integrations are only available for approved catalogue providers in Stage 12A.",
+        ? `External integrations are only available for approved catalogue providers in Stage 12C. Not approved yet: ${names}.`
+        : "External integrations are only available for approved catalogue providers in Stage 12C.",
     });
   }
   return services;

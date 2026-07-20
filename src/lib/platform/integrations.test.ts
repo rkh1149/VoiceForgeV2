@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlatformDataError } from "./data";
 import {
   getIntegrationAction,
@@ -17,10 +17,14 @@ import {
 } from "./integrations";
 
 describe("integration catalogue", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("publishes only approved provider/action metadata", () => {
     const providers = listPublicIntegrationProviders();
 
-    expect(providers).toEqual([
+    expect(providers).toEqual(expect.arrayContaining([
       expect.objectContaining({
         providerKey: "demo_directory",
         authType: "none",
@@ -30,8 +34,19 @@ describe("integration catalogue", () => {
           expect.objectContaining({ actionKey: "record_contact_note" }),
         ]),
       }),
-    ]);
+      expect.objectContaining({
+        providerKey: "google_maps",
+        authType: "api_key",
+        actions: expect.arrayContaining([
+          expect.objectContaining({ actionKey: "search_places" }),
+          expect.objectContaining({ actionKey: "get_place_details" }),
+          expect.objectContaining({ actionKey: "geocode_address" }),
+          expect.objectContaining({ actionKey: "compute_route" }),
+        ]),
+      }),
+    ]));
     expect(JSON.stringify(providers)).not.toContain("inputSchema");
+    expect(JSON.stringify(providers)).not.toContain("credentialSchema");
   });
 
   it("matches approved requirements and rejects unsupported providers", () => {
@@ -39,6 +54,12 @@ describe("integration catalogue", () => {
       isApprovedIntegrationRequirement({
         name: "Demo Directory",
         purpose: "Import sample external contacts.",
+      }),
+    ).toBe(true);
+    expect(
+      isApprovedIntegrationRequirement({
+        name: "Google Maps",
+        purpose: "Plan a trip with places and route estimates.",
       }),
     ).toBe(true);
     expect(
@@ -81,6 +102,59 @@ describe("integration catalogue", () => {
     const match = getIntegrationAction("demo_directory", "record_contact_note");
 
     expect(match?.action.requiredRole).toBe("editor");
+  });
+
+  it("invokes Google Maps place search through the approved server adapter", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("X-Goog-Api-Key")).toBe("test-google-maps-key-12345");
+      expect(headers.get("X-Goog-FieldMask")).toContain("places.displayName");
+      return new Response(
+        JSON.stringify({
+          places: [
+            {
+              id: "ChIJmzrzi9Y0K4gRgXUc3sTY7RU",
+              name: "places/ChIJmzrzi9Y0K4gRgXUc3sTY7RU",
+              displayName: { text: "CN Tower" },
+              formattedAddress: "290 Bremner Blvd, Toronto, ON, Canada",
+              location: { latitude: 43.6426, longitude: -79.3871 },
+              rating: 4.6,
+              userRatingCount: 76000,
+              types: ["tourist_attraction"],
+              googleMapsUri: "https://maps.google.com/?cid=123",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await invokeCatalogIntegrationAction({
+      providerKey: "google_maps",
+      actionKey: "search_places",
+      input: { textQuery: "CN Tower Toronto", maxResultCount: 3 },
+      context: {
+        appId: "app_1",
+        userId: "user_1",
+        credential: {
+          id: "credential_1",
+          scopes: ["places"],
+          secrets: { apiKey: "test-google-maps-key-12345" },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      provider: "google_maps",
+      places: [
+        expect.objectContaining({
+          placeId: "ChIJmzrzi9Y0K4gRgXUc3sTY7RU",
+          name: "CN Tower",
+          location: { latitude: 43.6426, longitude: -79.3871 },
+        }),
+      ],
+    });
   });
 });
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PlatformDataError, type JsonObject } from "./data";
+import { googleMapsProvider } from "./google-maps-provider";
 
 export type IntegrationAuthType = "none" | "api_key" | "oauth2";
 export type IntegrationRequiredRole = "viewer" | "editor" | "owner";
@@ -28,7 +29,7 @@ export type IntegrationInvokeContext = {
   appId: string;
   userId: string;
   credential?: {
-    id: string;
+    id?: string;
     scopes: string[];
     secrets: JsonObject;
   };
@@ -217,7 +218,10 @@ const demoDirectoryProvider: IntegrationProviderDefinition = {
   ],
 };
 
-export const INTEGRATION_CATALOG = [demoDirectoryProvider] as const;
+export const INTEGRATION_CATALOG = [
+  demoDirectoryProvider,
+  googleMapsProvider,
+] as const;
 
 export function listPublicIntegrationProviders(): PublicIntegrationProvider[] {
   return INTEGRATION_CATALOG.map(publicProvider);

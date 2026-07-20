@@ -282,7 +282,7 @@ export async function invokePlatformIntegrationAction(
 
   const started = Date.now();
   let credential:
-    | { id: string; scopes: string[]; secrets: JsonObject }
+    | { id?: string; scopes: string[]; secrets: JsonObject }
     | undefined;
   try {
     credential = await resolveCredentialForProvider(db, {
@@ -429,7 +429,7 @@ async function assertRoleForAction(
 async function resolveCredentialForProvider(
   db: Database,
   input: { appId: string; providerKey: string; credentialId?: string },
-): Promise<{ id: string; scopes: string[]; secrets: JsonObject } | undefined> {
+): Promise<{ id?: string; scopes: string[]; secrets: JsonObject } | undefined> {
   const provider = getIntegrationProvider(input.providerKey);
   if (!provider || provider.authType === "none") return undefined;
   const filters = [
@@ -448,6 +448,8 @@ async function resolveCredentialForProvider(
     .orderBy(desc(appIntegrationCredentials.updatedAt))
     .limit(1);
   if (!row) {
+    const platformCredential = platformCredentialForProvider(input.providerKey);
+    if (platformCredential) return platformCredential;
     throw new PlatformDataError(
       409,
       "integration_not_configured",
@@ -458,6 +460,20 @@ async function resolveCredentialForProvider(
     id: row.id,
     scopes: normalizeScopes(row.scopes),
     secrets: decryptIntegrationSecrets(row.encryptedPayload),
+  };
+}
+
+function platformCredentialForProvider(
+  providerKey: string,
+): { scopes: string[]; secrets: JsonObject } | undefined {
+  if (providerKey !== "google_maps") return undefined;
+  const apiKey =
+    process.env.VOICEFORGE_GOOGLE_MAPS_API_KEY?.trim() ??
+    process.env.GOOGLE_MAPS_API_KEY?.trim();
+  if (!apiKey) return undefined;
+  return {
+    scopes: ["places", "geocoding", "routes"],
+    secrets: { apiKey },
   };
 }
 

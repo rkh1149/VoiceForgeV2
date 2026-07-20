@@ -22,7 +22,7 @@ Current platform capabilities available to generated apps:
 - Platform search/report actions through the locked /api/data endpoint: server-side search, filters, sorts, saved filters, basic grouped reports, and CSV export over platform JSONB records
 - Locked /api/files endpoint for generated app uploads, attachments, downloads, metadata, and delete/archive
 - Locked /api/notifications endpoint for approved in-app/email notification templates, preferences, and scheduled notification job metadata
-- Locked /api/integrations endpoint for approved integration catalogue providers and actions only. Stage 12A approved provider: demo_directory (Demo Directory) with actions list_contacts, lookup_contact, and record_contact_note.
+- Locked /api/integrations endpoint for approved integration catalogue providers and actions only. Approved providers: demo_directory (Demo Directory) with actions list_contacts, lookup_contact, and record_contact_note; google_maps (Google Maps) with server-only trip-planning actions search_places, get_place_details, geocode_address, and compute_route.
 - VoiceForge member sign-in for generated apps, including owner/editor/viewer role enforcement
 - Real app membership access is managed from the VoiceForge app dashboard. Generated apps can enforce the current user's role but cannot invite new VoiceForge users or revoke actual app access from inside the generated app yet.
 - Anonymous shared-link apps can allow collaboration; anonymous public apps are read-only
@@ -30,7 +30,7 @@ Current platform capabilities available to generated apps:
 - Unit tests, build tests, and locked browser/accessibility smoke tests
 
 Current platform capabilities NOT available yet:
-- External integrations outside the approved Stage 12A catalogue. Google Calendar, Gmail/Outlook, Slack, Stripe, Airtable, Notion, webhooks, and arbitrary APIs are still not available until their provider adapters are added.
+- External integrations outside the approved Stage 12C catalogue. Google Calendar, Gmail/Outlook, Slack, Stripe, Airtable, Notion, webhooks, and arbitrary APIs are still not available until their provider adapters are added.
 - Arbitrary background workers, custom cron code, custom email templates, custom recipient email addresses, or direct email provider/API calls
 - Arbitrary dependencies or generated API routes
 
@@ -42,7 +42,7 @@ Rules:
 - Use empty arrays where a section does not apply.
 - Do not invent new platform capabilities.
 - Notifications must use the locked platform notification service only. Mark email/jobs available when the need fits approved templates, recipient groups, preferences, and platform-managed scheduled notification metadata.
-- Integrations must use the locked platform integration service only. Mark integrations available only when every required external provider is in the approved catalogue. For Stage 12A, only demo_directory is approved; all other providers must stay blocked.
+- Integrations must use the locked platform integration service only. Mark integrations available only when every required external provider is in the approved catalogue. Approved providers are demo_directory and google_maps; all other providers must stay blocked.
 - Do not treat VoiceForge's own sign-in, roles, platform data, platform files, platform notifications, or platform scheduled notification jobs as external integrations.
 - If a spec asks for generated-app invite/remove-access flows, plan a safe dashboard-managed access note instead of generating fake membership-management UI.
 

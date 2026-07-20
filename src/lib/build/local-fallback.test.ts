@@ -393,11 +393,14 @@ describe("generated app local platform fallback", () => {
 
     expect(providers.status).toBe(200);
     await expect(providers.json()).resolves.toMatchObject({
-      providers: [
+      providers: expect.arrayContaining([
         expect.objectContaining({
           providerKey: "demo_directory",
         }),
-      ],
+        expect.objectContaining({
+          providerKey: "google_maps",
+        }),
+      ]),
     });
 
     const contacts = await integrationsPOST(
@@ -420,6 +423,38 @@ describe("generated app local platform fallback", () => {
             id: "demo-avery",
           }),
         ],
+      },
+    });
+
+    const route = await integrationsPOST(
+      new Request("http://local.test/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "invoke",
+          providerKey: "google_maps",
+          actionKey: "compute_route",
+          input: {
+            origin: { placeId: "local-union-station" },
+            destination: { placeId: "local-cn-tower" },
+          },
+        }),
+      }),
+    );
+
+    expect(route.status).toBe(200);
+    await expect(route.json()).resolves.toMatchObject({
+      result: {
+        provider: "google_maps",
+        route: {
+          distanceMeters: expect.any(Number),
+          durationSeconds: expect.any(Number),
+          legs: [
+            expect.objectContaining({
+              startLocation: { latitude: 43.6453, longitude: -79.3806 },
+              endLocation: { latitude: 43.6426, longitude: -79.3871 },
+            }),
+          ],
+        },
       },
     });
 

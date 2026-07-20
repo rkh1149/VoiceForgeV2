@@ -158,7 +158,7 @@ describe("architecture planning", () => {
     );
   });
 
-  it("allows approved Stage 12A catalogue integrations", () => {
+  it("allows approved Stage 12C catalogue integrations", () => {
     const base = normalizeAppSpec(personalSpecInput);
     const spec = {
       ...base,
@@ -167,6 +167,12 @@ describe("architecture planning", () => {
         {
           name: "Demo Directory",
           purpose: "Search sample external contacts from the approved catalogue.",
+          direction: "import" as const,
+          requiredForLaunch: true,
+        },
+        {
+          name: "Google Maps",
+          purpose: "Search trip places and estimate route travel time.",
           direction: "import" as const,
           requiredForLaunch: true,
         },
@@ -235,7 +241,7 @@ describe("architecture planning", () => {
     );
   });
 
-  it("keeps unsupported external providers blocked after Stage 12A", () => {
+  it("keeps unsupported external providers blocked after Stage 12C", () => {
     const base = normalizeAppSpec(personalSpecInput);
     const spec = {
       ...base,
