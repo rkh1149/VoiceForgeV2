@@ -14,6 +14,8 @@ type Proposal = {
   forceDeepDiagnostic: boolean;
 };
 
+const CHAT_MESSAGE_MAX_LENGTH = 4000;
+
 export default function PlannerChat({
   appId,
   appName,
@@ -211,7 +213,7 @@ export default function PlannerChat({
             </span>
           </label>
         )}
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -221,15 +223,15 @@ export default function PlannerChat({
                 send();
               }
             }}
-            rows={1}
-            maxLength={2000}
+            rows={5}
+            maxLength={CHAT_MESSAGE_MAX_LENGTH}
             placeholder="Type your message…"
-            className="max-h-32 flex-1 resize-y rounded-xl border border-slate-300 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-forge-500 focus:outline-none"
+            className="min-h-36 max-h-80 flex-1 resize-y rounded-xl border border-slate-300 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-forge-500 focus:outline-none"
           />
           <button
             onClick={send}
             disabled={busy || !input.trim()}
-            className="rounded-xl bg-forge-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-forge-700 disabled:opacity-40"
+            className="self-end rounded-xl bg-forge-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-forge-700 disabled:opacity-40"
           >
             Send
           </button>

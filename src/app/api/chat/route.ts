@@ -22,7 +22,7 @@ const bodySchema = z.object({
   // Present when the user is changing an existing app (change flow).
   appId: z.string().uuid().nullish(),
   forceDeepDiagnostic: z.boolean().default(false),
-  message: z.string().min(1).max(2000),
+  message: z.string().min(1).max(4000),
 });
 
 const MAX_TRANSCRIPT_ITEMS = 80; // hard cap per conversation (cost control)
