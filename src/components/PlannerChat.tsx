@@ -47,10 +47,18 @@ export default function PlannerChat({
 
   function rememberCreateConversation(nextConversationId: string) {
     if (appId || typeof window === "undefined") return;
-    const url = new URL(window.location.href);
-    if (url.searchParams.get("conversationId") === nextConversationId) return;
-    url.searchParams.set("conversationId", nextConversationId);
-    window.history.replaceState(null, "", `${url.pathname}?${url.searchParams}`);
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get("conversationId") === nextConversationId) return;
+      url.searchParams.set("conversationId", nextConversationId);
+      window.history.replaceState(
+        null,
+        "",
+        `${url.pathname}?${url.searchParams}`,
+      );
+    } catch (error) {
+      console.warn("Could not save planning conversation link.", error);
+    }
   }
 
   async function send() {
@@ -73,11 +81,18 @@ export default function PlannerChat({
           forceDeepDiagnostic: appId ? forceDeepDiagnostic : false,
         }),
       });
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) throw new Error(data.error ?? "Something went wrong.");
-      setConversationId(data.conversationId);
-      rememberCreateConversation(data.conversationId);
-      setMessages((m) => [...m, { role: "assistant", content: data.reply }]);
+      if (!data.conversationId || !data.reply) {
+        throw new Error(
+          "VoiceForge returned an unexpected response. Please try again.",
+        );
+      }
+      const nextConversationId = data.conversationId;
+      const reply = data.reply;
+      setConversationId(nextConversationId);
+      rememberCreateConversation(nextConversationId);
+      setMessages((m) => [...m, { role: "assistant", content: reply }]);
       if (data.proposal) {
         setProposal(data.proposal);
         setDecision(null); // a revised spec resets any earlier decision
@@ -261,4 +276,26 @@ export default function PlannerChat({
       </div>
     </div>
   );
+}
+
+async function readJsonResponse(res: Response): Promise<{
+  error?: string;
+  conversationId?: string;
+  reply?: string;
+  proposal?: Proposal | null;
+}> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    return (await res.json()) as {
+      error?: string;
+      conversationId?: string;
+      reply?: string;
+      proposal?: Proposal | null;
+    };
+  }
+  return {
+    error: res.ok
+      ? "VoiceForge returned an unexpected response. Please try again."
+      : "VoiceForge took too long to respond. Please try again, or shorten the prompt a little.",
+  };
 }

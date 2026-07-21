@@ -15,8 +15,8 @@ import {
 } from "@/lib/proposals";
 import { CHAT_MESSAGE_MAX_LENGTH } from "@/lib/chat-limits";
 
-// Planning turns can take a while (model + tool call).
-export const maxDuration = 60;
+// Planning turns can take a while, especially with larger prompts and tool calls.
+export const maxDuration = 300;
 
 const bodySchema = z.object({
   conversationId: z.string().uuid().nullish(),
