@@ -123,6 +123,79 @@ describe("platform entity seeding", () => {
     );
   });
 
+  it("keeps optional belongs-to relationships optional", () => {
+    const spec = normalizeAppSpec({
+      appName: "Renovation Center",
+      purpose: "Track renovation work.",
+      targetUsers: "A family",
+      screens: [{ name: "Tasks", description: "Manage tasks." }],
+      features: ["Add tasks"],
+      dataToStore: ["tasks with optional vendors"],
+      needsLogin: true,
+      sharingModel: "shared",
+      aiFeatures: [],
+      testPlan: ["Add a task without a vendor"],
+      deploymentNotes: "",
+    });
+    const entity = platformEntityFromSpec({
+      ...spec.dataEntities[0],
+      name: "Task",
+      fields: [
+        {
+          name: "title",
+          label: "Task title",
+          type: "text",
+          required: true,
+          validation: "",
+        },
+        {
+          name: "vendor",
+          label: "Vendor",
+          type: "relation",
+          required: false,
+          validation: "Must refer to an existing vendor when selected.",
+        },
+      ],
+      relationships: [
+        {
+          type: "belongs_to",
+          targetEntity: "Project",
+          description: "Each task belongs to the basement project.",
+        },
+        {
+          type: "belongs_to",
+          targetEntity: "Vendor",
+          description: "A task may be assigned to one vendor.",
+        },
+      ],
+    });
+
+    expect(entity.fields).toContainEqual(
+      expect.objectContaining({
+        key: "project_id",
+        type: "relation",
+        required: true,
+        relation: { entityKey: "project" },
+      }),
+    );
+    expect(entity.fields).toContainEqual(
+      expect.objectContaining({
+        key: "vendor",
+        type: "relation",
+        required: false,
+        relation: { entityKey: "vendor" },
+      }),
+    );
+    expect(entity.fields).toContainEqual(
+      expect.objectContaining({
+        key: "vendor_id",
+        type: "relation",
+        required: false,
+        relation: { entityKey: "vendor" },
+      }),
+    );
+  });
+
   it("adds a completion boolean when workflows require marking records done", () => {
     const spec = normalizeAppSpec({
       appName: "Family Grocery List",

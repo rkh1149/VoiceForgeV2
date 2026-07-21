@@ -43,7 +43,7 @@ export function platformEntityFromSpec(
               field.type === "relation"
                 ? {
                     entityKey: normalizeEntityKey(
-                      entity.relationships[0]?.targetEntity ?? "item",
+                      relationTargetForField(field, entity.relationships),
                     ),
                   }
                 : undefined,
@@ -67,7 +67,7 @@ export function platformEntityFromSpec(
       key: uniqueKey(relationKey, usedKeys),
       label: `${relationship.targetEntity} ID`,
       type: "relation",
-      required: true,
+      required: relationshipImpliesRequired(relationship),
       options: [],
       validation: `Related ${relationship.targetEntity} record id.`,
       relation: {
@@ -231,6 +231,37 @@ function isSearchableField(field: PlatformFieldDefinition): boolean {
     field.type === "select" ||
     field.type === "multi_select"
   );
+}
+
+function relationTargetForField(
+  field: AppSpec["dataEntities"][number]["fields"][number],
+  relationships: AppSpec["dataEntities"][number]["relationships"],
+): string {
+  const fieldKey = normalizeEntityKey(`${field.name} ${field.label}`);
+  const match = relationships.find((relationship) => {
+    const targetKey = normalizeEntityKey(relationship.targetEntity);
+    return (
+      fieldKey === targetKey ||
+      fieldKey === `${targetKey}_id` ||
+      fieldKey.includes(targetKey) ||
+      targetKey.includes(fieldKey)
+    );
+  });
+  return match?.targetEntity ?? relationships[0]?.targetEntity ?? "item";
+}
+
+function relationshipImpliesRequired(
+  relationship: AppSpec["dataEntities"][number]["relationships"][number],
+): boolean {
+  const text = relationship.description.toLowerCase();
+  if (
+    /\b(may|might|optional|optionally|can be linked|can link|if selected|when selected|where present)\b/.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function shouldAddCompletionField(
