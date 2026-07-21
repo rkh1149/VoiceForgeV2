@@ -51,6 +51,18 @@ import {
   recordDebugAttempt,
   reserveDebugRound,
 } from "./debug-budget";
+import {
+  buildMetricsArtifactStatus,
+  buildMetricsPayload,
+  categorizeBuildFailure,
+  createBuildMetrics,
+  recordDebugRoundMetric,
+  recordGeneratedPhaseMetrics,
+  recordReviewMetrics,
+  setBuildFailureCategory,
+  summarizeBuildMetrics,
+  type BuildMetrics,
+} from "./build-metrics";
 import { recordBuildAgentArtifact } from "./agent-artifacts";
 import {
   artifactStatusFromIssues,
@@ -211,6 +223,23 @@ async function recordPostGenerationReviewArtifacts(input: {
   }
 }
 
+async function recordBuildMetricsArtifact(input: {
+  appId: string;
+  buildRunId: string;
+  metrics: BuildMetrics;
+}): Promise<void> {
+  await recordBuildAgentArtifact({
+    appId: input.appId,
+    buildRunId: input.buildRunId,
+    agentKey: "pipeline_observer",
+    phaseKey: "build-metrics",
+    artifactType: "metrics",
+    status: buildMetricsArtifactStatus(input.metrics),
+    summary: summarizeBuildMetrics(input.metrics),
+    payload: buildMetricsPayload(input.metrics),
+  });
+}
+
 function shouldUseArchitectAgent(): boolean {
   const mode = process.env.VOICEFORGE_ARCHITECT_MODE;
   if (mode === "agent") return true;
@@ -315,6 +344,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
 
   const spec = normalizeAppSpec(requirement.spec);
   const complexity = computeSpecComplexity(spec);
+  const metrics = createBuildMetrics();
 
   try {
     await setStatus(buildRunId, "generating", { startedAt: new Date() });
@@ -344,6 +374,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       architecture,
       architectureValidation,
     });
+    recordReviewMetrics(metrics, planningReviews);
     const planningBlockingIssues = uniqueStrings(
       planningReviews.flatMap((review) => review.blockingIssues),
     );
@@ -618,6 +649,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       }
     }
     applyCodegenResult(files, generated);
+    recordGeneratedPhaseMetrics(metrics, generated.phases);
     for (const phase of generated.phases) {
       await log(
         buildRunId,
@@ -679,6 +711,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       buildRunId,
       reviews: postGenerationReviews,
     });
+    recordReviewMetrics(metrics, postGenerationReviews);
     let postGenerationWarnings = uniqueStrings(
       postGenerationReviews.flatMap((review) => review.warnings),
     );
@@ -704,6 +737,13 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         errorOutput,
         generatedPhases: generated.phases,
         changedFilePaths: reviewChangedFilePaths,
+      });
+      recordDebugRoundMetric(metrics, {
+        step,
+        domain: debugPlan.classification.domain,
+        focus: debugPlan.classification.focus,
+        responsiblePhaseId: debugPlan.responsiblePhase.id,
+        responsibleAgentKey: debugPlan.responsiblePhase.agentKey,
       });
 
       await setStatus(buildRunId, "debugging");
@@ -827,6 +867,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         reviews: postGenerationReviews,
         rerunRound: stepRound,
       });
+      recordReviewMetrics(metrics, postGenerationReviews);
       postGenerationWarnings = uniqueStrings(
         postGenerationReviews.flatMap((review) => review.warnings),
       );
@@ -908,6 +949,13 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         failedStep: step,
         errorOutput: result.output,
         generatedPhases: generated.phases,
+      });
+      recordDebugRoundMetric(metrics, {
+        step,
+        domain: debugPlan.classification.domain,
+        focus: debugPlan.classification.focus,
+        responsiblePhaseId: debugPlan.responsiblePhase.id,
+        responsibleAgentKey: debugPlan.responsiblePhase.agentKey,
       });
 
       await setStatus(buildRunId, "debugging");
@@ -1159,8 +1207,19 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       buildRunId,
       "Vercel is building the preview — this page will update when it's ready.",
     );
+    await recordBuildMetricsArtifact({
+      appId: app.id,
+      buildRunId,
+      metrics,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    setBuildFailureCategory(metrics, categorizeBuildFailure(message));
+    await recordBuildMetricsArtifact({
+      appId: app.id,
+      buildRunId,
+      metrics,
+    });
     if (err instanceof ArchitectureBlockedError) {
       await log(buildRunId, `Build needs input: ${message}`);
       await setStatus(buildRunId, "needs_input", {

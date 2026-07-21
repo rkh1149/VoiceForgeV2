@@ -182,7 +182,7 @@ it("works", () => expect(true).toBe(true));`,
       "code_review: Shared/platform-data app did not use the locked platform-data client.",
     );
     expect(codeReview.blockingIssues).toContain(
-      "code_review: Sign-in or role-aware app did not wire the locked platform session flow.",
+      "code_review: Sign-in or role-aware app did not provide a usable locked platform sign-in action.",
     );
   });
 

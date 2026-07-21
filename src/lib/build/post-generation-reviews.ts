@@ -1,5 +1,6 @@
 import type { ArchitecturePlan } from "../architecture";
 import type { AppSpec } from "../spec";
+import { platformEntityFromSpec } from "../platform/spec-seeding";
 import {
   artifactStatusFromIssues,
   type BuildAgentArtifactStatus,
@@ -58,6 +59,31 @@ const DANGEROUS_CODE_PATTERN =
   /\b(eval\s*\(|new Function\s*\(|dangerouslySetInnerHTML\b)/;
 const DIRECT_SERVICE_IMPORT_PATTERN =
   /from\s+["'](@neondatabase\/serverless|@octokit\/rest|openai|resend|nodemailer|googleapis)["']/;
+const PDF_BLOB_PATTERN =
+  /\bnew\s+Blob\s*\([\s\S]{0,600}\btype\s*:\s*["']application\/pdf["']/;
+const MEMBER_ACCESS_ACTION_PATTERN =
+  /\b(invite member|invite user|remove member|remove access|revoke access|grant access|resend invite)\b/i;
+const MEMBER_ACCESS_NOTE_PATTERN =
+  /\b(VoiceForge dashboard|managed from VoiceForge|managed in VoiceForge|VoiceForge app dashboard|access is managed)\b/i;
+const PLATFORM_RECORD_CALL_PATTERN =
+  /\b(createPlatformRecord|updatePlatformRecord)\s*\(\s*["'`]([A-Za-z0-9_-]+)["'`]\s*,([\s\S]{0,1200}?)\)/g;
+const OBJECT_KEY_PATTERN = /[{,]\s*([A-Za-z_$][\w$]*)\s*:/g;
+const NON_PAYLOAD_OBJECT_KEYS = new Set([
+  "children",
+  "className",
+  "disabled",
+  "entityKey",
+  "error",
+  "id",
+  "key",
+  "onClick",
+  "onSubmit",
+  "recordId",
+  "role",
+  "style",
+  "type",
+  "value",
+]);
 const FORM_CONTROL_PATTERN = /<(input|select|textarea)\b(?![^>]*type=["']hidden["'])/gi;
 const ACCESSIBLE_NAME_PATTERN = /(<label\b|htmlFor=|aria-label=|aria-labelledby=)/i;
 const IMAGE_WITHOUT_ALT_PATTERN = /<img\b(?![^>]*\balt=)/i;
@@ -122,18 +148,25 @@ function reviewGeneratedCode(
     );
   }
 
-  if (requiresGeneratedAppSession(input.spec, input.architecture) && !usesAny(
-    combinedSource,
-    [
+  if (requiresGeneratedAppSession(input.spec, input.architecture)) {
+    const hasReusableGate = combinedSource.includes("PlatformSignInGate");
+    const hasRouteStableSession = combinedSource.includes(
       "usePlatformSessionState",
-      "PlatformSignInGate",
-      "getPlatformSession",
-      "signInToPlatform",
-    ],
-  )) {
-    blockingIssues.push(
-      "code_review: Sign-in or role-aware app did not wire the locked platform session flow.",
     );
+    const hasManualSignIn =
+      combinedSource.includes("getPlatformSession") &&
+      combinedSource.includes("signInToPlatform") &&
+      /\bloginUrl\b/.test(combinedSource);
+    if (!hasReusableGate && !hasManualSignIn) {
+      blockingIssues.push(
+        "code_review: Sign-in or role-aware app did not provide a usable locked platform sign-in action.",
+      );
+    }
+    if (!hasReusableGate && !hasRouteStableSession) {
+      warnings.push(
+        "code_review: Sign-in app does not use the route-stable reusable session helpers; verify it will not flash the sign-in screen between routes.",
+      );
+    }
   }
 
   if (requiresService(input.architecture, "files") && !usesAny(combinedSource, [
@@ -194,6 +227,9 @@ function reviewGeneratedCode(
       "code_review: Platform-data app still references localStorage; verify it is only for harmless UI preferences.",
     );
   }
+
+  blockingIssues.push(...detectPlatformFieldKeyIssues(input.spec, appSource));
+  blockingIssues.push(...detectFakeMemberAccessIssues(appSource));
 
   return reviewResult({
     agentKey: "code_reviewer",
@@ -309,6 +345,12 @@ function reviewSecurity(input: PostGenerationReviewInput): PostGenerationReview 
     if (DANGEROUS_CODE_PATTERN.test(content)) {
       blockingIssues.push(
         `security_review: ${path} uses unsafe dynamic HTML or code execution.`,
+      );
+    }
+
+    if (PDF_BLOB_PATTERN.test(content)) {
+      blockingIssues.push(
+        `security_review: ${path} creates a fake PDF by labeling non-PDF bytes as application/pdf; use downloadSimplePdf, downloadRecordsPdf, or jsPDF.`,
       );
     }
 
@@ -530,6 +572,97 @@ function requiredServices(architecture: ArchitecturePlan): string[] {
   return architecture.platformServices
     .filter((service) => service.required && service.availability === "available")
     .map((service) => service.service);
+}
+
+function detectPlatformFieldKeyIssues(
+  spec: AppSpec,
+  source: readonly [string, string][],
+): string[] {
+  if (spec.dataEntities.length === 0) return [];
+  const schemas = new Map(
+    spec.dataEntities.map((entity) => {
+      const schema = platformEntityFromSpec(entity, spec);
+      return [
+        schema.key,
+        {
+          name: schema.name,
+          fieldKeys: new Set(schema.fields.map((field) => field.key)),
+        },
+      ];
+    }),
+  );
+  const issues: string[] = [];
+
+  for (const [path, content] of source) {
+    PLATFORM_RECORD_CALL_PATTERN.lastIndex = 0;
+    for (const match of content.matchAll(PLATFORM_RECORD_CALL_PATTERN)) {
+      const operation = match[1];
+      const entityKey = match[2];
+      const callTail = match[3] ?? "";
+      const schema = schemas.get(entityKey);
+      if (!schema) {
+        issues.push(
+          `code_review: ${path} calls ${operation} with unknown platform entity key "${entityKey}".`,
+        );
+        continue;
+      }
+      const payloadSnippet = directPlatformPayloadSnippet(operation, callTail);
+      if (!payloadSnippet) continue;
+      const payloadKeys = directObjectKeys(payloadSnippet).filter(
+        (key) =>
+          !schema.fieldKeys.has(key) && !NON_PAYLOAD_OBJECT_KEYS.has(key),
+      );
+      if (payloadKeys.length > 0) {
+        issues.push(
+          `code_review: ${path} appears to save fields not in the ${schema.name} platform schema: ${uniqueStrings(payloadKeys).join(", ")}.`,
+        );
+      }
+    }
+  }
+
+  return uniqueStrings(issues);
+}
+
+function directPlatformPayloadSnippet(
+  operation: string,
+  callTail: string,
+): string | null {
+  const trimmed = callTail.trim().replace(/^,/, "").trim();
+  if (operation === "createPlatformRecord") {
+    return trimmed.startsWith("{") ? trimmed : null;
+  }
+  if (operation === "updatePlatformRecord") {
+    const payloadMatch = trimmed.match(/^[^,]+,\s*({[\s\S]*)$/);
+    return payloadMatch?.[1]?.trim().startsWith("{")
+      ? payloadMatch[1]
+      : null;
+  }
+  return null;
+}
+
+function directObjectKeys(value: string): string[] {
+  const keys: string[] = [];
+  OBJECT_KEY_PATTERN.lastIndex = 0;
+  for (const match of value.matchAll(OBJECT_KEY_PATTERN)) {
+    const key = match[1];
+    if (key) keys.push(key);
+  }
+  return uniqueStrings(keys);
+}
+
+function detectFakeMemberAccessIssues(
+  source: readonly [string, string][],
+): string[] {
+  return source
+    .filter(
+      ([, content]) =>
+        MEMBER_ACCESS_ACTION_PATTERN.test(content) &&
+        !MEMBER_ACCESS_NOTE_PATTERN.test(content),
+    )
+    .map(
+      ([path]) =>
+        `code_review: ${path} appears to implement invite/remove access controls without explaining that real access is managed from the VoiceForge dashboard.`,
+    );
 }
 
 function usesAny(content: string, needles: readonly string[]): boolean {
