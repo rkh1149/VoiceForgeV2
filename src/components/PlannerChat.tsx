@@ -14,7 +14,7 @@ type Proposal = {
   forceDeepDiagnostic: boolean;
 };
 
-const CHAT_MESSAGE_MAX_LENGTH = 4000;
+const CHAT_MESSAGE_MAX_LENGTH = 5000;
 
 export default function PlannerChat({
   appId,
@@ -246,10 +246,10 @@ export default function PlannerChat({
                 send();
               }
             }}
-            rows={5}
+            rows={8}
             maxLength={CHAT_MESSAGE_MAX_LENGTH}
             placeholder="Type your message…"
-            className="min-h-36 max-h-80 flex-1 resize-y rounded-xl border border-slate-300 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-forge-500 focus:outline-none"
+            className="min-h-56 max-h-[28rem] flex-1 resize-y rounded-xl border border-slate-300 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-forge-500 focus:outline-none"
           />
           <button
             onClick={send}

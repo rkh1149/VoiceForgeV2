@@ -91,7 +91,7 @@ export default async function CreateAppPage({
   const resumableBuilds = await getResumableBuildsForUser(user.id, "build");
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div className="mx-auto max-w-5xl">
       <h1 className="text-2xl font-bold text-forge-900">Create a new app</h1>
       <p className="mt-1 mb-6 text-sm text-slate-500">
         {activeConversation

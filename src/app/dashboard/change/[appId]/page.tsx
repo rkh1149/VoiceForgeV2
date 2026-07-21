@@ -25,7 +25,7 @@ export default async function ChangeAppChatPage({
   if (!app || !app.githubRepoUrl) notFound();
 
   return (
-    <div className="mx-auto max-w-2xl">
+    <div className="mx-auto max-w-5xl">
       <h1 className="text-2xl font-bold text-forge-900">
         Change {app.name}
       </h1>
