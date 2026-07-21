@@ -473,6 +473,87 @@ export default function Page() {
     );
   });
 
+  it("accepts typed platform wrapper helpers as advanced save wiring", () => {
+    const spec = advancedBikeSpec();
+    const files: FileMap = {
+      "src/lib/bike-journey.ts": `import { createPlatformRecord, updatePlatformRecord, deletePlatformRecord, exportPlatformRecordsCsv } from "@/lib/platform-data";
+export const ENTITY_KEYS = { trip: "trip", tripDay: "trip_day", tripStop: "trip_stop", routeOption: "route_option", savedPlace: "saved_place" } as const;
+type TripData = { name: string };
+type TripDayData = { date: string };
+type TripStopData = { place_name: string };
+type RouteOptionData = { name: string; route_data: unknown };
+type SavedPlaceData = { name: string };
+export function createTrip(data: TripData) { return createPlatformRecord<TripData>(ENTITY_KEYS.trip, data); }
+export function updateTrip(recordId: string, data: Partial<TripData>) { return updatePlatformRecord<Partial<TripData>>(recordId, data); }
+export function deleteTrip(recordId: string) { return deletePlatformRecord(recordId); }
+export function createTripDay(data: TripDayData) { return createPlatformRecord<TripDayData>(ENTITY_KEYS.tripDay, data); }
+export function updateTripDay(recordId: string, data: Partial<TripDayData>) { return updatePlatformRecord<Partial<TripDayData>>(recordId, data); }
+export function deleteTripDay(recordId: string) { return deletePlatformRecord(recordId); }
+export function createTripStop(data: TripStopData) { return createPlatformRecord<TripStopData>(ENTITY_KEYS.tripStop, data); }
+export function updateTripStop(recordId: string, data: Partial<TripStopData>) { return updatePlatformRecord<Partial<TripStopData>>(recordId, data); }
+export function deleteTripStop(recordId: string) { return deletePlatformRecord(recordId); }
+export function createRouteOption(data: RouteOptionData) { return createPlatformRecord<RouteOptionData>(ENTITY_KEYS.routeOption, data); }
+export function updateRouteOption(recordId: string, data: Partial<RouteOptionData>) { return updatePlatformRecord<Partial<RouteOptionData>>(recordId, data); }
+export function deleteRouteOption(recordId: string) { return deletePlatformRecord(recordId); }
+export function createSavedPlace(data: SavedPlaceData) { return createPlatformRecord<SavedPlaceData>(ENTITY_KEYS.savedPlace, data); }
+export function updateSavedPlace(recordId: string, data: Partial<SavedPlaceData>) { return updatePlatformRecord<Partial<SavedPlaceData>>(recordId, data); }
+export function deleteSavedPlace(recordId: string) { return deletePlatformRecord(recordId); }
+export function exportTripPlanningCsv() { return exportPlatformRecordsCsv(ENTITY_KEYS.trip); }`,
+      "src/app/page.tsx": `"use client";
+import { PlatformSignInGate, usePlatformSessionState } from "@/components/voiceforge-reusable";
+import { GoogleMapsTripMap, GooglePlaceAutocomplete } from "@/components/voiceforge-google-map";
+import { computeGoogleMapsRoute, getGoogleMapsElevationProfile, searchGoogleMapsPlaces } from "@/lib/platform-integrations";
+import { createTrip, updateTrip, deleteTrip, createTripDay, updateTripDay, deleteTripDay, createTripStop, updateTripStop, deleteTripStop, createRouteOption, updateRouteOption, deleteRouteOption, createSavedPlace, updateSavedPlace, deleteSavedPlace, exportTripPlanningCsv } from "@/lib/bike-journey";
+export default function Page() {
+  usePlatformSessionState();
+  void PlatformSignInGate;
+  async function planRoute() {
+    const route = await computeGoogleMapsRoute({ origin: { address: "A" }, destination: { address: "B" }, travelMode: "BICYCLE", computeAlternativeRoutes: true, polylineQuality: "HIGH_QUALITY" });
+    await getGoogleMapsElevationProfile({ encodedPolyline: "abc", samples: 64 });
+    await searchGoogleMapsPlaces({ query: "bike friendly cafe" });
+    await createRouteOption({ name: "Comfort route", route_data: route.routes[0] });
+  }
+  return <main><h1>Bike Journey Planner</h1>
+    <button onClick={() => void createTrip({ name: "Tour" })}>Create multi-day trip</button>
+    <button onClick={() => void updateTrip("trip-1", { name: "Updated tour" })}>Update trip</button>
+    <button onClick={() => void deleteTrip("trip-1")}>Delete trip</button>
+    <button onClick={() => void createTripDay({ date: "2026-08-01" })}>Add trip day</button>
+    <button onClick={() => void updateTripDay("day-1", { date: "2026-08-02" })}>Update trip day</button>
+    <button onClick={() => void deleteTripDay("day-1")}>Delete trip day</button>
+    <button onClick={() => void createTripStop({ place_name: "Start" })}>Add trip stop</button>
+    <button onClick={() => void updateTripStop("stop-1", { place_name: "Cafe" })}>Update trip stop</button>
+    <button onClick={() => void deleteTripStop("stop-1")}>Delete trip stop</button>
+    <button onClick={() => void planRoute()}>Plan stops and bicycle routes</button>
+    <button onClick={() => void updateRouteOption("route-1", { name: "Scenic route" })}>Compare bicycle route alternatives</button>
+    <button onClick={() => void deleteRouteOption("route-1")}>Delete route option</button>
+    <button onClick={() => void createSavedPlace({ name: "Inn" })}>Save route-related places</button>
+    <button onClick={() => void updateSavedPlace("place-1", { name: "Campground" })}>Update saved place</button>
+    <button onClick={() => void deleteSavedPlace("place-1")}>Delete saved place</button>
+    <button onClick={() => void exportTripPlanningCsv()}>Export trip planning CSV</button>
+    <GooglePlaceAutocomplete label="Origin" onPlaceSelect={() => undefined} />
+    <GoogleMapsTripMap places={[]} />
+  </main>;
+}`,
+      "src/lib/bike-journey.test.ts": `import { expect, it } from "vitest";
+it("creates updates and deletes trip, trip day, trip stop, route option, and saved place records", () => expect("create update delete trip trip_day trip_stop route_option saved_place").toContain("route_option"));
+it("covers create multi-day trip, plan stops and bicycle routes, compare bicycle route alternatives, save route-related places, and export trip planning csv", () => expect("create plan compare save export").toContain("export"));`,
+      "e2e/generated/bike-journey.spec.ts": `import { test, expect } from "@playwright/test";
+test("advanced bike planner controls are reachable", async ({ page }) => { await page.goto("/"); await expect(page.getByRole("button", { name: "Create multi-day trip" })).toBeVisible(); await expect(page.getByRole("button", { name: "Plan stops and bicycle routes" })).toBeVisible(); await expect(page.getByRole("button", { name: "Export trip planning CSV" })).toBeVisible(); });`,
+    };
+
+    const reviews = review({
+      spec,
+      architecture: buildArchitecture(spec),
+      allFiles: files,
+    });
+    const codeReview = findReview(reviews, "code_reviewer");
+
+    expect(codeReview.blockingIssues.join(" ")).not.toContain(
+      "Advanced workflow coverage is incomplete",
+    );
+    expect(getPostGenerationBlockingIssues(reviews)).toEqual([]);
+  });
+
   it("passes advanced coverage when entities, workflows, tests, and Google Maps are real", () => {
     const spec = advancedBikeSpec();
     const files: FileMap = {

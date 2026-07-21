@@ -1020,7 +1020,7 @@ function hasPlatformEntityWriteCall(
     .map((alias) => `ENTITY_KEYS\\.${escapeRegExp(alias)}`);
   const entityArgument = [directKey, ...aliases].join("|");
   const pattern = new RegExp(
-    `\\b(?:${PLATFORM_RECORD_WRITE_CALLS.join("|")})\\s*\\(\\s*(?:${entityArgument})`,
+    `\\b(?:${PLATFORM_RECORD_WRITE_CALLS.join("|")})(?:\\s*<[^>()]+>)?\\s*\\(\\s*(?:${entityArgument})`,
   );
   return pattern.test(sourceText);
 }
@@ -1030,7 +1030,10 @@ function hasEntitySaveWiring(
   target: EntityCoverageTarget,
 ): boolean {
   if (target.storage === "platformData") {
-    return hasPlatformEntityWriteCall(sourceText, target);
+    return (
+      hasPlatformEntityWriteCall(sourceText, target) ||
+      hasNamedPlatformEntityWriteWrapper(sourceText, target)
+    );
   }
   const normalizedSource = normalizeForSearch(sourceText);
   return (
@@ -1038,6 +1041,41 @@ function hasEntitySaveWiring(
       sourceText,
     ) && hasActionNearAnyTerm(normalizedSource, target.terms)
   );
+}
+
+function hasNamedPlatformEntityWriteWrapper(
+  sourceText: string,
+  target: EntityCoverageTarget,
+): boolean {
+  if (
+    !/\b(?:createPlatformRecord|updatePlatformRecord|deletePlatformRecord)(?:\s*<[^>()]+>)?\s*\(/.test(
+      sourceText,
+    )
+  ) {
+    return false;
+  }
+  return entityWriteWrapperPatterns(target).some((pattern) =>
+    pattern.test(sourceText),
+  );
+}
+
+function entityWriteWrapperPatterns(target: EntityCoverageTarget): RegExp[] {
+  const bases = uniqueStrings(
+    [target.name, target.key, ...target.aliases]
+      .map((value) => pascalCase(value))
+      .filter(Boolean),
+  );
+  return bases.flatMap((base) => [
+    new RegExp(
+      `\\b(?:create|add|save|update|edit|delete|remove)${escapeRegExp(base)}(?:Record|Item|Entry)?\\s*\\(`,
+    ),
+    new RegExp(
+      `\\b(?:create|add|save|update|edit|delete|remove)${escapeRegExp(base)}(?:Record|Item|Entry)?\\s*=`,
+    ),
+    new RegExp(
+      `\\b(?:create|add|save|update|edit|delete|remove)${escapeRegExp(base)}(?:Record|Item|Entry)?\\s*:`,
+    ),
+  ]);
 }
 
 function hasInteractiveCoverage(
@@ -1304,6 +1342,12 @@ function camelCase(value: string): string {
     .map((word, index) =>
       index === 0 ? word : `${word.charAt(0).toUpperCase()}${word.slice(1)}`,
     )
+    .join("");
+}
+
+function pascalCase(value: string): string {
+  return splitWords(value)
+    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
     .join("");
 }
 
