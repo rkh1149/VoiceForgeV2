@@ -464,6 +464,48 @@ export default function Page() {
     );
   });
 
+  it("blocks file upload flows that do not persist or list uploaded files", () => {
+    const spec = normalizeAppSpec({
+      appName: "Trip Photo Journal",
+      purpose: "Share trip photos with the family.",
+      targetUsers: "Family cyclists",
+      screens: [
+        {
+          name: "Journal",
+          description: "Upload and view trip photos.",
+        },
+      ],
+      features: ["Upload photos", "View photo journal"],
+      dataToStore: ["photo journal entries with uploaded images"],
+      needsLogin: true,
+      sharingModel: "shared",
+      aiFeatures: [],
+      testPlan: ["Upload a trip photo and see it in the journal"],
+      deploymentNotes: "",
+    });
+    const files: FileMap = {
+      "src/app/page.tsx": `"use client";
+import { uploadPlatformFile } from "@/lib/platform-files";
+export default function Page() {
+  async function upload(file: File) {
+    await uploadPlatformFile({ file });
+  }
+  return <main><h1>Trip Photo Journal</h1><label>Photo<input type="file" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) void upload(file); event.currentTarget.value = ""; }} /></label></main>;
+}`,
+    };
+
+    const reviews = review({
+      spec,
+      architecture: buildArchitecture(spec),
+      allFiles: files,
+    });
+    const codeReview = findReview(reviews, "code_reviewer");
+
+    expect(codeReview.blockingIssues.join(" ")).toContain(
+      "File upload workflow only uploads a file",
+    );
+  });
+
   it("blocks advanced apps that omit architecture-planned route files", () => {
     const spec = advancedBikeSpec();
     const architecture = buildArchitecture(spec);

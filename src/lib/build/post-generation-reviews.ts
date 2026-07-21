@@ -77,6 +77,10 @@ const PLATFORM_RECORD_WRITE_CALLS = [
 ] as const;
 const INTEGRATION_RUNTIME_CALL_PATTERN =
   /\b(listPlatformIntegrationProviders|invokePlatformIntegration|searchGoogleMapsPlaces|getGoogleMapsPlaceDetails|geocodeGoogleMapsAddress|computeGoogleMapsRoute|getGoogleMapsElevationProfile)\s*\(/;
+const PLATFORM_FILE_UPLOAD_PATTERN =
+  /\b(uploadPlatformFile|uploadPlatformFileData|PlatformFileUploadInput)\b/;
+const PLATFORM_FILE_PERSISTENCE_PATTERN =
+  /\b(createPlatformRecord|updatePlatformRecord|create[A-Za-z0-9_$]*(?:Photo|Image|File|Attachment|Journal)|listPlatformFiles|downloadPlatformFile|downloadPlatformFileToBrowser)\s*\(/;
 const GOOGLE_MAPS_RUNTIME_CALL_PATTERN =
   /\b(searchGoogleMapsPlaces|getGoogleMapsPlaceDetails|geocodeGoogleMapsAddress|computeGoogleMapsRoute|getGoogleMapsElevationProfile)\s*\(/;
 const GOOGLE_MAPS_INVOKE_PATTERN =
@@ -259,6 +263,15 @@ function reviewGeneratedCode(
   ])) {
     blockingIssues.push(
       "code_review: File-enabled app did not use the locked platform-files client.",
+    );
+  }
+  if (
+    requiresService(input.architecture, "files") &&
+    PLATFORM_FILE_UPLOAD_PATTERN.test(combinedSource) &&
+    !PLATFORM_FILE_PERSISTENCE_PATTERN.test(combinedSource)
+  ) {
+    blockingIssues.push(
+      "code_review: File upload workflow only uploads a file; persist uploads in app records or list/download them so selected files remain visible after upload.",
     );
   }
 
