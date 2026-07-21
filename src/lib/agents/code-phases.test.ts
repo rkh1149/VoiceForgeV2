@@ -21,6 +21,15 @@ describe("code generation specialist phases", () => {
     });
   });
 
+  it("budgets enough foundation turns for advanced platform apps with many entities", () => {
+    const foundation = CODE_GENERATION_PHASES.find(
+      (phase) => phase.id === "foundation",
+    );
+
+    expect(foundation?.maxTurns).toBeGreaterThanOrEqual(30);
+    expect(foundation?.objective).toContain("large advanced apps");
+  });
+
   it("keeps change mode diagnostic, implementation, test, and final review phases separate", () => {
     expect(CHANGE_GENERATION_PHASES.map((phase) => phase.agentKey)).toEqual([
       "diagnostic_agent",

@@ -24,8 +24,8 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Backend/platform builder: own typed domain models, validation, constants, storage wrappers, and locked platform client usage. Keep UI minimal and leave page composition to the frontend builder.",
     objective:
-      "Create typed domain models, constants, validation helpers, storage/platform wrappers, and any AI/platform client helpers needed by later UI phases. For every planned data entity, expose create/update/delete helpers that use the exact platform schema keys when platform data is required. Keep UI work minimal in this phase.",
-    maxTurns: 18,
+      "Create typed domain models, constants, validation helpers, storage/platform wrappers, and any AI/platform client helpers needed by later UI phases. For every planned data entity, expose create/update/delete helpers that use the exact platform schema keys when platform data is required. For large advanced apps, prefer compact shared helpers and grouped file writes so this phase finishes the whole foundation without drifting into page UI work.",
+    maxTurns: 30,
   },
   {
     id: "components",
