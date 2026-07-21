@@ -197,4 +197,38 @@ describe("phase-aware debug", () => {
     expect(plan.scope.visibleFilePaths).toContain("src/components/TaskForm.tsx");
     expect(plan.scope.visibleFilePaths).not.toContain("src/lib/unrelated.ts");
   });
+
+  it("routes review-gate workflow coverage failures back to pages and workflows", () => {
+    const plan = createPhaseAwareDebugPlan({
+      spec,
+      files,
+      failedStep: "review_gate",
+      errorOutput: [
+        "code_review: Architecture planned route files that were not generated: src/app/reports/page.tsx.",
+        "code_review: Advanced workflow coverage is incomplete; editable entities without complete visible controls/save wiring: Stop (visible create/edit controls).",
+        "tests_review: Advanced workflow test coverage is incomplete; missing generated tests for editable entities: Stop.",
+      ].join("\n"),
+      generatedPhases: phases,
+    });
+
+    expect(plan.responsiblePhase.id).toBe("pages-workflows");
+    expect(plan.responsiblePhase.agentKey).toBe("frontend_builder");
+    expect(plan.context.instructions.join(" ")).toContain(
+      "compact but real route/control surfaces",
+    );
+  });
+
+  it("routes review-gate test-only failures to the unit workflow test phase", () => {
+    const plan = createPhaseAwareDebugPlan({
+      spec,
+      files,
+      failedStep: "review_gate",
+      errorOutput:
+        "tests_review: Advanced workflow test coverage is incomplete; missing generated tests for editable entities: Photo.",
+      generatedPhases: phases,
+    });
+
+    expect(plan.responsiblePhase.id).toBe("unit-workflow-tests");
+    expect(plan.responsiblePhase.agentKey).toBe("test_agent");
+  });
 });

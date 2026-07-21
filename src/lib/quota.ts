@@ -29,11 +29,11 @@ export async function checkBuildQuota(
  * killed dev process, function timeout…). Called from the status endpoint. */
 export async function failStaleRuns(appId: string): Promise<void> {
   const db = getDb();
-  const hardCutoff = new Date(Date.now() - 25 * 60_000);
-  const heartbeatCutoff = new Date(Date.now() - 8 * 60_000);
+  const now = Date.now();
   const activeRuns = await db
     .select({
       id: buildRuns.id,
+      status: buildRuns.status,
       createdAt: buildRuns.createdAt,
       logs: buildRuns.logs,
     })
@@ -55,7 +55,10 @@ export async function failStaleRuns(appId: string): Promise<void> {
       const lastLogAt = logs.at(-1)?.ts
         ? new Date(logs.at(-1)?.ts ?? run.createdAt)
         : run.createdAt;
-      return run.createdAt <= hardCutoff || lastLogAt <= heartbeatCutoff;
+      return (
+        run.createdAt.getTime() <= now - staleHardLimitMs(run.status) ||
+        lastLogAt.getTime() <= now - staleHeartbeatLimitMs(run.status)
+      );
     })
     .map((run) => run.id);
   if (staleRunIds.length === 0) return;
@@ -86,4 +89,15 @@ export async function failStaleRuns(appId: string): Promise<void> {
       updatedAt: new Date(),
     })
     .where(eq(apps.id, appId));
+}
+
+function staleHardLimitMs(status: string): number {
+  if (status === "generating" || status === "debugging") return 45 * 60_000;
+  return 25 * 60_000;
+}
+
+function staleHeartbeatLimitMs(status: string): number {
+  if (status === "debugging") return 20 * 60_000;
+  if (status === "generating") return 15 * 60_000;
+  return 8 * 60_000;
 }

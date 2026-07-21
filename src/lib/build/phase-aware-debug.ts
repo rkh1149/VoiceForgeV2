@@ -154,7 +154,7 @@ export function createPhaseAwareDebugPlan(input: {
       visibleFileCount: scope.visibleFileCount,
       visibleFilePaths: scope.visibleFilePaths,
       preferredInspectionPaths: scope.preferredInspectionPaths,
-      instructions: instructionsFor(classification),
+      instructions: instructionsFor(classification, responsiblePhase),
     },
   };
 }
@@ -205,6 +205,14 @@ export function inferResponsiblePhase(input: {
   generatedPhases: readonly DebugGenerationPhase[];
 }): DebugResponsiblePhase {
   const mentionedPaths = extractMentionedFilePaths(input.errorOutput);
+  const reviewGateHint = phaseHintForReviewGate({
+    classification: input.classification,
+    errorOutput: input.errorOutput,
+    generatedPhases: input.generatedPhases,
+    mentionedPaths,
+  });
+  if (reviewGateHint) return reviewGateHint;
+
   const scored = input.generatedPhases.map((phase) => {
     const phasePaths = new Set([
       ...phase.filesWritten,
@@ -408,6 +416,66 @@ function focusFromOutput(
   return "general";
 }
 
+function phaseHintForReviewGate(input: {
+  classification: DebugFailureClassification;
+  errorOutput: string;
+  generatedPhases: readonly DebugGenerationPhase[];
+  mentionedPaths: readonly string[];
+}): DebugResponsiblePhase | null {
+  if (input.classification.domain !== "integration_review_gate") return null;
+
+  const lowerOutput = input.errorOutput.toLowerCase();
+  let phaseId: string | null = null;
+  let reason: string | null = null;
+
+  if (
+    /architecture planned route files|advanced workflow coverage|planned workflows without visible action controls|visible create\/edit controls|app router page|sign-in|route-stable|google maps|interactive google map|platform-files|platform-notifications|platform-integrations|device gps|device-location|search\/report/.test(
+      lowerOutput,
+    )
+  ) {
+    phaseId = "pages-workflows";
+    reason =
+      "The review-gate failure is about missing routes, workflow controls, or runtime platform integration wiring, so the pages/workflows phase owns the repair.";
+  } else if (
+    /tests_review:|generated tests|test coverage|missing generated tests|unit\/workflow tests/.test(
+      lowerOutput,
+    )
+  ) {
+    phaseId = "unit-workflow-tests";
+    reason =
+      "The review-gate failure is about generated test coverage, so the unit/workflow test phase owns the repair.";
+  } else if (/browser-level acceptance|e2e\/generated|playwright/.test(lowerOutput)) {
+    phaseId = "browser-acceptance-tests";
+    reason =
+      "The review-gate failure is about generated browser acceptance coverage, so the browser acceptance test phase owns the repair.";
+  } else if (
+    input.classification.focus === "data_save" ||
+    /platform schema|schema key|unknown platform entity key|save fields not in/.test(
+      lowerOutput,
+    )
+  ) {
+    phaseId = "foundation";
+    reason =
+      "The review-gate failure is about platform schema keys or data-save helpers, so the foundation phase owns the first repair pass.";
+  }
+
+  if (!phaseId || !reason) return null;
+  const phase = input.generatedPhases.find((candidate) => candidate.id === phaseId);
+  if (!phase) return null;
+
+  const phasePaths = new Set([
+    ...phase.filesWritten,
+    ...(phase.filesDeleted ?? []),
+  ]);
+  return {
+    id: phase.id,
+    label: phase.label,
+    agentKey: phase.agentKey,
+    matchedFiles: input.mentionedPaths.filter((path) => phasePaths.has(path)),
+    reason,
+  };
+}
+
 function defaultPhaseScore(
   classification: DebugFailureClassification,
   phase: DebugGenerationPhase,
@@ -433,9 +501,15 @@ function defaultPhaseScore(
   }
   if (
     classification.domain === "integration_review_gate" &&
-    id === "final-integration-review"
+    id === "pages-workflows"
   ) {
     return 3;
+  }
+  if (
+    classification.domain === "integration_review_gate" &&
+    id === "final-integration-review"
+  ) {
+    return 1;
   }
   if (
     (classification.domain === "typecheck" || classification.domain === "lint") &&
@@ -471,9 +545,9 @@ function fallbackPhaseFor(
       };
     case "integration_review_gate":
       return {
-        id: "final-integration-review",
-        label: "Final integration review",
-        agentKey: "final_integration_agent",
+        id: "pages-workflows",
+        label: "Pages, navigation, and workflows",
+        agentKey: "frontend_builder",
       };
     case "typecheck":
     case "lint":
@@ -671,6 +745,7 @@ function moduleNameForPath(path: string): string {
 
 function instructionsFor(
   classification: DebugFailureClassification,
+  responsiblePhase: DebugResponsiblePhase,
 ): string[] {
   const common = [
     `Treat this as a ${classification.domainLabel} failure, not a general rewrite.`,
@@ -696,6 +771,19 @@ function instructionsFor(
     common.push(
       "For review-gate failures, fix the generated platform/security/accessibility contract directly before the sandbox gauntlet runs.",
     );
+    if (responsiblePhase.id === "pages-workflows") {
+      common.push(
+        "When advanced workflow coverage fails, add compact but real route/control surfaces and wire save/update/delete or runtime integration calls for the named missing entities/workflows; do not satisfy the gate with placeholders or dead buttons.",
+      );
+    }
+    if (
+      responsiblePhase.id === "unit-workflow-tests" ||
+      responsiblePhase.id === "browser-acceptance-tests"
+    ) {
+      common.push(
+        "When generated test coverage fails, add tests that exercise the named missing entities/workflows rather than only asserting that labels exist.",
+      );
+    }
   }
   return common;
 }

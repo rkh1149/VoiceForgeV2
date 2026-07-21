@@ -24,7 +24,7 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Backend/platform builder: own typed domain models, validation, constants, storage wrappers, and locked platform client usage. Keep UI minimal and leave page composition to the frontend builder.",
     objective:
-      "Create typed domain models, constants, validation helpers, localStorage wrappers, and any AI/platform client helpers needed by later UI phases. Keep UI work minimal in this phase.",
+      "Create typed domain models, constants, validation helpers, storage/platform wrappers, and any AI/platform client helpers needed by later UI phases. For every planned data entity, expose create/update/delete helpers that use the exact platform schema keys when platform data is required. Keep UI work minimal in this phase.",
     maxTurns: 18,
   },
   {
@@ -44,8 +44,8 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Frontend builder: own App Router pages, navigation, user-visible workflows, role-aware controls, empty/loading/error states, and safe button behavior.",
     objective:
-      "Assemble App Router pages and wire the main workflows end to end. Replace the placeholder home page, add routes when the architecture calls for them, and make every button safe.",
-    maxTurns: 28,
+      "Assemble all App Router pages and wire every planned user-visible workflow end to end. Replace the placeholder home page, create each route in the architecture page map, and expose visible create/edit/action controls for every planned editable entity and workflow. Advanced apps may use compact screens, but they must not defer planned routes, CRUD/save wiring, platform integrations, file upload/export, GPS, search/report, or workflow controls to later phases. Make every button safe.",
+    maxTurns: 36,
   },
   {
     id: "unit-workflow-tests",
@@ -54,8 +54,8 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Test agent: own deterministic Vitest coverage for domain helpers, storage/platform wrappers, components, and acceptance-criterion workflows. Prefer robust behavior assertions over brittle text matching.",
     objective:
-      "Add deterministic vitest tests under src/ for domain helpers, storage behavior, components, and acceptance-criterion workflows.",
-    maxTurns: 20,
+      "Add deterministic vitest tests under src/ for domain helpers, storage behavior, components, and acceptance-criterion workflows. For advanced apps, cover every editable entity and planned workflow with assertions that exercise save/update/delete helpers or visible workflow handlers, including platform schema key correctness.",
+    maxTurns: 24,
   },
   {
     id: "browser-acceptance-tests",
@@ -64,8 +64,8 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Test agent: own Playwright acceptance coverage for high-value browser workflows. Keep tests stable, same-origin, and complementary to the locked smoke/accessibility test.",
     objective:
-      "Add Playwright acceptance tests under e2e/generated/ for core user-visible workflows that can be tested reliably. Keep them robust and avoid duplicating the locked smoke test.",
-    maxTurns: 16,
+      "Add Playwright acceptance tests under e2e/generated/ for core user-visible workflows that can be tested reliably. For advanced apps, cover representative controls across the planned routes instead of only the dashboard or first workflow. Keep tests robust and avoid duplicating the locked smoke test.",
+    maxTurns: 20,
   },
   {
     id: "final-integration-review",
@@ -74,8 +74,8 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Final integration agent: inspect the generated app across foundation, components, pages, and tests. Patch only small cross-file wiring, import, route, acceptance coverage, accessibility, or platform-contract issues before the gauntlet.",
     objective:
-      "Review the generated app end to end for missing routes, broken imports, unrendered workflows, unsafe platform usage, missing sign-in states, and obvious test gaps. Make only small corrective patches when needed; otherwise record that no changes were necessary.",
-    maxTurns: 16,
+      "Review the generated app end to end for missing routes, broken imports, unrendered workflows, unsafe platform usage, missing sign-in states, and obvious test gaps. For advanced apps, treat missing planned routes, CRUD controls, integration calls, or workflow tests as blocking and patch them when practical instead of documenting them as later work. Make focused corrective patches when needed; otherwise record that no changes were necessary.",
+    maxTurns: 18,
   },
 ];
 

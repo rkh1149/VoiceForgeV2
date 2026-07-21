@@ -433,6 +433,46 @@ test("creates a trip", async ({ page }) => { await page.goto("/"); await expect(
     );
   });
 
+  it("blocks advanced apps that omit architecture-planned route files", () => {
+    const spec = advancedBikeSpec();
+    const architecture = buildArchitecture(spec);
+    const reviews = review({
+      spec,
+      architecture: {
+        ...architecture,
+        pageMap: [
+          ...architecture.pageMap,
+          {
+            route: "/route-comparison",
+            name: "Route Comparison",
+            purpose: "Compare bicycle route alternatives.",
+            primaryComponents: ["RouteComparisonView"],
+            workflows: ["Compare bicycle route alternatives"],
+          },
+        ],
+      },
+      allFiles: {
+        "src/app/page.tsx": `"use client";
+import { PlatformSignInGate, usePlatformSessionState } from "@/components/voiceforge-reusable";
+import { createPlatformRecord, listPlatformRecords } from "@/lib/platform-data";
+export default function Page() {
+  usePlatformSessionState();
+  void PlatformSignInGate;
+  void listPlatformRecords;
+  void createPlatformRecord;
+  return <main><h1>Bike Journey Planner</h1><button>Create trip</button></main>;
+}`,
+      },
+    });
+
+    const codeReview = findReview(reviews, "code_reviewer");
+
+    expect(codeReview.status).toBe("failed");
+    expect(codeReview.blockingIssues).toContain(
+      "code_review: Architecture planned route files that were not generated: src/app/route-comparison/page.tsx.",
+    );
+  });
+
   it("passes advanced coverage when entities, workflows, tests, and Google Maps are real", () => {
     const spec = advancedBikeSpec();
     const files: FileMap = {

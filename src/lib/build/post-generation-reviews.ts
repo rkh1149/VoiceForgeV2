@@ -202,9 +202,12 @@ function reviewGeneratedCode(
   }
 
   if (missingPageFiles.length > 0) {
-    warnings.push(
-      `code_review: Architecture planned route files that were not generated: ${missingPageFiles.join(", ")}.`,
-    );
+    const message = `code_review: Architecture planned route files that were not generated: ${missingPageFiles.join(", ")}.`;
+    if (requiresStrictWorkflowCoverage(input.spec, input.architecture)) {
+      blockingIssues.push(message);
+    } else {
+      warnings.push(message);
+    }
   }
 
   const combinedSource = combine(appSource);
