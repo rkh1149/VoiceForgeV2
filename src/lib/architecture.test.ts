@@ -241,6 +241,49 @@ describe("architecture planning", () => {
     );
   });
 
+  it("plans built-in device GPS without treating it as an external integration", () => {
+    const base = normalizeAppSpec(sharedSpecInput);
+    const spec = {
+      ...base,
+      capabilityTier: "advanced" as const,
+      features: [
+        ...base.features,
+        "Use the rider's phone GPS to show current location and record ride track points while the app is open.",
+      ],
+      dataToStore: [...base.dataToStore, "GPS track points for completed rides"],
+      integrations: [
+        {
+          name: "GPS",
+          purpose: "Track current location from the rider's phone.",
+          direction: "import" as const,
+          requiredForLaunch: true,
+        },
+      ],
+    };
+    const complexity = computeSpecComplexity(spec);
+    const plan = createFallbackArchitecturePlan(spec, complexity);
+    const validation = validateArchitecturePlan(plan, spec);
+
+    expect(validation.canBuildNow).toBe(true);
+    expect(validation.blockingIssues).toEqual([]);
+    expect(plan.platformServices).toContainEqual(
+      expect.objectContaining({
+        service: "device_location",
+        availability: "available",
+        required: true,
+      }),
+    );
+    expect(plan.platformServices).not.toContainEqual(
+      expect.objectContaining({ service: "integrations", availability: "later" }),
+    );
+    expect(plan.filePlan).toContainEqual(
+      expect.objectContaining({
+        path: "src/lib/device-location.ts",
+        kind: "locked",
+      }),
+    );
+  });
+
   it("keeps unsupported external providers blocked after Stage 12C", () => {
     const base = normalizeAppSpec(personalSpecInput);
     const spec = {

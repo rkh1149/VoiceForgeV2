@@ -3,6 +3,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ChangeEvent,
   type ReactNode,
@@ -21,7 +22,15 @@ import * as Select from "@radix-ui/react-select";
 import * as Tabs from "@radix-ui/react-tabs";
 import { flexRender, type Table as ReactTable } from "@tanstack/react-table";
 import { clsx, type ClassValue } from "clsx";
-import { Download, GripVertical, Plus, Search, Upload } from "lucide-react";
+import {
+  Download,
+  GripVertical,
+  LocateFixed,
+  Plus,
+  Search,
+  Square,
+  Upload,
+} from "lucide-react";
 import { DayPicker } from "react-day-picker";
 import {
   Bar,
@@ -33,6 +42,17 @@ import {
   YAxis,
 } from "recharts";
 import { twMerge } from "tailwind-merge";
+import {
+  appendDeviceTrackPoint,
+  formatLocationDistance,
+  formatLocationSpeed,
+  getCurrentDeviceLocation,
+  summarizeDeviceTrack,
+  watchDeviceLocation,
+  type DeviceLocationFix,
+  type DeviceLocationWatchHandle,
+  type DeviceTrackSummary,
+} from "@/lib/device-location";
 import { getPlatformSession, type PlatformSession } from "@/lib/platform-data";
 
 let cachedPlatformSession: PlatformSession | null = null;
@@ -279,6 +299,199 @@ export function MetricCard({
       <p className="mt-1 text-sm font-medium text-slate-600">{label}</p>
       {detail && <p className="mt-2 text-xs text-slate-400">{detail}</p>}
     </div>
+  );
+}
+
+export function DeviceLocationTracker({
+  title = "GPS tracking",
+  canTrack = true,
+  minDistanceMeters = 10,
+  maxTrackPoints = 5_000,
+  onLocation,
+  onTrackUpdate,
+}: {
+  title?: string;
+  canTrack?: boolean;
+  minDistanceMeters?: number;
+  maxTrackPoints?: number;
+  onLocation?: (location: DeviceLocationFix) => void;
+  onTrackUpdate?: (
+    track: DeviceLocationFix[],
+    summary: DeviceTrackSummary,
+  ) => void;
+}) {
+  const watchRef = useRef<DeviceLocationWatchHandle | null>(null);
+  const onLocationRef = useRef(onLocation);
+  const onTrackUpdateRef = useRef(onTrackUpdate);
+  const [status, setStatus] = useState<
+    "idle" | "locating" | "tracking" | "error"
+  >("idle");
+  const [error, setError] = useState("");
+  const [currentLocation, setCurrentLocation] = useState<DeviceLocationFix | null>(
+    null,
+  );
+  const [track, setTrack] = useState<DeviceLocationFix[]>([]);
+  const summary = useMemo(() => summarizeDeviceTrack(track), [track]);
+
+  useEffect(() => {
+    onLocationRef.current = onLocation;
+    onTrackUpdateRef.current = onTrackUpdate;
+  }, [onLocation, onTrackUpdate]);
+
+  useEffect(() => {
+    return () => {
+      watchRef.current?.stop();
+      watchRef.current = null;
+    };
+  }, []);
+
+  function recordLocation(location: DeviceLocationFix) {
+    setCurrentLocation(location);
+    onLocationRef.current?.(location);
+    setTrack((previous) => {
+      const next = appendDeviceTrackPoint(previous, location, maxTrackPoints);
+      onTrackUpdateRef.current?.(next, summarizeDeviceTrack(next));
+      return next;
+    });
+  }
+
+  async function useCurrentLocation() {
+    if (!canTrack) return;
+    const wasTracking = Boolean(watchRef.current);
+    if (!wasTracking) setStatus("locating");
+    setError("");
+    try {
+      const location = await getCurrentDeviceLocation({
+        enableHighAccuracy: true,
+      });
+      recordLocation(location);
+      setStatus(wasTracking ? "tracking" : "idle");
+    } catch (locationError) {
+      setStatus("error");
+      setError(
+        locationError instanceof Error
+          ? locationError.message
+          : "Could not get device location.",
+      );
+    }
+  }
+
+  function startTracking() {
+    if (!canTrack || watchRef.current) return;
+    setStatus("tracking");
+    setError("");
+    try {
+      watchRef.current = watchDeviceLocation({
+        enableHighAccuracy: true,
+        minDistanceMeters,
+        onLocation: recordLocation,
+        onError: (locationError) => {
+          watchRef.current?.stop();
+          watchRef.current = null;
+          setError(locationError.message);
+          setStatus("error");
+        },
+      });
+    } catch (locationError) {
+      setStatus("error");
+      setError(
+        locationError instanceof Error
+          ? locationError.message
+          : "Could not start GPS tracking.",
+      );
+    }
+  }
+
+  function stopTracking() {
+    watchRef.current?.stop();
+    watchRef.current = null;
+    setStatus("idle");
+  }
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-950">{title}</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            {currentLocation
+              ? `${currentLocation.latitude.toFixed(5)}, ${currentLocation.longitude.toFixed(5)}`
+              : "Location not captured yet."}
+          </p>
+        </div>
+        <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
+          {status === "tracking"
+            ? "Tracking"
+            : status === "locating"
+              ? "Locating"
+              : status === "error"
+                ? "Needs attention"
+                : "Ready"}
+        </span>
+      </div>
+      {error && (
+        <p role="alert" className="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-800">
+          {error}
+        </p>
+      )}
+      {!canTrack && (
+        <p className="mt-3 rounded-md bg-amber-50 p-3 text-sm text-amber-800">
+          GPS tracking is not available in this view.
+        </p>
+      )}
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <MetricCard
+          label="Track distance"
+          value={formatLocationDistance(summary.distanceMeters)}
+          detail={`${summary.pointCount} point${summary.pointCount === 1 ? "" : "s"}`}
+        />
+        <MetricCard
+          label="Average speed"
+          value={formatLocationSpeed(summary.averageSpeedMetersPerSecond)}
+          detail={summary.durationSeconds > 0 ? `${summary.durationSeconds}s` : "No ride time"}
+        />
+        <MetricCard
+          label="Accuracy"
+          value={
+            currentLocation
+              ? formatLocationDistance(currentLocation.accuracyMeters)
+              : "Unknown"
+          }
+          detail="Latest device fix"
+        />
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={!canTrack || status === "locating"}
+          onClick={useCurrentLocation}
+          className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <LocateFixed className="h-4 w-4" />
+          {status === "locating" ? "Locating..." : "Use my location"}
+        </button>
+        {status === "tracking" ? (
+          <button
+            type="button"
+            onClick={stopTracking}
+            className="inline-flex items-center gap-2 rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+          >
+            <Square className="h-4 w-4" />
+            Stop tracking
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={!canTrack}
+            onClick={startTracking}
+            className="inline-flex items-center gap-2 rounded-md bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+          >
+            <LocateFixed className="h-4 w-4" />
+            Start tracking
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 

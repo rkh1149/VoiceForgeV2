@@ -23,6 +23,7 @@ Current platform capabilities available to generated apps:
 - Locked /api/files endpoint for generated app uploads, attachments, downloads, metadata, and delete/archive
 - Locked /api/notifications endpoint for approved in-app/email notification templates, preferences, and scheduled notification job metadata
 - Locked /api/integrations endpoint for approved integration catalogue providers and actions only. Approved providers: demo_directory (Demo Directory) with actions list_contacts, lookup_contact, and record_contact_note; google_maps (Google Maps) with trip-planning actions search_places, get_place_details, geocode_address, compute_route, and get_elevation_profile plus locked GooglePlaceAutocomplete and GoogleMapsTripMap rendering, including bicycling layer, route alternatives, route cards, via waypoints, and elevation profile support for bicycle routes.
+- Locked browser device location helpers for current location, GPS tracking while the app is active, track summaries, and GPX export. This uses the rider's browser/device permission and must not be described as reliable background tracking when the phone is locked or browser is closed.
 - VoiceForge member sign-in for generated apps, including owner/editor/viewer role enforcement
 - Real app membership access is managed from the VoiceForge app dashboard. Generated apps can enforce the current user's role but cannot invite new VoiceForge users or revoke actual app access from inside the generated app yet.
 - Anonymous shared-link apps can allow collaboration; anonymous public apps are read-only
@@ -44,6 +45,7 @@ Rules:
 - Notifications must use the locked platform notification service only. Mark email/jobs available when the need fits approved templates, recipient groups, preferences, and platform-managed scheduled notification metadata.
 - Integrations must use the locked platform integration service only. Mark integrations available only when every required external provider is in the approved catalogue. Approved providers are demo_directory and google_maps; all other providers must stay blocked.
 - Do not treat VoiceForge's own sign-in, roles, platform data, platform files, platform notifications, or platform scheduled notification jobs as external integrations.
+- Do not treat built-in device GPS/browser location as an external integration. Plan it as a locked platform helper when the app asks for current location, ride tracking, GPS track points, or route progress from the rider's phone.
 - If a spec asks for generated-app invite/remove-access flows, plan a safe dashboard-managed access note instead of generating fake membership-management UI.
 
 ${APPROVED_DEPENDENCY_GUIDANCE}`;

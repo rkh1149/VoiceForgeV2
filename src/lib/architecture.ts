@@ -51,6 +51,7 @@ const platformServicePlanSchema = z.object({
     "integrations",
     "search",
     "reports",
+    "device_location",
   ]),
   required: z.boolean(),
   availability: z.enum(["available", "not_available", "later"]),
@@ -121,6 +122,7 @@ const AVAILABLE_SERVICES = new Set([
   "jobs",
   "search",
   "reports",
+  "device_location",
 ]);
 
 export function createFallbackArchitecturePlan(
@@ -245,6 +247,24 @@ export function createFallbackArchitecturePlan(
             },
           ]
         : []),
+      ...(hasDeviceLocation(spec)
+        ? [
+            {
+              path: "src/lib/device-location.ts",
+              kind: "locked" as const,
+              purpose:
+                "Typed browser helper for current device location, GPS tracking, track summaries, and GPX export.",
+              dependsOn: [],
+            },
+            {
+              path: "src/components/voiceforge-reusable.tsx",
+              kind: "locked" as const,
+              purpose:
+                "Reusable GPS tracking panel, role-aware shell, upload controls, charts, tables, and common UI helpers.",
+              dependsOn: ["src/lib/device-location.ts"],
+            },
+          ]
+        : []),
     ],
     dependencyProfile: inferDependencyProfiles(spec),
     buildPhases: [
@@ -258,6 +278,9 @@ export function createFallbackArchitecturePlan(
         : []),
       ...(hasApprovedPlatformIntegrations(spec)
         ? ["Wire locked platform integrations"]
+        : []),
+      ...(hasDeviceLocation(spec)
+        ? ["Wire locked browser device location and GPS tracking helpers"]
         : []),
       ...(hasPlatformSearchReports(spec)
         ? ["Seed platform search/report metadata", "Wire platform search, saved filters, reports, and CSV export"]
@@ -301,6 +324,11 @@ export function createFallbackArchitecturePlan(
         ...(hasPlatformSearchReports(spec)
           ? [
               "Search, saved filters, reports, and CSV exports use the locked platform data endpoint over validated JSONB records.",
+            ]
+          : []),
+        ...(hasDeviceLocation(spec)
+          ? [
+              "Device GPS uses the locked browser location helper, requires user permission, and does not promise background tracking after the browser is closed.",
             ]
           : []),
       ],
@@ -470,6 +498,15 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
         "Locked platform file upload, metadata, download, and archive APIs are available for generated apps.",
     });
   }
+  if (hasDeviceLocation(spec)) {
+    services.push({
+      service: "device_location",
+      required: true,
+      availability: "available",
+      reason:
+        "Locked browser device location and GPS tracking helpers are available for generated apps while the app is active.",
+    });
+  }
   const activeNotifications = spec.notifications.filter(
     (notification) => notification.channel !== "none",
   );
@@ -554,6 +591,51 @@ function hasPlatformReports(spec: AppSpec): boolean {
 
 function hasPlatformSearchReports(spec: AppSpec): boolean {
   return hasPlatformSearch(spec) || hasPlatformReports(spec);
+}
+
+function hasDeviceLocation(spec: AppSpec): boolean {
+  const text = [
+    spec.purpose,
+    spec.deploymentNotes,
+    ...spec.features,
+    ...spec.dataToStore,
+    ...spec.testPlan,
+    ...spec.privacyRequirements,
+    ...spec.riskFlags,
+    ...spec.workflows.flatMap((workflow) => [
+      workflow.name,
+      workflow.trigger,
+      workflow.successOutcome,
+      ...workflow.steps,
+      ...workflow.failureStates,
+    ]),
+    ...spec.dataEntities.flatMap((entity) => [
+      entity.name,
+      entity.description,
+      ...entity.fields.flatMap((field) => [
+        field.name,
+        field.label,
+        field.validation,
+      ]),
+    ]),
+    ...spec.acceptanceCriteria.flatMap((criterion) => [
+      criterion.name,
+      criterion.scenario,
+      criterion.given,
+      criterion.when,
+      criterion.then,
+    ]),
+    ...spec.testScenarios.flatMap((scenario) => [
+      scenario.name,
+      ...scenario.steps,
+      scenario.expectedResult,
+    ]),
+  ]
+    .join(" ")
+    .toLowerCase();
+  return /\b(gps|geolocation|current location|live location|device location|phone location|location tracking|track points|ride track|track ride|you are here)\b/.test(
+    text,
+  );
 }
 
 function hasApprovedPlatformIntegrations(spec: AppSpec): boolean {

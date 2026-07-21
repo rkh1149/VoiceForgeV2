@@ -41,6 +41,7 @@ const PROTECTED_TEMPLATE_FILES = new Set([
   "src/lib/platform-files.ts",
   "src/lib/platform-notifications.ts",
   "src/lib/platform-integrations.ts",
+  "src/lib/device-location.ts",
   "src/lib/voiceforge-modules.ts",
   "src/components/voiceforge-reusable.tsx",
   "src/components/voiceforge-google-map.tsx",
@@ -58,6 +59,7 @@ const CREDENTIAL_PATTERN =
   /\b(process\.env|OPENAI_API_KEY|GITHUB_TOKEN|VERCEL_TOKEN|DATABASE_URL|VOICEFORGE_APP_TOKEN|VOICEFORGE_PUBLIC_URL|VOICEFORGE_PLATFORM_SESSION_SECRET|RESEND_API_KEY|GOOGLE_MAPS_API_KEY)\b/;
 const DANGEROUS_CODE_PATTERN =
   /\b(eval\s*\(|new Function\s*\(|dangerouslySetInnerHTML\b)/;
+const DIRECT_GEOLOCATION_PATTERN = /\bnavigator\.geolocation\b/;
 const DIRECT_SERVICE_IMPORT_PATTERN =
   /from\s+["'](@neondatabase\/serverless|@octokit\/rest|openai|resend|nodemailer|googleapis)["']/;
 const PDF_BLOB_PATTERN =
@@ -209,6 +211,20 @@ function reviewGeneratedCode(
   }
 
   if (
+    requiresService(input.architecture, "device_location") &&
+    !usesAny(combinedSource, [
+      "device-location",
+      "DeviceLocationTracker",
+      "getCurrentDeviceLocation",
+      "watchDeviceLocation",
+    ])
+  ) {
+    blockingIssues.push(
+      "code_review: Device GPS/location app did not use the locked device-location helpers.",
+    );
+  }
+
+  if (
     (requiresService(input.architecture, "search") ||
       requiresService(input.architecture, "reports")) &&
     !usesAny(combinedSource, [
@@ -346,6 +362,12 @@ function reviewSecurity(input: PostGenerationReviewInput): PostGenerationReview 
     if (DANGEROUS_CODE_PATTERN.test(content)) {
       blockingIssues.push(
         `security_review: ${path} uses unsafe dynamic HTML or code execution.`,
+      );
+    }
+
+    if (DIRECT_GEOLOCATION_PATTERN.test(content)) {
+      blockingIssues.push(
+        `security_review: ${path} calls navigator.geolocation directly; use the locked device-location helpers instead.`,
       );
     }
 

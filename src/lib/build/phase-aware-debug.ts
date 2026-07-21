@@ -103,6 +103,7 @@ const LOCKED_PLATFORM_HELPERS = [
   "src/lib/platform-files.ts",
   "src/lib/platform-notifications.ts",
   "src/lib/platform-integrations.ts",
+  "src/lib/device-location.ts",
   "src/lib/voiceforge-modules.ts",
   "src/components/voiceforge-reusable.tsx",
 ];
@@ -512,6 +513,7 @@ function addFrontendSurface(selected: Set<string>, files: FileMap): void {
     (path) =>
       path.startsWith("src/app/") ||
       path.startsWith("src/components/") ||
+      path === "src/lib/device-location.ts" ||
       path === "src/lib/voiceforge-modules.ts" ||
       path === "src/components/voiceforge-reusable.tsx",
   );

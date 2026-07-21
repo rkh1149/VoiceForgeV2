@@ -137,6 +137,7 @@ test("loads", async ({ page }) => { await page.goto("/"); await expect(page.getB
 export default function Page() {
   const key = process.env.OPENAI_API_KEY;
   void fetch("https://example.com/api");
+  navigator.geolocation.watchPosition(() => {});
   return <main dangerouslySetInnerHTML={{ __html: String(key) }} />;
 }`,
       "src/app/api/custom/route.ts": `export async function POST() { return Response.json({ ok: true }); }`,
@@ -161,6 +162,9 @@ export default function Page() {
     );
     expect(securityReview.blockingIssues.join(" ")).toContain(
       "unsafe dynamic HTML",
+    );
+    expect(securityReview.blockingIssues.join(" ")).toContain(
+      "navigator.geolocation",
     );
   });
 

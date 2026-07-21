@@ -374,6 +374,19 @@ export function computeSpecComplexity(spec: AppSpec): ComplexityResult {
 export function isExternalIntegrationRequirement(
   integration: Pick<AppSpec["integrations"][number], "name" | "purpose">,
 ): boolean {
+  const normalizedName = integration.name.trim().toLowerCase();
+  if (
+    [
+      "gps",
+      "device gps",
+      "browser geolocation",
+      "device location",
+      "phone gps",
+      "phone location",
+    ].includes(normalizedName)
+  ) {
+    return false;
+  }
   const text = `${integration.name} ${integration.purpose}`.toLowerCase();
   const internalVoiceForgeSignals = [
     "voiceforge sign",
@@ -385,6 +398,12 @@ export function isExternalIntegrationRequirement(
     "platform notification",
     "platform scheduled",
     "platform job",
+    "browser geolocation",
+    "device gps",
+    "device location",
+    "gps tracking",
+    "phone gps",
+    "phone location",
     "member sign-in",
     "member login",
     "owner/editor/viewer",

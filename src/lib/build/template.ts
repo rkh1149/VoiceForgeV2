@@ -33,6 +33,7 @@ const PROTECTED_FILES = new Set([
   "src/lib/platform-files.ts", // locked platform files browser client (Stage 11A)
   "src/lib/platform-notifications.ts", // locked platform notification client (Stage 11B)
   "src/lib/platform-integrations.ts", // locked platform integration client (Stage 12A/12C)
+  "src/lib/device-location.ts", // locked browser device GPS/location helpers
   "src/lib/voiceforge-modules.ts", // locked reusable helpers (Stage 10)
   "src/components/voiceforge-reusable.tsx", // locked reusable UI components (Stage 10)
   "src/components/voiceforge-google-map.tsx", // locked Google Maps UI component (Stage 12C)
