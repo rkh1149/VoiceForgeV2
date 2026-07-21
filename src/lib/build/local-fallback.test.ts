@@ -608,6 +608,9 @@ describe("generated app Google Maps template", () => {
     expect(source).toContain('loading: "async"');
     expect(source).toContain("glyphText");
     expect(source).toContain('"gmp-click"');
+    expect(source).toContain("AutocompleteSuggestion.fetchAutocompleteSuggestions");
+    expect(source).toContain("searchForTypedPlace");
+    expect(source).toContain("placeFromServerSearch");
     expect(source).toContain("resolveLatLngBoundsConstructor");
     expect(source).toContain(
       "const bounds = LatLngBounds ? new LatLngBounds() : null;",

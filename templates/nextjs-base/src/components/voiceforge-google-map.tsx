@@ -1,8 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
+import { Search } from "lucide-react";
+import {
+  geocodeGoogleMapsAddress,
   getGoogleMapsBrowserConfig,
+  searchGoogleMapsPlaces,
   type GoogleMapsBrowserConfig,
   type GoogleMapsCoordinate,
   type GoogleMapsElevationProfile,
@@ -106,20 +116,33 @@ type GeometryLibrary = {
 };
 
 type PlacesLibrary = {
-  PlaceAutocompleteElement?: new (
-    options?: Record<string, unknown>,
-  ) => PlaceAutocompleteElementInstance;
+  AutocompleteSuggestion?: {
+    fetchAutocompleteSuggestions: (
+      request: Record<string, unknown>,
+    ) => Promise<
+      | { suggestions?: GoogleAutocompleteSuggestion[] }
+      | GoogleAutocompleteSuggestion[]
+    >;
+  };
+  AutocompleteSessionToken?: new () => unknown;
 };
 
-type PlaceAutocompleteElementInstance = HTMLElement & {
-  placeholder?: string;
-  includedRegionCodes?: string[];
-  includedPrimaryTypes?: string[];
-  locationBias?: Record<string, unknown> | null;
+type GoogleAutocompleteSuggestion = {
+  placePrediction?: GooglePlacePrediction;
+};
+
+type GoogleFormattableText = {
+  text?: string;
+  toString?: () => string;
 };
 
 type GooglePlacePrediction = {
   toPlace?: () => GooglePlaceResult;
+  placeId?: string;
+  mainText?: GoogleFormattableText | string;
+  secondaryText?: GoogleFormattableText | string;
+  text?: GoogleFormattableText | string;
+  types?: string[];
 };
 
 type GooglePlaceResult = {
@@ -131,14 +154,6 @@ type GooglePlaceResult = {
   googleMapsUri?: string;
   fetchFields?: (options: { fields: string[] }) => Promise<void>;
   toJSON?: () => unknown;
-};
-
-type GooglePlaceSelectEvent = Event & {
-  placePrediction?: GooglePlacePrediction;
-  detail?: {
-    placePrediction?: GooglePlacePrediction;
-    place?: GooglePlaceResult;
-  };
 };
 
 type GoogleMapsApi = {
@@ -487,23 +502,29 @@ export function GooglePlaceAutocomplete({
   className = "",
   onPlaceSelect,
 }: GooglePlaceAutocompleteProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const inputId = useId();
+  const listboxId = useId();
+  const placesLibraryRef = useRef<PlacesLibrary | null>(null);
+  const sessionTokenRef = useRef<unknown>(null);
+  const [query, setQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<GoogleAutocompleteSuggestion[]>(
+    [],
+  );
+  const [isSearching, setIsSearching] = useState(false);
+  const [isSuggesting, setIsSuggesting] = useState(false);
   const [status, setStatus] = useState<
     "loading" | "ready" | "fallback" | "error"
   >("loading");
   const [error, setError] = useState("");
+  const trimmedQuery = query.trim();
 
   useEffect(() => {
     let active = true;
-    let autocompleteElement: PlaceAutocompleteElementInstance | null = null;
-    const container = containerRef.current;
-    if (!container) return;
 
     setStatus("loading");
     setError("");
-    container.replaceChildren();
 
-    async function renderAutocomplete() {
+    async function loadPlacesAutocomplete() {
       try {
         const config = await getGoogleMapsBrowserConfig();
         if (!active) return;
@@ -518,43 +539,14 @@ export function GooglePlaceAutocomplete({
         const placesLibrary = (await mapsApi.importLibrary(
           "places",
         )) as unknown as PlacesLibrary;
-        const AutocompleteElement = placesLibrary.PlaceAutocompleteElement;
-        if (!AutocompleteElement) {
-          throw new Error("Google Place Autocomplete is unavailable.");
+        if (!placesLibrary.AutocompleteSuggestion) {
+          setStatus("fallback");
+          setError("Google place suggestions are unavailable.");
+          return;
         }
-        if (!active || !containerRef.current) return;
-
-        const nextElement = new AutocompleteElement();
-        nextElement.placeholder = placeholder;
-        nextElement.setAttribute("aria-label", label);
-        nextElement.className = "block w-full";
-        if (includedRegionCodes?.length) {
-          nextElement.includedRegionCodes = includedRegionCodes;
-        }
-        if (includedPrimaryTypes?.length) {
-          nextElement.includedPrimaryTypes = includedPrimaryTypes;
-        }
-        nextElement.locationBias = locationBias
-          ? {
-              radius: locationBias.radiusMeters ?? 5_000,
-              center: {
-                lat: locationBias.latitude,
-                lng: locationBias.longitude,
-              },
-            }
-          : null;
-
-        const selectHandler = (event: Event) => {
-          void handleAutocompleteSelect(event, onPlaceSelect, setError);
-        };
-        nextElement.addEventListener("gmp-select", selectHandler);
-        containerRef.current.replaceChildren(nextElement);
-        autocompleteElement = nextElement;
+        placesLibraryRef.current = placesLibrary;
+        sessionTokenRef.current = createAutocompleteSessionToken(placesLibrary);
         setStatus("ready");
-
-        return () => {
-          nextElement.removeEventListener("gmp-select", selectHandler);
-        };
       } catch (nextError) {
         if (!active) return undefined;
         setStatus("error");
@@ -563,45 +555,178 @@ export function GooglePlaceAutocomplete({
             ? nextError.message
             : "Google Place Autocomplete could not be loaded.",
         );
-        return undefined;
       }
     }
 
-    let cleanup: (() => void) | undefined;
-    void renderAutocomplete().then((nextCleanup) => {
-      cleanup = nextCleanup;
-    });
+    void loadPlacesAutocomplete();
 
     return () => {
       active = false;
-      cleanup?.();
-      autocompleteElement?.remove();
-      container.replaceChildren();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (status !== "ready" || trimmedQuery.length < 2) {
+      setSuggestions([]);
+      setIsSuggesting(false);
+      return;
+    }
+    const placesLibrary = placesLibraryRef.current;
+    const AutocompleteSuggestion = placesLibrary?.AutocompleteSuggestion;
+    if (!placesLibrary || !AutocompleteSuggestion) return;
+
+    let active = true;
+    const timeout = window.setTimeout(() => {
+      setIsSuggesting(true);
+      const request = autocompleteRequestFromProps({
+        input: trimmedQuery,
+        sessionToken: sessionTokenRef.current,
+        includedRegionCodes,
+        includedPrimaryTypes,
+        locationBias,
+      });
+      AutocompleteSuggestion.fetchAutocompleteSuggestions(request)
+        .then((response) => {
+          if (!active) return;
+          const nextSuggestions = Array.isArray(response)
+            ? response
+            : response.suggestions ?? [];
+          setSuggestions(
+            nextSuggestions
+              .filter((suggestion) => suggestion.placePrediction)
+              .slice(0, 5),
+          );
+          setError("");
+        })
+        .catch(() => {
+          if (!active) return;
+          setSuggestions([]);
+        })
+        .finally(() => {
+          if (active) setIsSuggesting(false);
+        });
+    }, 250);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
     };
   }, [
     includedPrimaryTypes,
     includedRegionCodes,
-    label,
     locationBias,
-    onPlaceSelect,
-    placeholder,
+    status,
+    trimmedQuery,
   ]);
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void searchForTypedPlace({
+      query: trimmedQuery,
+      firstSuggestion: suggestions[0],
+      setQuery,
+      setError,
+      setIsSearching,
+      setSuggestions,
+      resetSessionToken: () => {
+        sessionTokenRef.current = createAutocompleteSessionToken(
+          placesLibraryRef.current,
+        );
+      },
+      onPlaceSelect,
+    });
+  };
+
+  const handleSuggestionSelect = (suggestion: GoogleAutocompleteSuggestion) => {
+    void selectAutocompleteSuggestion({
+      suggestion,
+      setQuery,
+      setError,
+      setIsSearching,
+      setSuggestions,
+      resetSessionToken: () => {
+        sessionTokenRef.current = createAutocompleteSessionToken(
+          placesLibraryRef.current,
+        );
+      },
+      onPlaceSelect,
+    });
+  };
 
   return (
     <div className={className}>
-      <label className="mb-1 block text-sm font-medium text-slate-700">
+      <label
+        htmlFor={inputId}
+        className="mb-1 block text-sm font-medium text-slate-700"
+      >
         {label}
       </label>
-      <div
-        ref={containerRef}
-        className="min-h-11 rounded-md border border-slate-300 bg-white px-3 py-2"
-      />
+      <form className="relative" onSubmit={handleSubmit}>
+        <div className="flex min-h-11 overflow-hidden rounded-md border border-slate-300 bg-white shadow-sm focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-200">
+          <input
+            id={inputId}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={placeholder}
+            autoComplete="off"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={suggestions.length > 0}
+            aria-controls={suggestions.length > 0 ? listboxId : undefined}
+            className="min-w-0 flex-1 border-0 bg-transparent px-3 py-2 text-sm text-slate-950 outline-none placeholder:text-slate-400"
+          />
+          <button
+            type="submit"
+            disabled={!trimmedQuery || isSearching}
+            aria-label={`Search ${label}`}
+            className="flex w-11 shrink-0 items-center justify-center border-l border-slate-200 text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:text-slate-300"
+          >
+            <Search className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+        {suggestions.length > 0 && (
+          <div
+            id={listboxId}
+            role="listbox"
+            className="absolute z-30 mt-1 max-h-72 w-full overflow-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+          >
+            {suggestions.map((suggestion, index) => {
+              const labelText = suggestionLabel(suggestion, index);
+              return (
+                <button
+                  key={`${suggestion.placePrediction?.placeId ?? labelText}-${index}`}
+                  type="button"
+                  role="option"
+                  aria-selected="false"
+                  onClick={() => handleSuggestionSelect(suggestion)}
+                  className="block w-full px-3 py-2 text-left text-sm text-slate-800 transition hover:bg-slate-100 focus:bg-slate-100 focus:outline-none"
+                >
+                  <span className="block font-medium text-slate-950">
+                    {mainSuggestionText(suggestion) || labelText}
+                  </span>
+                  {secondarySuggestionText(suggestion) && (
+                    <span className="mt-0.5 block text-xs text-slate-500">
+                      {secondarySuggestionText(suggestion)}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </form>
       {status !== "ready" && (
         <p className="mt-1 text-xs text-slate-500">
           {status === "loading"
             ? "Loading place search..."
             : error || "Place search is available when Google Maps is configured."}
         </p>
+      )}
+      {status === "ready" && isSuggesting && (
+        <p className="mt-1 text-xs text-slate-500">Searching places...</p>
+      )}
+      {status === "ready" && error && (
+        <p className="mt-1 text-xs text-amber-700">{error}</p>
       )}
     </div>
   );
@@ -835,50 +960,76 @@ function MapFallback({
   );
 }
 
-async function handleAutocompleteSelect(
-  event: Event,
-  onPlaceSelect: (place: GooglePlaceAutocompleteResult) => void,
-  setError: (message: string) => void,
-): Promise<void> {
+type PlaceSearchState = {
+  setQuery: (query: string) => void;
+  setError: (message: string) => void;
+  setIsSearching: (isSearching: boolean) => void;
+  setSuggestions: (suggestions: GoogleAutocompleteSuggestion[]) => void;
+  resetSessionToken: () => void;
+  onPlaceSelect: (place: GooglePlaceAutocompleteResult) => void;
+};
+
+async function searchForTypedPlace({
+  query,
+  firstSuggestion,
+  ...state
+}: PlaceSearchState & {
+  query: string;
+  firstSuggestion?: GoogleAutocompleteSuggestion;
+}): Promise<void> {
+  if (!query) return;
+  if (firstSuggestion) {
+    await selectAutocompleteSuggestion({
+      suggestion: firstSuggestion,
+      ...state,
+    });
+    return;
+  }
+
+  state.setIsSearching(true);
   try {
-    const selectEvent = event as GooglePlaceSelectEvent;
-    const place =
-      selectEvent.placePrediction?.toPlace?.() ??
-      selectEvent.detail?.placePrediction?.toPlace?.() ??
-      selectEvent.detail?.place;
-    if (!place) return;
-    await place.fetchFields?.({
-      fields: [
-        "id",
-        "displayName",
-        "formattedAddress",
-        "location",
-        "googleMapsURI",
-      ],
-    });
-    const json = place.toJSON?.();
-    const jsonRecord = isRecord(json) ? json : {};
-    const selected = compactAutocompleteResult({
-      placeId: place.id ?? stringFromRecord(jsonRecord, "id"),
-      name:
-        place.displayName ??
-        stringFromRecord(jsonRecord, "displayName") ??
-        stringFromNestedRecord(jsonRecord, ["displayName", "text"]) ??
-        place.formattedAddress ??
-        stringFromRecord(jsonRecord, "formattedAddress") ??
-        "Selected place",
-      formattedAddress:
-        place.formattedAddress ?? stringFromRecord(jsonRecord, "formattedAddress"),
-      location:
-        coordinateFromGoogleLocation(place.location) ??
-        coordinateFromGoogleLocation(jsonRecord.location),
-      googleMapsUri:
-        place.googleMapsURI ??
-        place.googleMapsUri ??
-        stringFromRecord(jsonRecord, "googleMapsURI") ??
-        stringFromRecord(jsonRecord, "googleMapsUri"),
-    });
+    const selected = await placeFromServerSearch(query);
+    state.setError(selected.location ? "" : "No exact place found; using typed text.");
+    state.setQuery(selected.formattedAddress ?? selected.name);
+    state.setSuggestions([]);
+    state.onPlaceSelect(selected);
+  } catch (nextError) {
+    state.setError(
+      nextError instanceof Error
+        ? nextError.message
+        : "Place search is unavailable; using typed text.",
+    );
+    state.setSuggestions([]);
+    state.onPlaceSelect(
+      compactAutocompleteResult({ name: query, formattedAddress: query }),
+    );
+  } finally {
+    state.setIsSearching(false);
+  }
+}
+
+async function selectAutocompleteSuggestion({
+  suggestion,
+  setQuery,
+  setError,
+  setIsSearching,
+  setSuggestions,
+  resetSessionToken,
+  onPlaceSelect,
+}: PlaceSearchState & {
+  suggestion: GoogleAutocompleteSuggestion;
+}): Promise<void> {
+  const fallbackQuery = suggestionLabel(suggestion, 0);
+  setIsSearching(true);
+  try {
+    const selected =
+      (await placeFromAutocompleteSuggestion(suggestion)) ??
+      (fallbackQuery ? await placeFromServerSearch(fallbackQuery) : null);
+    if (!selected) return;
     setError("");
+    setQuery(selected.formattedAddress ?? selected.name);
+    setSuggestions([]);
+    resetSessionToken();
     onPlaceSelect(selected);
   } catch (nextError) {
     setError(
@@ -886,7 +1037,178 @@ async function handleAutocompleteSelect(
         ? nextError.message
         : "Selected place details could not be loaded.",
     );
+  } finally {
+    setIsSearching(false);
   }
+}
+
+async function placeFromAutocompleteSuggestion(
+  suggestion: GoogleAutocompleteSuggestion,
+): Promise<GooglePlaceAutocompleteResult | null> {
+  const prediction = suggestion.placePrediction;
+  const place = prediction?.toPlace?.();
+  if (!place) return null;
+  await place.fetchFields?.({
+    fields: [
+      "id",
+      "displayName",
+      "formattedAddress",
+      "location",
+      "googleMapsURI",
+    ],
+  });
+  return autocompleteResultFromPlace(place, suggestionLabel(suggestion, 0));
+}
+
+async function placeFromServerSearch(
+  query: string,
+): Promise<GooglePlaceAutocompleteResult> {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return compactAutocompleteResult({ name: "Selected place" });
+  }
+
+  const placeSearch = await searchGoogleMapsPlaces({
+    textQuery: trimmed,
+    maxResultCount: 1,
+  }).catch(() => null);
+  const place = placeSearch?.places[0];
+  if (place) {
+    return compactAutocompleteResult({
+      placeId: place.placeId ?? place.id,
+      name: place.name || place.formattedAddress || trimmed,
+      formattedAddress: place.formattedAddress,
+      location: place.location,
+      googleMapsUri: place.googleMapsUri,
+    });
+  }
+
+  const geocode = await geocodeGoogleMapsAddress({
+    address: trimmed,
+    limit: 1,
+  }).catch(() => null);
+  const result = geocode?.results[0];
+  if (result) {
+    return compactAutocompleteResult({
+      placeId: result.placeId,
+      name: result.formattedAddress || trimmed,
+      formattedAddress: result.formattedAddress,
+      location: result.location,
+    });
+  }
+
+  return compactAutocompleteResult({
+    name: trimmed,
+    formattedAddress: trimmed,
+  });
+}
+
+function autocompleteRequestFromProps({
+  input,
+  sessionToken,
+  includedRegionCodes,
+  includedPrimaryTypes,
+  locationBias,
+}: {
+  input: string;
+  sessionToken: unknown;
+  includedRegionCodes?: string[];
+  includedPrimaryTypes?: string[];
+  locationBias?: GoogleMapsCoordinate & { radiusMeters?: number };
+}): Record<string, unknown> {
+  const request: Record<string, unknown> = { input };
+  if (sessionToken) request.sessionToken = sessionToken;
+  if (includedRegionCodes?.length) {
+    request.includedRegionCodes = includedRegionCodes;
+  }
+  if (includedPrimaryTypes?.length) {
+    request.includedPrimaryTypes = includedPrimaryTypes;
+  }
+  if (locationBias) {
+    request.locationBias = {
+      radius: locationBias.radiusMeters ?? 5_000,
+      center: {
+        lat: locationBias.latitude,
+        lng: locationBias.longitude,
+      },
+    };
+  }
+  return request;
+}
+
+function createAutocompleteSessionToken(
+  placesLibrary: PlacesLibrary | null,
+): unknown {
+  try {
+    return placesLibrary?.AutocompleteSessionToken
+      ? new placesLibrary.AutocompleteSessionToken()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function autocompleteResultFromPlace(
+  place: GooglePlaceResult,
+  fallbackName: string,
+): GooglePlaceAutocompleteResult {
+  const json = place.toJSON?.();
+  const jsonRecord = isRecord(json) ? json : {};
+  return compactAutocompleteResult({
+    placeId: place.id ?? stringFromRecord(jsonRecord, "id"),
+    name:
+      place.displayName ??
+      stringFromRecord(jsonRecord, "displayName") ??
+      stringFromNestedRecord(jsonRecord, ["displayName", "text"]) ??
+      place.formattedAddress ??
+      stringFromRecord(jsonRecord, "formattedAddress") ??
+      fallbackName ??
+      "Selected place",
+    formattedAddress:
+      place.formattedAddress ?? stringFromRecord(jsonRecord, "formattedAddress"),
+    location:
+      coordinateFromGoogleLocation(place.location) ??
+      coordinateFromGoogleLocation(jsonRecord.location),
+    googleMapsUri:
+      place.googleMapsURI ??
+      place.googleMapsUri ??
+      stringFromRecord(jsonRecord, "googleMapsURI") ??
+      stringFromRecord(jsonRecord, "googleMapsUri"),
+  });
+}
+
+function suggestionLabel(
+  suggestion: GoogleAutocompleteSuggestion,
+  index: number,
+): string {
+  const prediction = suggestion.placePrediction;
+  return (
+    textFromFormattable(prediction?.text) ||
+    [mainSuggestionText(suggestion), secondarySuggestionText(suggestion)]
+      .filter(Boolean)
+      .join(", ") ||
+    `Place ${index + 1}`
+  );
+}
+
+function mainSuggestionText(suggestion: GoogleAutocompleteSuggestion): string {
+  return textFromFormattable(suggestion.placePrediction?.mainText);
+}
+
+function secondarySuggestionText(
+  suggestion: GoogleAutocompleteSuggestion,
+): string {
+  return textFromFormattable(suggestion.placePrediction?.secondaryText);
+}
+
+function textFromFormattable(
+  value: GoogleFormattableText | string | undefined,
+): string {
+  if (typeof value === "string") return value;
+  if (!value) return "";
+  if (typeof value.text === "string") return value.text;
+  const asString = value.toString?.();
+  return asString && asString !== "[object Object]" ? asString : "";
 }
 
 function loadGoogleMapsApi(
