@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { CHAT_MESSAGE_MAX_LENGTH } from "@/lib/chat-limits";
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
 
@@ -13,8 +14,6 @@ type Proposal = {
   version: number;
   forceDeepDiagnostic: boolean;
 };
-
-const CHAT_MESSAGE_MAX_LENGTH = 5000;
 
 export default function PlannerChat({
   appId,
