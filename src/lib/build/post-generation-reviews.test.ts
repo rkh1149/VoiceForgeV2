@@ -433,6 +433,37 @@ test("creates a trip", async ({ page }) => { await page.goto("/"); await expect(
     );
   });
 
+  it("blocks Google Maps place search placeholders that only link back to route exploration", () => {
+    const spec = advancedBikeSpec();
+    const files: FileMap = {
+      "src/app/two-point-route-explorer/page.tsx": `"use client";
+import { searchGoogleMapsPlaces, computeGoogleMapsRoute, getGoogleMapsElevationProfile } from "@/lib/platform-integrations";
+import { GoogleMapsTripMap, GooglePlaceAutocomplete } from "@/components/voiceforge-google-map";
+export default function Page() {
+  async function explore() {
+    await searchGoogleMapsPlaces({ textQuery: "bike cafe" });
+    await computeGoogleMapsRoute({ origin: { address: "A" }, destination: { address: "B" }, travelMode: "BICYCLE" });
+    await getGoogleMapsElevationProfile({ encodedPolyline: "abc" });
+  }
+  return <main><h1>Explore</h1><button onClick={() => void explore()}>Explore routes</button><GooglePlaceAutocomplete label="Origin" onPlaceSelect={() => undefined} /><GoogleMapsTripMap places={[]} /></main>;
+}`,
+      "src/app/saved-places-accommodations/page.tsx": `export default function Page() {
+  return <main><h1>Saved places</h1><a href="/two-point-route-explorer">Search places</a></main>;
+}`,
+    };
+
+    const reviews = review({
+      spec,
+      architecture: buildArchitecture(spec),
+      allFiles: files,
+    });
+    const codeReview = findReview(reviews, "code_reviewer");
+
+    expect(codeReview.blockingIssues.join(" ")).toContain(
+      "navigation-only link to another map screen",
+    );
+  });
+
   it("blocks advanced apps that omit architecture-planned route files", () => {
     const spec = advancedBikeSpec();
     const architecture = buildArchitecture(spec);

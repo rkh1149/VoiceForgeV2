@@ -85,6 +85,8 @@ const GOOGLE_MAPS_MAP_COMPONENT_PATTERN = /<\s*GoogleMapsTripMap\b/;
 const GOOGLE_MAPS_AUTOCOMPLETE_PATTERN = /<\s*GooglePlaceAutocomplete\b/;
 const GOOGLE_MAPS_BICYCLE_PATTERN =
   /\btravelMode\s*:\s*["'`]BICYCLE["'`]|\btravelMode\s*=\s*["'`]BICYCLE["'`]/;
+const GOOGLE_MAPS_PLACE_SEARCH_PLACEHOLDER_LINK_PATTERN =
+  /<\s*(?:a|Link)\b(?=[\s\S]{0,500}\bhref\s*=\s*["'`]\/(?:two-point-route-explorer|route-comparison|map-view)["'`])(?=[\s\S]{0,500}>\s*Search\s+places\s*<)/i;
 const OBJECT_KEY_PATTERN = /[{,]\s*([A-Za-z_$][\w$]*)\s*:/g;
 const NON_PAYLOAD_OBJECT_KEYS = new Set([
   "children",
@@ -895,6 +897,14 @@ function detectGoogleMapsImplementationIssues(
   ) {
     issues.push(
       "code_review: Google Maps place search/autocomplete was requested, but generated code does not call searchGoogleMapsPlaces or render GooglePlaceAutocomplete.",
+    );
+  }
+  if (
+    requiresGoogleMapsPlaceSearch(spec) &&
+    GOOGLE_MAPS_PLACE_SEARCH_PLACEHOLDER_LINK_PATTERN.test(sourceText)
+  ) {
+    issues.push(
+      "code_review: Google Maps place search was represented as a navigation-only link to another map screen; implement an actual place search/save workflow where users search places.",
     );
   }
   if (
