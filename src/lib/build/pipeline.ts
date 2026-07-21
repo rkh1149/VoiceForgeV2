@@ -57,6 +57,10 @@ import {
   summarizeArtifactFiles,
 } from "./agent-artifact-utils";
 import { runPlanningSpecialistReviews } from "./planning-specialists";
+import {
+  getPostGenerationBlockingIssues,
+  runPostGenerationReviews,
+} from "./post-generation-reviews";
 import { validateGeneratedAppDependencies } from "./dependencies";
 import { loadTemplate, type FileMap } from "./template";
 import { createRunner, type Runner, type StepName } from "./runner";
@@ -624,6 +628,48 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     if (generated.filesWritten.length === 0) {
       throw new Error("Code agent produced no files");
     }
+    const postGenerationReviews = runPostGenerationReviews({
+      spec,
+      architecture: architectureForStorage,
+      allFiles: agentVisibleFiles(files),
+      changedFiles: generated.files,
+      changedFilePaths: generated.filesWritten,
+      deletedFilePaths: generated.deletedFiles,
+      changeMode,
+    });
+    for (const review of postGenerationReviews) {
+      await recordBuildAgentArtifact({
+        appId: app.id,
+        buildRunId,
+        agentKey: review.agentKey,
+        phaseKey: review.phaseKey,
+        artifactType: review.artifactType,
+        status: review.status,
+        summary: review.summary,
+        payload: review.payload,
+      });
+    }
+    const postGenerationWarnings = uniqueStrings(
+      postGenerationReviews.flatMap((review) => review.warnings),
+    );
+    if (postGenerationWarnings.length > 0) {
+      await log(
+        buildRunId,
+        `Generated app review warnings: ${postGenerationWarnings.join(" ")}`,
+      );
+    }
+    const postGenerationBlockingIssues =
+      getPostGenerationBlockingIssues(postGenerationReviews);
+    if (postGenerationBlockingIssues.length > 0) {
+      await log(
+        buildRunId,
+        `Generated app review failed: ${postGenerationBlockingIssues.join(" ")}`,
+      );
+      throw new Error(
+        `Generated app review failed: ${postGenerationBlockingIssues.join(" ")}`,
+      );
+    }
+    await log(buildRunId, "Generated app reviews passed.");
 
     // 2. Test gauntlet with bounded debug loop.
     runner = await createRunner(buildRunId, {
