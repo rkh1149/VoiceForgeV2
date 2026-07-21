@@ -596,3 +596,19 @@ describe("generated app auth template", () => {
     );
   });
 });
+
+describe("generated app Google Maps template", () => {
+  it("constructs map bounds from the core/global Maps API instead of the maps library import", () => {
+    const source = readFileSync(
+      "templates/nextjs-base/src/components/voiceforge-google-map.tsx",
+      "utf8",
+    );
+
+    expect(source).toContain('importLibrary("core")');
+    expect(source).toContain("resolveLatLngBoundsConstructor");
+    expect(source).toContain(
+      "const bounds = LatLngBounds ? new LatLngBounds() : null;",
+    );
+    expect(source).not.toContain("new mapsLibrary.LatLngBounds()");
+  });
+});

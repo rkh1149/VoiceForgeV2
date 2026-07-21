@@ -65,6 +65,8 @@ type BoundsInstance = {
   extend: (point: LatLngLiteral) => void;
 };
 
+type BoundsConstructor = new () => BoundsInstance;
+
 type MarkerInstance = {
   map: MapInstance | null;
   addListener?: (eventName: string, handler: () => void) => unknown;
@@ -80,9 +82,13 @@ type LayerInstance = {
 
 type MapsLibrary = {
   Map: new (element: HTMLElement, options: Record<string, unknown>) => MapInstance;
-  LatLngBounds: new () => BoundsInstance;
+  LatLngBounds?: BoundsConstructor;
   Polyline?: new (options: Record<string, unknown>) => PolylineInstance;
   BicyclingLayer?: new () => LayerInstance;
+};
+
+type CoreLibrary = {
+  LatLngBounds?: BoundsConstructor;
 };
 
 type MarkerLibrary = {
@@ -136,6 +142,7 @@ type GooglePlaceSelectEvent = Event & {
 
 type GoogleMapsApi = {
   importLibrary: (libraryName: string) => Promise<Record<string, unknown>>;
+  LatLngBounds?: BoundsConstructor;
   Polyline?: new (options: Record<string, unknown>) => PolylineInstance;
   BicyclingLayer?: new () => LayerInstance;
 };
@@ -244,6 +251,9 @@ export function GoogleMapsTripMap({
         const markerLibrary = (await mapsApi.importLibrary(
           "marker",
         )) as unknown as MarkerLibrary;
+        const coreLibrary = (await mapsApi
+          .importLibrary("core")
+          .catch(() => ({}))) as unknown as CoreLibrary;
         const geometryLibrary = (await mapsApi
           .importLibrary("geometry")
           .catch(() => ({}))) as unknown as GeometryLibrary;
@@ -276,7 +286,12 @@ export function GoogleMapsTripMap({
           });
         mapRef.current = map;
 
-        const bounds = new mapsLibrary.LatLngBounds();
+        const LatLngBounds = resolveLatLngBoundsConstructor(
+          coreLibrary,
+          mapsApi,
+          mapsLibrary,
+        );
+        const bounds = LatLngBounds ? new LatLngBounds() : null;
         let hasBounds = false;
         validPlaces.forEach((place, index) => {
           const position = coordinateToLatLng(place.location);
@@ -300,8 +315,8 @@ export function GoogleMapsTripMap({
             onSelectPlace?.(placeKey(place, index));
           });
           markerRefs.current.push(marker);
-          bounds.extend(position);
-          hasBounds = true;
+          bounds?.extend(position);
+          hasBounds = Boolean(bounds);
         });
 
         const Polyline = mapsLibrary.Polyline ?? mapsApi.Polyline;
@@ -316,8 +331,8 @@ export function GoogleMapsTripMap({
           routeLine.setMap(map);
           routeRef.current = routeLine;
           routePath.forEach((point) => {
-            bounds.extend(point);
-            hasBounds = true;
+            bounds?.extend(point);
+            hasBounds = Boolean(bounds);
           });
         }
 
@@ -329,7 +344,7 @@ export function GoogleMapsTripMap({
           bicyclingLayerRef.current = bicyclingLayer;
         }
 
-        if (hasBounds) {
+        if (hasBounds && bounds) {
           map.fitBounds(bounds);
         } else {
           map.setCenter(initialCenter);
@@ -926,6 +941,19 @@ function clearMapObjects(
   });
   routeLine?.setMap(null);
   bicyclingLayer?.setMap(null);
+}
+
+function resolveLatLngBoundsConstructor(
+  coreLibrary: CoreLibrary,
+  mapsApi: GoogleMapsApi,
+  mapsLibrary: MapsLibrary,
+): BoundsConstructor | null {
+  return (
+    coreLibrary.LatLngBounds ??
+    mapsApi.LatLngBounds ??
+    mapsLibrary.LatLngBounds ??
+    null
+  );
 }
 
 function normalizeRouteOptions(
