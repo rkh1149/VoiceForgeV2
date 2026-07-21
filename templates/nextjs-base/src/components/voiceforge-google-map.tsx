@@ -504,6 +504,7 @@ export function GooglePlaceAutocomplete({
 }: GooglePlaceAutocompleteProps) {
   const inputId = useId();
   const listboxId = useId();
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const placesLibraryRef = useRef<PlacesLibrary | null>(null);
   const sessionTokenRef = useRef<unknown>(null);
   const [query, setQuery] = useState("");
@@ -621,6 +622,11 @@ export function GooglePlaceAutocomplete({
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!trimmedQuery) {
+      setError("Enter a place to search.");
+      inputRef.current?.focus();
+      return;
+    }
     void searchForTypedPlace({
       query: trimmedQuery,
       firstSuggestion: suggestions[0],
@@ -665,6 +671,7 @@ export function GooglePlaceAutocomplete({
         <div className="flex min-h-11 overflow-hidden rounded-md border border-slate-300 bg-white shadow-sm focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-200">
           <input
             id={inputId}
+            ref={inputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={placeholder}
@@ -677,7 +684,7 @@ export function GooglePlaceAutocomplete({
           />
           <button
             type="submit"
-            disabled={!trimmedQuery || isSearching}
+            disabled={isSearching}
             aria-label={`Search ${label}`}
             className="flex w-11 shrink-0 items-center justify-center border-l border-slate-200 text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:text-slate-300"
           >
