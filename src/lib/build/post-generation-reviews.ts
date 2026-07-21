@@ -125,7 +125,9 @@ const WRITE_ACTION_WORDS = [
   "save",
   "search",
   "select",
+  "start",
   "submit",
+  "track",
   "update",
   "upload",
 ] as const;
@@ -1138,6 +1140,17 @@ function entityTerms(name: string, key: string): string[] {
     terms.add("photo");
     terms.add("journal");
   }
+  if (words.includes("photo")) {
+    terms.add("image");
+    terms.add("picture");
+  }
+  if (words.includes("gps") || (words.includes("track") && words.includes("session"))) {
+    terms.add("gps");
+    terms.add("track");
+    terms.add("tracking");
+    terms.add("ride tracking");
+    terms.add("location tracking");
+  }
   return uniqueStrings([...terms].filter(Boolean));
 }
 
@@ -1174,11 +1187,23 @@ function interactiveSnippets(source: readonly [string, string][]): string[] {
     for (const pattern of patterns) {
       pattern.lastIndex = 0;
       for (const match of content.matchAll(pattern)) {
-        snippets.push(match[0]);
+        snippets.push(
+          snippetWithContext(content, match.index ?? 0, match[0].length),
+        );
       }
     }
   }
   return snippets;
+}
+
+function snippetWithContext(
+  content: string,
+  start: number,
+  length: number,
+): string {
+  const before = Math.max(0, start - 700);
+  const after = Math.min(content.length, start + length + 700);
+  return content.slice(before, after);
 }
 
 function hasRuntimeIntegrationUsage(sourceText: string): boolean {
@@ -1330,6 +1355,13 @@ function splitWords(value: string): string[] {
 
 function stemSearchWord(word: string): string {
   if (word.length > 4 && word.endsWith("ies")) return `${word.slice(0, -3)}y`;
+  if (word.length > 5 && word.endsWith("ing")) {
+    let base = word.slice(0, -3);
+    const last = base.at(-1);
+    if (last && base.endsWith(`${last}${last}`)) base = base.slice(0, -1);
+    if (base.endsWith("v")) return `${base}e`;
+    return base;
+  }
   if (word.length > 3 && word.endsWith("s") && !word.endsWith("ss")) {
     return word.slice(0, -1);
   }
