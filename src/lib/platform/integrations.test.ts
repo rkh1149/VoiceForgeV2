@@ -159,6 +159,118 @@ describe("integration catalogue", () => {
     });
   });
 
+  it("rejects traffic-aware routing preferences for bicycle routes", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      invokeCatalogIntegrationAction({
+        providerKey: "google_maps",
+        actionKey: "compute_route",
+        input: {
+          origin: { address: "Toronto" },
+          destination: { address: "Montreal" },
+          travelMode: "BICYCLE",
+          routingPreference: "TRAFFIC_AWARE",
+        },
+        context: {
+          appId: "app_1",
+          userId: "user_1",
+          credential: {
+            id: "credential_1",
+            scopes: ["routes"],
+            secrets: { apiKey: "test-google-maps-key-12345" },
+          },
+        },
+      }),
+    ).rejects.toThrow("routingPreference is supported only for DRIVE or TWO_WHEELER");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("adds bicycle route safety notices and preserves Google route warnings", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("X-Goog-FieldMask")).toContain("routes.warnings");
+      const body = JSON.parse(String(init?.body)) as {
+        travelMode?: string;
+        routingPreference?: string;
+      };
+      expect(body.travelMode).toBe("BICYCLE");
+      expect(body.routingPreference).toBeUndefined();
+      return new Response(
+        JSON.stringify({
+          routes: [
+            {
+              distanceMeters: 12000,
+              duration: "3600s",
+              localizedValues: {
+                distance: { text: "12.0 km" },
+                duration: { text: "1 hr" },
+              },
+              polyline: { encodedPolyline: "encoded-bike-polyline" },
+              warnings: ["Use caution on unsigned paths."],
+              legs: [
+                {
+                  distanceMeters: 12000,
+                  duration: "3600s",
+                  localizedValues: {
+                    distance: { text: "12.0 km" },
+                    duration: { text: "1 hr" },
+                  },
+                  startLocation: {
+                    latLng: { latitude: 43.65, longitude: -79.38 },
+                  },
+                  endLocation: {
+                    latLng: { latitude: 43.7, longitude: -79.42 },
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await invokeCatalogIntegrationAction({
+      providerKey: "google_maps",
+      actionKey: "compute_route",
+      input: {
+        origin: { address: "Union Station Toronto" },
+        destination: { address: "High Park Toronto" },
+        travelMode: "BICYCLE",
+      },
+      context: {
+        appId: "app_1",
+        userId: "user_1",
+        credential: {
+          id: "credential_1",
+          scopes: ["routes"],
+          secrets: { apiKey: "test-google-maps-key-12345" },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      provider: "google_maps",
+      route: {
+        travelMode: "BICYCLE",
+        safetyNotice: expect.stringContaining("bicycling"),
+        warnings: expect.arrayContaining([
+          expect.stringContaining("bicycling"),
+          "Use caution on unsigned paths.",
+        ]),
+        legs: [
+          expect.objectContaining({
+            startLocation: { latitude: 43.65, longitude: -79.38 },
+            endLocation: { latitude: 43.7, longitude: -79.42 },
+          }),
+        ],
+      },
+    });
+  });
+
   it("uses browser-specific Google Maps config when present", () => {
     vi.stubEnv("VOICEFORGE_GOOGLE_MAPS_API_KEY", "server-maps-key");
     vi.stubEnv("VOICEFORGE_GOOGLE_MAPS_BROWSER_KEY", "browser-maps-key");
@@ -172,6 +284,17 @@ describe("integration catalogue", () => {
       mapId: "voiceforge-map-id",
       language: "en",
       region: "CA",
+      authReferrerPolicy: "origin",
+    });
+  });
+
+  it("does not expose the server-only Google Maps key as browser config", () => {
+    vi.stubEnv("VOICEFORGE_GOOGLE_MAPS_API_KEY", "server-maps-key");
+
+    expect(getGoogleMapsBrowserConfig()).toEqual({
+      enabled: false,
+      apiKey: null,
+      mapId: "DEMO_MAP_ID",
       authReferrerPolicy: "origin",
     });
   });

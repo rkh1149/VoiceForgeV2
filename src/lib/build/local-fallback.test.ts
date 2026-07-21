@@ -465,6 +465,8 @@ describe("generated app local platform fallback", () => {
         route: {
           distanceMeters: expect.any(Number),
           durationSeconds: expect.any(Number),
+          travelMode: "DRIVE",
+          warnings: [],
           legs: [
             expect.objectContaining({
               startLocation: { latitude: 43.6453, longitude: -79.3806 },
@@ -474,6 +476,51 @@ describe("generated app local platform fallback", () => {
         },
       },
     });
+
+    const bikeRoute = await integrationsPOST(
+      new Request("http://local.test/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "invoke",
+          providerKey: "google_maps",
+          actionKey: "compute_route",
+          input: {
+            origin: { placeId: "local-union-station" },
+            destination: { placeId: "local-cn-tower" },
+            travelMode: "BICYCLE",
+          },
+        }),
+      }),
+    );
+
+    expect(bikeRoute.status).toBe(200);
+    await expect(bikeRoute.json()).resolves.toMatchObject({
+      result: {
+        route: {
+          travelMode: "BICYCLE",
+          safetyNotice: expect.stringContaining("bicycling"),
+          warnings: [expect.stringContaining("bicycling")],
+        },
+      },
+    });
+
+    const invalidBikeRoute = await integrationsPOST(
+      new Request("http://local.test/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "invoke",
+          providerKey: "google_maps",
+          actionKey: "compute_route",
+          input: {
+            origin: { placeId: "local-union-station" },
+            destination: { placeId: "local-cn-tower" },
+            travelMode: "BICYCLE",
+            routingPreference: "TRAFFIC_AWARE",
+          },
+        }),
+      }),
+    );
+    expect(invalidBikeRoute.status).toBe(400);
 
     const unsupported = await integrationsPOST(
       new Request("http://local.test/api/integrations", {

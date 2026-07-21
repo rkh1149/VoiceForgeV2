@@ -37,6 +37,7 @@ const GOOGLE_ROUTES_FIELD_MASK = [
   "routes.distanceMeters",
   "routes.localizedValues",
   "routes.polyline.encodedPolyline",
+  "routes.warnings",
   "routes.legs.duration",
   "routes.legs.distanceMeters",
   "routes.legs.startLocation",
@@ -44,11 +45,24 @@ const GOOGLE_ROUTES_FIELD_MASK = [
   "routes.legs.localizedValues",
 ].join(",");
 
+const BETA_ROUTE_SAFETY_NOTICE =
+  "Walking, bicycling, and two-wheel routes are beta and may be missing clear sidewalks, pedestrian paths, or bicycling paths. Review the route before traveling.";
+
 const googleMapsCredentialSchema = z
   .object({
     apiKey: z.string().trim().min(20).max(200),
   })
   .strict();
+
+const routeTravelModeSchema = z.enum([
+  "DRIVE",
+  "WALK",
+  "BICYCLE",
+  "TRANSIT",
+  "TWO_WHEELER",
+]);
+
+type RouteTravelMode = z.infer<typeof routeTravelModeSchema>;
 
 const coordinateSchema = z
   .object({
@@ -166,7 +180,7 @@ const computeRouteInputSchema = z
     origin: routeWaypointSchema,
     destination: routeWaypointSchema,
     intermediates: z.array(routeWaypointSchema).max(8).default([]),
-    travelMode: z.enum(["DRIVE", "WALK", "BICYCLE", "TRANSIT"]).default("DRIVE"),
+    travelMode: routeTravelModeSchema.default("DRIVE"),
     routingPreference: z
       .enum(["TRAFFIC_UNAWARE", "TRAFFIC_AWARE", "TRAFFIC_AWARE_OPTIMAL"])
       .optional(),
@@ -175,7 +189,21 @@ const computeRouteInputSchema = z
     regionCode: z.string().trim().min(2).max(8).optional(),
     routeModifiers: routeModifiersSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value.routingPreference &&
+      value.travelMode !== "DRIVE" &&
+      value.travelMode !== "TWO_WHEELER"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["routingPreference"],
+        message:
+          "routingPreference is supported only for DRIVE or TWO_WHEELER routes.",
+      });
+    }
+  });
 
 const routeLegSchema = z
   .object({
@@ -199,6 +227,9 @@ const computeRouteOutputSchema = z
         durationSeconds: z.number().int().optional(),
         localizedDistance: z.string().optional(),
         localizedDuration: z.string().optional(),
+        travelMode: routeTravelModeSchema,
+        warnings: z.array(z.string()),
+        safetyNotice: z.string().optional(),
         encodedPolyline: z.string().optional(),
         legs: z.array(routeLegSchema),
       })
@@ -211,7 +242,7 @@ export const googleMapsProvider: IntegrationProviderDefinition = {
   providerKey: "google_maps",
   displayName: "Google Maps",
   description:
-    "Server-side trip planning with place search, place details, address geocoding, and route estimates.",
+    "Trip planning with place search, place details, address geocoding, route estimates, and map display.",
   authType: "api_key",
   credentialSchema: googleMapsCredentialSchema,
   aliases: [
@@ -226,6 +257,10 @@ export const googleMapsProvider: IntegrationProviderDefinition = {
     "travel planner",
     "itinerary",
     "route planning",
+    "bike route",
+    "bicycle route",
+    "cycling",
+    "cycling route",
   ],
   actions: [
     {
@@ -393,7 +428,10 @@ async function computeRoute(
     },
   );
   const [route] = arrayFrom(payload, "routes").map(mapRoute).filter(isJsonObject);
-  return { provider: "google_maps", route: route ?? null };
+  return {
+    provider: "google_maps",
+    route: route ? withTravelMode(route, input.travelMode) : null,
+  };
 }
 
 function googleMapsApiKey(context: IntegrationInvokeContext): string {
@@ -523,8 +561,30 @@ function mapRoute(input: unknown): JsonObject | null {
     localizedDistance: nestedString(input, ["localizedValues", "distance", "text"]),
     localizedDuration: nestedString(input, ["localizedValues", "duration", "text"]),
     encodedPolyline: nestedString(input, ["polyline", "encodedPolyline"]),
+    warnings: stringArrayAt(input, "warnings"),
     legs: arrayFrom(input, "legs").map(mapRouteLeg).filter(isJsonObject),
   });
+}
+
+function withTravelMode(route: JsonObject, travelMode: RouteTravelMode): JsonObject {
+  const routeWarnings = Array.isArray(route.warnings)
+    ? route.warnings.filter((warning): warning is string => typeof warning === "string")
+    : [];
+  const safetyNotice = betaRouteSafetyNotice(travelMode);
+  return compactJsonObject({
+    ...route,
+    travelMode,
+    warnings: uniqueStrings([...(safetyNotice ? [safetyNotice] : []), ...routeWarnings]),
+    safetyNotice,
+  });
+}
+
+function betaRouteSafetyNotice(travelMode: RouteTravelMode): string | undefined {
+  return travelMode === "WALK" ||
+    travelMode === "BICYCLE" ||
+    travelMode === "TWO_WHEELER"
+    ? BETA_ROUTE_SAFETY_NOTICE
+    : undefined;
 }
 
 function mapRouteLeg(input: unknown): JsonObject | null {
@@ -597,6 +657,10 @@ function stringArrayAt(input: unknown, key: string, nestedKey?: string): string[
   return Array.isArray(source)
     ? source.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function nestedString(input: unknown, path: string[]): string | undefined {

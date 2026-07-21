@@ -82,8 +82,6 @@ export function getGoogleMapsBrowserConfig(): GoogleMapsBrowserConfig {
   const apiKey = firstConfiguredEnvValue(
     "VOICEFORGE_GOOGLE_MAPS_BROWSER_KEY",
     "NEXT_PUBLIC_GOOGLE_MAPS_API_KEY",
-    "VOICEFORGE_GOOGLE_MAPS_API_KEY",
-    "GOOGLE_MAPS_API_KEY",
   );
   const mapId =
     firstConfiguredEnvValue("VOICEFORGE_GOOGLE_MAPS_MAP_ID") ?? "DEMO_MAP_ID";

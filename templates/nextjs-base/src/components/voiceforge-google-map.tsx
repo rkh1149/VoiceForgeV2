@@ -16,6 +16,7 @@ export type GoogleMapsTripMapProps = {
   onSelectPlace?: (placeId: string) => void;
   center?: GoogleMapsCoordinate | null;
   zoom?: number;
+  showBicyclingLayer?: boolean | "auto";
   height?: number | string;
   className?: string;
   title?: string;
@@ -50,10 +51,15 @@ type PolylineInstance = {
   setMap: (map: MapInstance | null) => void;
 };
 
+type LayerInstance = {
+  setMap: (map: MapInstance | null) => void;
+};
+
 type MapsLibrary = {
   Map: new (element: HTMLElement, options: Record<string, unknown>) => MapInstance;
   LatLngBounds: new () => BoundsInstance;
   Polyline?: new (options: Record<string, unknown>) => PolylineInstance;
+  BicyclingLayer?: new () => LayerInstance;
 };
 
 type MarkerLibrary = {
@@ -72,6 +78,7 @@ type GeometryLibrary = {
 type GoogleMapsApi = {
   importLibrary: (libraryName: string) => Promise<Record<string, unknown>>;
   Polyline?: new (options: Record<string, unknown>) => PolylineInstance;
+  BicyclingLayer?: new () => LayerInstance;
 };
 
 type VoiceForgeGoogleWindow = Window &
@@ -89,6 +96,7 @@ export function GoogleMapsTripMap({
   onSelectPlace,
   center,
   zoom = 12,
+  showBicyclingLayer = "auto",
   height = 420,
   className = "",
   title = "Trip map",
@@ -97,6 +105,7 @@ export function GoogleMapsTripMap({
   const mapRef = useRef<MapInstance | null>(null);
   const markerRefs = useRef<MarkerInstance[]>([]);
   const routeRef = useRef<PolylineInstance | null>(null);
+  const bicyclingLayerRef = useRef<LayerInstance | null>(null);
   const [config, setConfig] = useState<GoogleMapsBrowserConfig | null>(null);
   const [status, setStatus] = useState<
     "loading" | "ready" | "fallback" | "error"
@@ -109,6 +118,10 @@ export function GoogleMapsTripMap({
   );
   const fallbackRoutePath = useMemo(() => pathFromRouteLegs(route), [route]);
   const selectedKey = selectedPlaceId ?? placeKey(validPlaces[0], 0);
+  const routeSafetyMessages = useMemo(() => routeWarnings(route), [route]);
+  const shouldShowBicyclingLayer =
+    showBicyclingLayer === true ||
+    (showBicyclingLayer === "auto" && route?.travelMode === "BICYCLE");
   const resolvedHeight = typeof height === "number" ? `${height}px` : height;
 
   useEffect(() => {
@@ -157,9 +170,14 @@ export function GoogleMapsTripMap({
           .catch(() => ({}))) as unknown as GeometryLibrary;
         if (!active || !mapElementRef.current) return;
 
-        clearMapObjects(markerRefs.current, routeRef.current);
+        clearMapObjects(
+          markerRefs.current,
+          routeRef.current,
+          bicyclingLayerRef.current,
+        );
         markerRefs.current = [];
         routeRef.current = null;
+        bicyclingLayerRef.current = null;
 
         const routePath = pathFromRoute(route, geometryLibrary);
         const initialCenter =
@@ -224,6 +242,14 @@ export function GoogleMapsTripMap({
           });
         }
 
+        const BicyclingLayer =
+          mapsLibrary.BicyclingLayer ?? mapsApi.BicyclingLayer;
+        if (shouldShowBicyclingLayer && BicyclingLayer) {
+          const bicyclingLayer = new BicyclingLayer();
+          bicyclingLayer.setMap(map);
+          bicyclingLayerRef.current = bicyclingLayer;
+        }
+
         if (hasBounds) {
           map.fitBounds(bounds);
         } else {
@@ -254,6 +280,7 @@ export function GoogleMapsTripMap({
     onSelectPlace,
     route,
     selectedKey,
+    shouldShowBicyclingLayer,
     validPlaces,
     zoom,
   ]);
@@ -300,9 +327,23 @@ export function GoogleMapsTripMap({
               )}
             </div>
             <span className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-800">
-              {status === "ready" ? "Live map" : "Map preview"}
+              {shouldShowBicyclingLayer && status === "ready"
+                ? "Bike map"
+                : status === "ready"
+                  ? "Live map"
+                  : "Map preview"}
             </span>
           </div>
+          {routeSafetyMessages.length > 0 && (
+            <div
+              role="note"
+              className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+            >
+              {routeSafetyMessages.map((message) => (
+                <p key={message}>{message}</p>
+              ))}
+            </div>
+          )}
           <div className="mt-4 space-y-3">
             {validPlaces.length === 0 ? (
               <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-600">
@@ -320,6 +361,9 @@ export function GoogleMapsTripMap({
               ))
             )}
           </div>
+          <p className="mt-4 border-t border-slate-200 pt-3 text-xs text-slate-500">
+            Powered by Google, &copy;{new Date().getFullYear()} Google
+          </p>
         </aside>
       </div>
     </section>
@@ -481,11 +525,13 @@ function loadGoogleMapsApi(
 function clearMapObjects(
   markers: MarkerInstance[],
   routeLine: PolylineInstance | null,
+  bicyclingLayer: LayerInstance | null,
 ): void {
   markers.forEach((marker) => {
     marker.map = null;
   });
   routeLine?.setMap(null);
+  bicyclingLayer?.setMap(null);
 }
 
 function coordinateToLatLng(
@@ -564,6 +610,21 @@ function isLatLngLiteral(point: LatLngLiteral | null): point is LatLngLiteral {
 
 function placeKey(place: GoogleMapsPlace | undefined, index: number): string {
   return place?.placeId ?? place?.id ?? `${place?.name ?? "place"}-${index}`;
+}
+
+function routeWarnings(route: GoogleMapsRoute | null | undefined): string[] {
+  return uniqueMessages([
+    route?.safetyNotice,
+    ...(Array.isArray(route?.warnings) ? route.warnings : []),
+  ]);
+}
+
+function uniqueMessages(values: Array<string | undefined>): string[] {
+  return [...new Set(values.map((value) => value?.trim()).filter(isString))];
+}
+
+function isString(value: string | undefined): value is string {
+  return Boolean(value);
 }
 
 function fallbackPinPosition(

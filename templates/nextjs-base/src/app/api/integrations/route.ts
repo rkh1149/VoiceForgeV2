@@ -101,7 +101,7 @@ const googleMapsProvider = {
   providerKey: "google_maps",
   displayName: "Google Maps",
   description:
-    "Server-side trip planning with place search, place details, address geocoding, and route estimates.",
+    "Trip planning with place search, place details, address geocoding, route estimates, and map display.",
   authType: "api_key" as const,
   actions: [
     {
@@ -133,6 +133,9 @@ const googleMapsProvider = {
     },
   ],
 };
+
+const betaRouteSafetyNotice =
+  "Walking, bicycling, and two-wheel routes are beta and may be missing clear sidewalks, pedestrian paths, or bicycling paths. Review the route before traveling.";
 
 const localPlaces: LocalPlace[] = [
   {
@@ -406,11 +409,26 @@ function invokeLocalGoogleMaps(body: IntegrationBody) {
         "origin and destination are required.",
       );
     }
+    const travelMode = localTravelMode(input.travelMode);
+    if (
+      typeof input.routingPreference === "string" &&
+      travelMode !== "DRIVE" &&
+      travelMode !== "TWO_WHEELER"
+    ) {
+      return localPlatformError(
+        400,
+        "invalid_integration_input",
+        "routingPreference is supported only for DRIVE or TWO_WHEELER routes.",
+      );
+    }
     const distanceMeters = Math.max(
       600,
       Math.round(distanceBetween(origin.location, destination.location) * 1_000),
     );
-    const durationSeconds = Math.round(distanceMeters / 7);
+    const durationSeconds = Math.round(
+      distanceMeters / localMetersPerSecond(travelMode),
+    );
+    const safetyNotice = localRouteSafetyNotice(travelMode);
     return NextResponse.json({
       providerKey: "google_maps",
       actionKey: "compute_route",
@@ -422,6 +440,9 @@ function invokeLocalGoogleMaps(body: IntegrationBody) {
           durationSeconds,
           localizedDistance: `${(distanceMeters / 1000).toFixed(1)} km`,
           localizedDuration: `${Math.max(1, Math.round(durationSeconds / 60))} min`,
+          travelMode,
+          warnings: safetyNotice ? [safetyNotice] : [],
+          ...(safetyNotice ? { safetyNotice } : {}),
           encodedPolyline: "local_preview_polyline",
           legs: [
             {
@@ -443,6 +464,31 @@ function invokeLocalGoogleMaps(body: IntegrationBody) {
     "integration_action_not_found",
     "That integration action is not approved in VoiceForge V2.",
   );
+}
+
+function localTravelMode(value: unknown) {
+  return value === "WALK" ||
+    value === "BICYCLE" ||
+    value === "TRANSIT" ||
+    value === "TWO_WHEELER"
+    ? value
+    : "DRIVE";
+}
+
+function localMetersPerSecond(travelMode: string) {
+  if (travelMode === "WALK") return 1.4;
+  if (travelMode === "BICYCLE") return 5;
+  if (travelMode === "TRANSIT") return 10;
+  if (travelMode === "TWO_WHEELER") return 11;
+  return 13;
+}
+
+function localRouteSafetyNotice(travelMode: string) {
+  return travelMode === "WALK" ||
+    travelMode === "BICYCLE" ||
+    travelMode === "TWO_WHEELER"
+    ? betaRouteSafetyNotice
+    : undefined;
 }
 
 function placeFromWaypoint(input: unknown): LocalPlace | undefined {

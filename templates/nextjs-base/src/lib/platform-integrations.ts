@@ -58,6 +58,9 @@ export type GoogleMapsRoute = {
   path?: GoogleMapsCoordinate[];
   localizedDistance?: string;
   localizedDuration?: string;
+  travelMode?: "DRIVE" | "WALK" | "BICYCLE" | "TRANSIT" | "TWO_WHEELER";
+  warnings?: string[];
+  safetyNotice?: string;
   legs?: Array<{
     startLocation?: GoogleMapsCoordinate | null;
     endLocation?: GoogleMapsCoordinate | null;
