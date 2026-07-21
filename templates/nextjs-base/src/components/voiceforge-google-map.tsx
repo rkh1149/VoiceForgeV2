@@ -70,6 +70,7 @@ type BoundsConstructor = new () => BoundsInstance;
 type MarkerInstance = {
   map: MapInstance | null;
   addListener?: (eventName: string, handler: () => void) => unknown;
+  addEventListener?: (eventName: string, handler: () => void) => void;
 };
 
 type PolylineInstance = {
@@ -95,7 +96,7 @@ type MarkerLibrary = {
   AdvancedMarkerElement: new (
     options: Record<string, unknown>,
   ) => MarkerInstance;
-  PinElement?: new (options: Record<string, unknown>) => { element: HTMLElement };
+  PinElement?: new (options: Record<string, unknown>) => HTMLElement;
 };
 
 type GeometryLibrary = {
@@ -300,20 +301,23 @@ export function GoogleMapsTripMap({
             map,
             position,
             title: place.name,
+            gmpClickable: Boolean(onSelectPlace),
           };
           if (markerLibrary.PinElement) {
             markerOptions.content = new markerLibrary.PinElement({
-              glyph: String(index + 1),
+              glyphText: String(index + 1),
               background:
                 placeKey(place, index) === selectedKey ? "#0f766e" : "#2563eb",
               borderColor: "#ffffff",
               glyphColor: "#ffffff",
-            }).element;
+            });
           }
           const marker = new markerLibrary.AdvancedMarkerElement(markerOptions);
-          marker.addListener?.("click", () => {
+          const selectMarker = () => {
             onSelectPlace?.(placeKey(place, index));
-          });
+          };
+          if (marker.addEventListener) marker.addEventListener("gmp-click", selectMarker);
+          else marker.addListener?.("click", selectMarker);
           markerRefs.current.push(marker);
           bounds?.extend(position);
           hasBounds = Boolean(bounds);

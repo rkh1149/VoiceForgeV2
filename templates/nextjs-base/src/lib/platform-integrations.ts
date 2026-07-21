@@ -206,16 +206,11 @@ export type ComputeGoogleMapsRouteOutput = {
 };
 
 export type GetGoogleMapsElevationProfileInput =
-  | {
-      encodedPolyline: string;
-      path?: never;
-      samples?: number;
-    }
-  | {
-      encodedPolyline?: never;
-      path: GoogleMapsCoordinate[];
-      samples?: number;
-    };
+  {
+    encodedPolyline?: string;
+    path?: GoogleMapsCoordinate[];
+    samples?: number;
+  };
 
 export type GetGoogleMapsElevationProfileOutput = {
   provider: "google_maps";
@@ -227,19 +222,40 @@ type RequestBody =
   | { action: "getGoogleMapsBrowserConfig" }
   | ({ action: "invoke" } & InvokePlatformIntegrationInput);
 
+const GOOGLE_MAPS_BROWSER_CONFIG_CACHE_MS = 5 * 60 * 1000;
+
+let googleMapsBrowserConfigCache:
+  | { expiresAt: number; config: GoogleMapsBrowserConfig }
+  | null = null;
+const inFlightRequests = new Map<string, Promise<unknown>>();
+
 async function request<TResponse>(body: RequestBody): Promise<TResponse> {
-  const res = await fetch("/api/integrations", {
+  const requestBody = { ...body, sessionToken: getStoredSessionToken() };
+  const requestKey = JSON.stringify(requestBody);
+  const existing = inFlightRequests.get(requestKey) as
+    | Promise<TResponse>
+    | undefined;
+  if (existing) return existing;
+
+  const pending = fetch("/api/integrations", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...body, sessionToken: getStoredSessionToken() }),
+    body: requestKey,
+  }).then(async (res) => {
+    const payload = (await res.json().catch(() => ({}))) as {
+      error?: string;
+    } & TResponse;
+    if (!res.ok) {
+      throw new Error(payload.error ?? "Platform integration request failed.");
+    }
+    return payload;
   });
-  const payload = (await res.json().catch(() => ({}))) as {
-    error?: string;
-  } & TResponse;
-  if (!res.ok) {
-    throw new Error(payload.error ?? "Platform integration request failed.");
+  inFlightRequests.set(requestKey, pending);
+  try {
+    return await pending;
+  } finally {
+    inFlightRequests.delete(requestKey);
   }
-  return payload;
 }
 
 export async function listPlatformIntegrationProviders(): Promise<
@@ -315,10 +331,42 @@ export async function getGoogleMapsElevationProfile(
   });
 }
 
+export async function getGoogleMapsElevationProfileForRoute(
+  route: GoogleMapsRoute | null | undefined,
+  options: { samples?: number } = {},
+): Promise<GetGoogleMapsElevationProfileOutput | null> {
+  if (!route) return null;
+  const path = elevationPathFromRoute(route);
+  const encodedPolyline = route.encodedPolyline?.trim();
+  if (!encodedPolyline && path.length < 2) return null;
+  const input: GetGoogleMapsElevationProfileInput = {
+    ...(encodedPolyline ? { encodedPolyline } : {}),
+    ...(path.length > 1 ? { path } : {}),
+    samples: options.samples ?? 64,
+  };
+  try {
+    return await getGoogleMapsElevationProfile(input);
+  } catch (error) {
+    if (!encodedPolyline || path.length < 2) throw error;
+    return getGoogleMapsElevationProfile({
+      path,
+      samples: input.samples,
+    });
+  }
+}
+
 export async function getGoogleMapsBrowserConfig(): Promise<GoogleMapsBrowserConfig> {
+  const now = Date.now();
+  if (googleMapsBrowserConfigCache?.expiresAt && googleMapsBrowserConfigCache.expiresAt > now) {
+    return googleMapsBrowserConfigCache.config;
+  }
   const result = await request<{ config: GoogleMapsBrowserConfig }>({
     action: "getGoogleMapsBrowserConfig",
   });
+  googleMapsBrowserConfigCache = {
+    config: result.config,
+    expiresAt: now + GOOGLE_MAPS_BROWSER_CONFIG_CACHE_MS,
+  };
   return result.config;
 }
 
@@ -326,4 +374,49 @@ function integrationInput<TInput extends object>(
   input: TInput,
 ): Record<string, unknown> {
   return input as Record<string, unknown>;
+}
+
+function elevationPathFromRoute(route: GoogleMapsRoute): GoogleMapsCoordinate[] {
+  const points: GoogleMapsCoordinate[] = [];
+  addRouteCoordinates(points, route.path);
+  for (const leg of route.legs ?? []) {
+    addRouteCoordinates(points, [leg.startLocation, leg.endLocation]);
+    for (const step of leg.steps ?? []) {
+      addRouteCoordinates(points, [step.startLocation, step.endLocation]);
+    }
+  }
+  return uniqueAdjacentCoordinates(points).slice(0, 512);
+}
+
+function addRouteCoordinates(
+  target: GoogleMapsCoordinate[],
+  coordinates: Array<GoogleMapsCoordinate | null | undefined> | undefined,
+): void {
+  for (const coordinate of coordinates ?? []) {
+    if (
+      coordinate &&
+      Number.isFinite(coordinate.latitude) &&
+      Number.isFinite(coordinate.longitude)
+    ) {
+      target.push(coordinate);
+    }
+  }
+}
+
+function uniqueAdjacentCoordinates(
+  coordinates: GoogleMapsCoordinate[],
+): GoogleMapsCoordinate[] {
+  const result: GoogleMapsCoordinate[] = [];
+  for (const coordinate of coordinates) {
+    const previous = result.at(-1);
+    if (
+      previous &&
+      Math.abs(previous.latitude - coordinate.latitude) < 0.000001 &&
+      Math.abs(previous.longitude - coordinate.longitude) < 0.000001
+    ) {
+      continue;
+    }
+    result.push(coordinate);
+  }
+  return result;
 }

@@ -133,7 +133,9 @@ export async function POST(req: Request) {
     if (!app) {
       return NextResponse.json({ error: "Unknown app" }, { status: 401 });
     }
-    consumePlatformIntegrationRateLimit(`${app.id}:server:${parsed.data.action}`);
+    if (shouldRateLimitPlatformAction(parsed.data.action)) {
+      consumePlatformIntegrationRateLimit(`${app.id}:server:${parsed.data.action}`);
+    }
 
     const auth = await resolvePlatformAuth(db, {
       app,
@@ -213,6 +215,10 @@ export async function POST(req: Request) {
     const response = platformDataErrorResponse(error);
     return NextResponse.json(response.body, { status: response.status });
   }
+}
+
+function shouldRateLimitPlatformAction(action: string): boolean {
+  return action !== "getGoogleMapsBrowserConfig" && action !== "listProviders";
 }
 
 type PlatformApp = {

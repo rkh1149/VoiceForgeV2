@@ -606,10 +606,26 @@ describe("generated app Google Maps template", () => {
 
     expect(source).toContain('importLibrary("core")');
     expect(source).toContain('loading: "async"');
+    expect(source).toContain("glyphText");
+    expect(source).toContain('"gmp-click"');
     expect(source).toContain("resolveLatLngBoundsConstructor");
     expect(source).toContain(
       "const bounds = LatLngBounds ? new LatLngBounds() : null;",
     );
     expect(source).not.toContain("new mapsLibrary.LatLngBounds()");
+    expect(source).not.toContain("glyph:");
+    expect(source).not.toContain("}).element");
+  });
+
+  it("coalesces generated app integration requests and exposes route elevation fallback helper", () => {
+    const source = readFileSync(
+      "templates/nextjs-base/src/lib/platform-integrations.ts",
+      "utf8",
+    );
+
+    expect(source).toContain("inFlightRequests");
+    expect(source).toContain("googleMapsBrowserConfigCache");
+    expect(source).toContain("getGoogleMapsElevationProfileForRoute");
+    expect(source).toContain("elevationPathFromRoute");
   });
 });

@@ -555,6 +555,74 @@ describe("integration catalogue", () => {
     );
   });
 
+  it("falls back to route coordinates when Google rejects an encoded elevation polyline", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url));
+      expect(requestUrl.pathname).toBe("/maps/api/elevation/json");
+      if (fetchMock.mock.calls.length === 1) {
+        expect(requestUrl.searchParams.get("path")).toBe("enc:bad-route-polyline");
+        return new Response(
+          JSON.stringify({
+            status: "INVALID_REQUEST",
+            error_message: "Invalid request.",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      expect(requestUrl.searchParams.get("path")).toBe(
+        "43.64,-79.38|43.65,-79.39",
+      );
+      return new Response(
+        JSON.stringify({
+          status: "OK",
+          results: [
+            {
+              elevation: 100,
+              location: { lat: 43.64, lng: -79.38 },
+            },
+            {
+              elevation: 130,
+              location: { lat: 43.65, lng: -79.39 },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await invokeCatalogIntegrationAction({
+      providerKey: "google_maps",
+      actionKey: "get_elevation_profile",
+      input: {
+        encodedPolyline: "bad-route-polyline",
+        path: [
+          { latitude: 43.64, longitude: -79.38 },
+          { latitude: 43.65, longitude: -79.39 },
+        ],
+        samples: 4,
+      },
+      context: {
+        appId: "app_1",
+        userId: "user_1",
+        credential: {
+          id: "credential_1",
+          scopes: ["elevation"],
+          secrets: { apiKey: "test-google-maps-key-12345" },
+        },
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      provider: "google_maps",
+      profile: {
+        totalClimbMeters: 30,
+        totalDescentMeters: 0,
+      },
+    });
+  });
+
   it("uses browser-specific Google Maps config when present", () => {
     vi.stubEnv("VOICEFORGE_GOOGLE_MAPS_API_KEY", "server-maps-key");
     vi.stubEnv("VOICEFORGE_GOOGLE_MAPS_BROWSER_KEY", "browser-maps-key");

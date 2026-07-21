@@ -317,10 +317,14 @@ const elevationProfileInputSchema = z
     samples: z.number().int().min(2).max(256).default(64),
   })
   .strict()
-  .refine(
-    (value) => Boolean(value.encodedPolyline || value.path?.length),
-    "Provide either encodedPolyline or a path with at least two coordinates.",
-  );
+  .superRefine((value, ctx) => {
+    if (!value.encodedPolyline && !value.path?.length) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Provide an encodedPolyline or a path with at least two coordinates.",
+      });
+    }
+  });
 
 const elevationPointSchema = z
   .object({
@@ -578,32 +582,28 @@ async function getElevationProfile(
   context: IntegrationInvokeContext,
 ): Promise<JsonObject> {
   const apiKey = googleMapsApiKey(context);
-  const url = new URL("https://maps.googleapis.com/maps/api/elevation/json");
-  url.searchParams.set("samples", String(input.samples));
-  url.searchParams.set("key", apiKey);
-  if (input.encodedPolyline) {
-    url.searchParams.set("path", `enc:${input.encodedPolyline}`);
-  } else {
-    url.searchParams.set(
-      "path",
-      (input.path ?? [])
-        .map((point) => `${point.latitude},${point.longitude}`)
-        .join("|"),
-    );
-  }
-
-  const payload = await googleJson(url.toString(), { method: "GET" });
+  const primary = await fetchElevationPayload({
+    apiKey,
+    samples: input.samples,
+    encodedPolyline: input.encodedPolyline,
+    path: input.encodedPolyline ? undefined : input.path,
+  });
+  const primaryStatus = stringAt(primary, "status");
+  const fallback =
+    primaryStatus !== "OK" &&
+    input.encodedPolyline &&
+    input.path &&
+    input.path.length > 1
+      ? await fetchElevationPayload({
+          apiKey,
+          samples: input.samples,
+          path: input.path,
+        })
+      : null;
+  const payload = fallback ?? primary;
   const status = stringAt(payload, "status");
   if (status === "DATA_NOT_AVAILABLE") {
-    return {
-      provider: "google_maps",
-      profile: {
-        samples: input.samples,
-        points: [],
-        totalClimbMeters: 0,
-        totalDescentMeters: 0,
-      },
-    };
+    return emptyElevationProfile(input.samples);
   }
   if (status !== "OK") throw googleStatusError(status, payload, "elevation");
   const points = arrayFrom(payload, "results")
@@ -617,6 +617,40 @@ async function getElevationProfile(
       points,
       ...stats,
     }),
+  };
+}
+
+async function fetchElevationPayload(input: {
+  apiKey: string;
+  samples: number;
+  encodedPolyline?: string;
+  path?: Array<{ latitude: number; longitude: number }>;
+}): Promise<unknown> {
+  const url = new URL("https://maps.googleapis.com/maps/api/elevation/json");
+  url.searchParams.set("samples", String(input.samples));
+  url.searchParams.set("key", input.apiKey);
+  if (input.encodedPolyline) {
+    url.searchParams.set("path", `enc:${input.encodedPolyline}`);
+  } else {
+    url.searchParams.set(
+      "path",
+      (input.path ?? [])
+        .map((point) => `${point.latitude},${point.longitude}`)
+        .join("|"),
+    );
+  }
+  return googleJson(url.toString(), { method: "GET" });
+}
+
+function emptyElevationProfile(samples: number): JsonObject {
+  return {
+    provider: "google_maps",
+    profile: {
+      samples,
+      points: [],
+      totalClimbMeters: 0,
+      totalDescentMeters: 0,
+    },
   };
 }
 
