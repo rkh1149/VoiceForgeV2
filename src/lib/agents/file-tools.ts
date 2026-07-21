@@ -17,6 +17,21 @@ export type FileOperation = {
   targetPath?: string;
 };
 
+export type FileInspection = {
+  operation:
+    | "list"
+    | "read"
+    | "search"
+    | "inspect_app_map"
+    | "inspect_test_results"
+    | "inspect_type_errors"
+    | "inspect_browser_failure";
+  path?: string;
+  prefix?: string;
+  query?: string;
+  matchedPaths?: string[];
+};
+
 export type DiagnosticsContext = {
   failedStep?: string;
   errorOutput?: string;
@@ -27,6 +42,7 @@ export type DiagnosticsContext = {
 
 export type AgentFileToolsOptions = {
   mutationLog: FileOperation[];
+  inspectionLog?: FileInspection[];
   diagnostics?: DiagnosticsContext;
   allowMutations?: boolean;
 };
@@ -47,6 +63,15 @@ function sortedReadablePaths(files: FileMap): string[] {
     .map(normalizeAgentPath)
     .filter((p) => isAgentReadablePath(p).ok)
     .sort();
+}
+
+function filePathsFromSearchResults(results: string[]): string[] {
+  const paths = new Set<string>();
+  for (const result of results) {
+    const match = result.match(/^((?:src|e2e)\/[^:]+):\d+:/);
+    if (match?.[1]) paths.add(match[1]);
+  }
+  return [...paths].sort();
 }
 
 export function listAgentFiles(
@@ -343,7 +368,11 @@ export function createAgentFileTools(
   options: AgentFileToolsOptions,
 ) {
   const mutationLog = options.mutationLog;
+  const inspectionLog = options.inspectionLog;
   const mutationsAllowed = options.allowMutations ?? true;
+  const recordInspection = (inspection: FileInspection) => {
+    inspectionLog?.push(inspection);
+  };
   const rejectMutation = () =>
     "REJECTED: this phase is inspect-only; use list_files, read_file, or search_code.";
 
@@ -355,7 +384,15 @@ export function createAgentFileTools(
       parameters: z.object({
         prefix: z.string().optional().describe("Optional path prefix such as src/lib"),
       }),
-      execute: async ({ prefix }) => listAgentFiles(files, { prefix }).join("\n"),
+      execute: async ({ prefix }) => {
+        const paths = listAgentFiles(files, { prefix });
+        recordInspection({
+          operation: "list",
+          prefix,
+          matchedPaths: paths,
+        });
+        return paths.join("\n");
+      },
     }),
     tool({
       name: "read_file",
@@ -363,7 +400,13 @@ export function createAgentFileTools(
       parameters: z.object({
         path: z.string().describe("Repo-relative path to read"),
       }),
-      execute: async ({ path: p }) => readAgentFile(files, p).message,
+      execute: async ({ path: p }) => {
+        const result = readAgentFile(files, p);
+        if (result.ok && result.path) {
+          recordInspection({ operation: "read", path: result.path });
+        }
+        return result.message;
+      },
     }),
     tool({
       name: "search_code",
@@ -374,45 +417,68 @@ export function createAgentFileTools(
         caseSensitive: z.boolean().optional(),
         maxResults: z.number().int().min(1).max(MAX_SEARCH_RESULTS).optional(),
       }),
-      execute: async (input) => searchAgentCode(files, input).join("\n"),
+      execute: async (input) => {
+        const results = searchAgentCode(files, input);
+        recordInspection({
+          operation: "search",
+          query: input.query,
+          matchedPaths: filePathsFromSearchResults(results),
+        });
+        return results.join("\n");
+      },
     }),
     tool({
       name: "inspect_app_map",
       description:
         "Summarize visible generated-app routes, components, libraries, tests, data/storage touchpoints, workflow touchpoints, and internal imports before a deep diagnostic change.",
       parameters: z.object({}),
-      execute: async () => inspectAgentAppMap(files),
+      execute: async () => {
+        recordInspection({ operation: "inspect_app_map" });
+        return inspectAgentAppMap(files);
+      },
     }),
     tool({
       name: "inspect_test_results",
       description: "Inspect the latest test/lint/build output when debugging.",
       parameters: z.object({}),
-      execute: async () =>
-        options.diagnostics?.testResults ??
-        options.diagnostics?.errorOutput ??
-        "No test diagnostics are available yet.",
+      execute: async () => {
+        recordInspection({ operation: "inspect_test_results" });
+        return (
+          options.diagnostics?.testResults ??
+          options.diagnostics?.errorOutput ??
+          "No test diagnostics are available yet."
+        );
+      },
     }),
     tool({
       name: "inspect_type_errors",
       description: "Inspect the latest TypeScript output when debugging.",
       parameters: z.object({}),
-      execute: async () =>
-        options.diagnostics?.typeErrors ??
-        (options.diagnostics?.failedStep === "typecheck"
-          ? options.diagnostics.errorOutput
-          : undefined) ??
-        "No TypeScript diagnostics are available yet.",
+      execute: async () => {
+        recordInspection({ operation: "inspect_type_errors" });
+        return (
+          options.diagnostics?.typeErrors ??
+          (options.diagnostics?.failedStep === "typecheck"
+            ? options.diagnostics.errorOutput
+            : undefined) ??
+          "No TypeScript diagnostics are available yet."
+        );
+      },
     }),
     tool({
       name: "inspect_browser_failure",
       description: "Inspect the latest browser/accessibility failure output.",
       parameters: z.object({}),
-      execute: async () =>
-        options.diagnostics?.browserFailure ??
-        (options.diagnostics?.failedStep === "e2e"
-          ? options.diagnostics.errorOutput
-          : undefined) ??
-        "No browser diagnostics are available yet.",
+      execute: async () => {
+        recordInspection({ operation: "inspect_browser_failure" });
+        return (
+          options.diagnostics?.browserFailure ??
+          (options.diagnostics?.failedStep === "e2e"
+            ? options.diagnostics.errorOutput
+            : undefined) ??
+          "No browser diagnostics are available yet."
+        );
+      },
     }),
   ];
 

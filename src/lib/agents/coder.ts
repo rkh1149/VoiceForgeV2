@@ -5,6 +5,7 @@ import type { FileMap } from "@/lib/build/template";
 import {
   createAgentFileTools,
   type DiagnosticsContext,
+  type FileInspection,
   type FileOperation,
 } from "@/lib/agents/file-tools";
 import {
@@ -19,6 +20,7 @@ import {
 } from "@/lib/agents/code-phases";
 import { platformEntityFromSpec } from "@/lib/platform/spec-seeding";
 import { APPROVED_DEPENDENCY_GUIDANCE } from "../build/dependencies";
+import type { PhaseAwareDebugContext } from "../build/phase-aware-debug";
 
 /**
  * Code Agent + Debug Agent.
@@ -79,7 +81,27 @@ export type CodegenResult = {
   operations: FileOperation[];
 };
 
-export type DebugResult = CodegenResult;
+export type DebugDiagnostics = {
+  failedDomain?: string;
+  domainLabel?: string;
+  focus?: string;
+  responsiblePhase?: PhaseAwareDebugContext["responsiblePhase"];
+  scopeLabel?: string;
+  scopeReason?: string;
+  limitedScope?: boolean;
+  visibleFileCount?: number;
+  fullFileCount?: number;
+  preferredInspectionPaths: string[];
+  visibleFilePaths: string[];
+  filesInspected: string[];
+  inspectionOperations: FileInspection[];
+  suspectedRootCause: string;
+  strategyChangedFromPriorAttempts: boolean;
+};
+
+export type DebugResult = CodegenResult & {
+  debugDiagnostics: DebugDiagnostics;
+};
 
 /** Extra guidance injected only when the spec includes AI features. */
 export function aiUsageNote(spec: AppSpec): string {
@@ -192,9 +214,11 @@ export async function runDebugAgent(input: {
   failedStep: string;
   errorOutput: string;
   previousAttempts: string[]; // notes from earlier debug rounds this build
+  debugContext?: PhaseAwareDebugContext;
 }): Promise<DebugResult> {
   const workspaceFiles: FileMap = { ...input.currentFiles };
   const operations: FileOperation[] = [];
+  const inspections: FileInspection[] = [];
   const diagnostics: DiagnosticsContext = {
     failedStep: input.failedStep,
     errorOutput: input.errorOutput,
@@ -208,7 +232,10 @@ export async function runDebugAgent(input: {
   const agent = new Agent({
     name: "VoiceForge Debug Agent",
     model: CODER_MODEL,
-    instructions: `You are an expert Next.js developer fixing a broken generated app. Use list_files, read_file, search_code, and the inspect_* diagnostic tools to identify the root cause. Rewrite or patch ONLY the files that need to change. Keep changes minimal. When finished, reply with one short paragraph explaining the cause and fix.
+    instructions: `You are an expert Next.js developer fixing a broken generated app. Use list_files, read_file, search_code, and the inspect_* diagnostic tools to identify the root cause. Rewrite or patch ONLY the files that need to change. Keep changes minimal. When finished, reply with one short paragraph explaining the suspected root cause, the fix, and whether this strategy changed from earlier attempts.
+
+PHASE-AWARE DEBUG CONTEXT:
+${formatDebugContext(input.debugContext)}
 
 Known failure signatures:
 - "next build" failing while prerendering /404, /500, or /_error with "<Html> should not be imported outside of pages/_document": a component threw during server prerendering — almost always window or localStorage accessed at module scope, in a useState initializer, or during render. Find that component and move the access into useEffect. Do NOT create 404.tsx/500.tsx/_document/_error files; they are not valid in the App Router and will not fix this.
@@ -222,6 +249,7 @@ Known failure signatures:
 ${SHARED_RULES}`,
     tools: createAgentFileTools(workspaceFiles, {
       mutationLog: operations,
+      inspectionLog: inspections,
       diagnostics,
     }),
   });
@@ -236,6 +264,7 @@ ${SHARED_RULES}`,
   const message = `The step "${input.failedStep}" failed.
 ${previousSection}
 Use inspect_test_results, inspect_type_errors, or inspect_browser_failure as appropriate.
+${debugContextMessage(input.debugContext)}
 
 APP SPECIFICATION:
 ${JSON.stringify(input.spec, null, 2)}
@@ -247,6 +276,7 @@ ${input.errorOutput}
 Current files are available through list_files/read_file/search_code. Fix the problem.${aiUsageNote(input.spec)}`;
 
   const result = await run(agent, [user(message)], { maxTurns: 25 });
+  const notes = extractText(result.output);
   const phaseResult = makePhaseResult({
     phase: {
       id: "debug",
@@ -260,10 +290,122 @@ Current files are available through list_files/read_file/search_code. Fix the pr
     operations,
     operationStart: 0,
     workspaceFiles,
-    notes: extractText(result.output),
+    notes,
   });
 
-  return collectCodegenResult(workspaceFiles, operations, [phaseResult]);
+  return {
+    ...collectCodegenResult(workspaceFiles, operations, [phaseResult]),
+    debugDiagnostics: {
+      failedDomain: input.debugContext?.failedDomain,
+      domainLabel: input.debugContext?.domainLabel,
+      focus: input.debugContext?.focus,
+      responsiblePhase: input.debugContext?.responsiblePhase,
+      scopeLabel: input.debugContext?.scopeLabel,
+      scopeReason: input.debugContext?.scopeReason,
+      limitedScope: input.debugContext?.limitedScope,
+      visibleFileCount: input.debugContext?.visibleFileCount,
+      fullFileCount: input.debugContext?.fullFileCount,
+      preferredInspectionPaths: input.debugContext?.preferredInspectionPaths ?? [],
+      visibleFilePaths: input.debugContext?.visibleFilePaths ?? [],
+      filesInspected: inspectedFiles(inspections),
+      inspectionOperations: inspections.slice(0, 100),
+      suspectedRootCause: suspectedRootCauseFromNotes(notes, input.errorOutput),
+      strategyChangedFromPriorAttempts: strategyChangedFromPriorAttempts({
+        previousAttempts: input.previousAttempts,
+        notes,
+        filesWritten: pathsWithContent(workspaceFiles, operations),
+      }),
+    },
+  };
+}
+
+function formatDebugContext(context?: PhaseAwareDebugContext): string {
+  if (!context) {
+    return "No phase-aware context was supplied; diagnose from the failed step and visible files.";
+  }
+  const preferred =
+    context.preferredInspectionPaths.length > 0
+      ? context.preferredInspectionPaths.slice(0, 20).join(", ")
+      : "none";
+  return [
+    `- Failed domain: ${context.domainLabel} (${context.failedDomain})`,
+    `- Failure focus: ${context.focus}`,
+    `- Original responsible phase: ${context.responsiblePhase.label} [${context.responsiblePhase.agentKey}] (${context.responsiblePhase.id})`,
+    `- Responsible phase reason: ${context.responsiblePhase.reason}`,
+    `- Visible scope: ${context.scopeLabel}; ${context.visibleFileCount}/${context.fullFileCount} file(s) visible`,
+    `- Scope reason: ${context.scopeReason}`,
+    `- Preferred inspection files: ${preferred}`,
+    ...context.instructions.map((instruction) => `- ${instruction}`),
+  ].join("\n");
+}
+
+function debugContextMessage(context?: PhaseAwareDebugContext): string {
+  if (!context) return "";
+  return `
+DEBUG DOMAIN: ${context.domainLabel}
+ORIGINAL RESPONSIBLE PHASE: ${context.responsiblePhase.label} [${context.responsiblePhase.agentKey}]
+VISIBLE DEBUG SCOPE: ${context.scopeLabel} (${context.visibleFileCount}/${context.fullFileCount} files)
+PREFERRED FILES TO INSPECT FIRST:
+${context.preferredInspectionPaths.map((path) => `- ${path}`).join("\n") || "- none"}
+DEBUG INSTRUCTIONS:
+${context.instructions.map((instruction) => `- ${instruction}`).join("\n")}
+`;
+}
+
+function inspectedFiles(inspections: readonly FileInspection[]): string[] {
+  const paths = new Set<string>();
+  for (const inspection of inspections) {
+    if (inspection.path) paths.add(inspection.path);
+    for (const path of inspection.matchedPaths ?? []) {
+      paths.add(path);
+    }
+  }
+  return [...paths].sort();
+}
+
+function suspectedRootCauseFromNotes(notes: string, errorOutput: string): string {
+  const normalized = notes.trim().replace(/\s+/g, " ");
+  if (normalized) {
+    const firstSentence = normalized.match(/^(.{1,280}?[.!?])(\s|$)/)?.[1];
+    return firstSentence ?? normalized.slice(0, 280);
+  }
+  const errorTail = errorOutput.trim().replace(/\s+/g, " ").slice(-280);
+  return errorTail || "The debug agent did not return a root-cause summary.";
+}
+
+function strategyChangedFromPriorAttempts(input: {
+  previousAttempts: readonly string[];
+  notes: string;
+  filesWritten: readonly string[];
+}): boolean {
+  if (input.previousAttempts.length === 0) return false;
+  const currentTokens = tokenSet(
+    `${input.notes} ${input.filesWritten.join(" ")}`.toLowerCase(),
+  );
+  if (currentTokens.size === 0) return false;
+  return input.previousAttempts.every((attempt) => {
+    const previousTokens = tokenSet(attempt.toLowerCase());
+    return jaccardSimilarity(currentTokens, previousTokens) < 0.55;
+  });
+}
+
+function tokenSet(value: string): Set<string> {
+  return new Set(
+    value
+      .split(/[^a-z0-9_/-]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3),
+  );
+}
+
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  let overlap = 0;
+  for (const token of a) {
+    if (b.has(token)) overlap++;
+  }
+  const union = new Set([...a, ...b]).size;
+  return union === 0 ? 0 : overlap / union;
 }
 
 async function runGenerationPhase(input: {

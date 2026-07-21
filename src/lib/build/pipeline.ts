@@ -59,8 +59,10 @@ import {
 import { runPlanningSpecialistReviews } from "./planning-specialists";
 import {
   getPostGenerationBlockingIssues,
+  type PostGenerationReview,
   runPostGenerationReviews,
 } from "./post-generation-reviews";
+import { createPhaseAwareDebugPlan } from "./phase-aware-debug";
 import { validateGeneratedAppDependencies } from "./dependencies";
 import { loadTemplate, type FileMap } from "./template";
 import { createRunner, type Runner, type StepName } from "./runner";
@@ -179,6 +181,34 @@ function applyCodegenResult(files: FileMap, result: CodegenResult): void {
     delete files[deleted];
   }
   Object.assign(files, result.files);
+}
+
+async function recordPostGenerationReviewArtifacts(input: {
+  appId: string;
+  buildRunId: string;
+  reviews: readonly PostGenerationReview[];
+  rerunRound?: number;
+}): Promise<void> {
+  for (const review of input.reviews) {
+    await recordBuildAgentArtifact({
+      appId: input.appId,
+      buildRunId: input.buildRunId,
+      agentKey: review.agentKey,
+      phaseKey:
+        input.rerunRound === undefined
+          ? review.phaseKey
+          : `${review.phaseKey}-rerun-${input.rerunRound}`,
+      artifactType: review.artifactType,
+      status: review.status,
+      summary: review.summary,
+      payload: {
+        ...review.payload,
+        ...(input.rerunRound === undefined
+          ? {}
+          : { rerunRound: input.rerunRound }),
+      },
+    });
+  }
 }
 
 function shouldUseArchitectAgent(): boolean {
@@ -628,28 +658,28 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     if (generated.filesWritten.length === 0) {
       throw new Error("Code agent produced no files");
     }
-    const postGenerationReviews = runPostGenerationReviews({
+    const debugBudget = createDebugBudget({
+      maxRoundsPerStep: MAX_DEBUG_ROUNDS_PER_STEP,
+      maxTotalRounds: MAX_TOTAL_DEBUG_ROUNDS,
+    });
+    const reviewChangedFiles: FileMap = { ...generated.files };
+    let reviewChangedFilePaths = [...generated.filesWritten];
+    let reviewDeletedFilePaths = [...generated.deletedFiles];
+    let postGenerationReviews = runPostGenerationReviews({
       spec,
       architecture: architectureForStorage,
       allFiles: agentVisibleFiles(files),
-      changedFiles: generated.files,
-      changedFilePaths: generated.filesWritten,
-      deletedFilePaths: generated.deletedFiles,
+      changedFiles: reviewChangedFiles,
+      changedFilePaths: reviewChangedFilePaths,
+      deletedFilePaths: reviewDeletedFilePaths,
       changeMode,
     });
-    for (const review of postGenerationReviews) {
-      await recordBuildAgentArtifact({
-        appId: app.id,
-        buildRunId,
-        agentKey: review.agentKey,
-        phaseKey: review.phaseKey,
-        artifactType: review.artifactType,
-        status: review.status,
-        summary: review.summary,
-        payload: review.payload,
-      });
-    }
-    const postGenerationWarnings = uniqueStrings(
+    await recordPostGenerationReviewArtifacts({
+      appId: app.id,
+      buildRunId,
+      reviews: postGenerationReviews,
+    });
+    let postGenerationWarnings = uniqueStrings(
       postGenerationReviews.flatMap((review) => review.warnings),
     );
     if (postGenerationWarnings.length > 0) {
@@ -658,16 +688,156 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         `Generated app review warnings: ${postGenerationWarnings.join(" ")}`,
       );
     }
-    const postGenerationBlockingIssues =
+    let postGenerationBlockingIssues =
       getPostGenerationBlockingIssues(postGenerationReviews);
-    if (postGenerationBlockingIssues.length > 0) {
+    while (postGenerationBlockingIssues.length > 0) {
+      const step = "review_gate";
+      const { stepRound, previousAttempts } = reserveDebugRound(
+        debugBudget,
+        step,
+      );
+      const errorOutput = postGenerationBlockingIssues.join("\n");
+      const debugPlan = createPhaseAwareDebugPlan({
+        spec,
+        files: agentVisibleFiles(files),
+        failedStep: step,
+        errorOutput,
+        generatedPhases: generated.phases,
+        changedFilePaths: reviewChangedFilePaths,
+      });
+
+      await setStatus(buildRunId, "debugging");
       await log(
         buildRunId,
-        `Generated app review failed: ${postGenerationBlockingIssues.join(" ")}`,
+        `Generated app review failed — phase-aware debug round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP} for ${debugPlan.classification.domainLabel} (${debugBudget.totalRounds}/${MAX_TOTAL_DEBUG_ROUNDS} total). Responsible phase: ${debugPlan.responsiblePhase.label}. Scope: ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} files.`,
       );
-      throw new Error(
-        `Generated app review failed: ${postGenerationBlockingIssues.join(" ")}`,
+      const fix = await runDebugAgent({
+        spec,
+        currentFiles: debugPlan.scope.scopedFiles,
+        failedStep: step,
+        errorOutput,
+        previousAttempts,
+        debugContext: debugPlan.context,
+      });
+      if (fix.filesWritten.length === 0) {
+        await recordBuildAgentArtifact({
+          appId: app.id,
+          buildRunId,
+          agentKey: "debug_agent",
+          phaseKey: `debug-${step}`,
+          artifactType: "debug_fix",
+          status: "failed",
+          summary: `Phase-aware debug ${step} produced no file changes.`,
+          payload: {
+            failedStep: step,
+            failedDomain: debugPlan.classification.domain,
+            domainLabel: debugPlan.classification.domainLabel,
+            focus: debugPlan.classification.focus,
+            responsiblePhase: debugPlan.responsiblePhase,
+            stepRound,
+            totalRounds: debugBudget.totalRounds,
+            previousAttempts,
+            suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+            filesInspected: fix.debugDiagnostics.filesInspected,
+            preferredInspectionPaths:
+              fix.debugDiagnostics.preferredInspectionPaths,
+            visibleFileCount: fix.debugDiagnostics.visibleFileCount,
+            fullFileCount: fix.debugDiagnostics.fullFileCount,
+            strategyChangedFromPriorAttempts:
+              fix.debugDiagnostics.strategyChangedFromPriorAttempts,
+            notes: fix.notes,
+          },
+        });
+        throw new Error(`Debug agent could not produce a fix for ${step}`);
+      }
+      recordDebugAttempt(
+        debugBudget,
+        step,
+        fix.debugDiagnostics.suspectedRootCause ||
+          fix.notes ||
+          `(rewrote ${fix.filesWritten.join(", ")})`,
       );
+      applyCodegenResult(files, fix);
+      Object.assign(reviewChangedFiles, fix.files);
+      for (const deleted of fix.deletedFiles) {
+        delete reviewChangedFiles[deleted];
+      }
+      reviewChangedFilePaths = uniqueStrings([
+        ...reviewChangedFilePaths,
+        ...fix.filesWritten,
+      ]);
+      reviewDeletedFilePaths = uniqueStrings([
+        ...reviewDeletedFilePaths,
+        ...fix.deletedFiles,
+      ]);
+      await log(
+        buildRunId,
+        `Debug agent changed: ${fix.filesWritten.join(", ")}${fix.deletedFiles.length > 0 ? `; deleted: ${fix.deletedFiles.join(", ")}` : ""}. ${fix.notes}`,
+      );
+      await recordBuildAgentArtifact({
+        appId: app.id,
+        buildRunId,
+        agentKey: "debug_agent",
+        phaseKey: `debug-${step}`,
+        artifactType: "debug_fix",
+        status: "warning",
+        summary: summarizeArtifactFiles({
+          label: `Phase-aware debug ${step}`,
+          filesWritten: fix.filesWritten,
+          filesDeleted: fix.deletedFiles,
+        }),
+        payload: {
+          failedStep: step,
+          failedDomain: debugPlan.classification.domain,
+          domainLabel: debugPlan.classification.domainLabel,
+          focus: debugPlan.classification.focus,
+          responsiblePhase: debugPlan.responsiblePhase,
+          stepRound,
+          totalRounds: debugBudget.totalRounds,
+          previousAttempts,
+          suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+          filesInspected: fix.debugDiagnostics.filesInspected,
+          inspectionOperations: fix.debugDiagnostics.inspectionOperations,
+          preferredInspectionPaths: fix.debugDiagnostics.preferredInspectionPaths,
+          visibleFilePaths: fix.debugDiagnostics.visibleFilePaths,
+          visibleFileCount: fix.debugDiagnostics.visibleFileCount,
+          fullFileCount: fix.debugDiagnostics.fullFileCount,
+          limitedScope: fix.debugDiagnostics.limitedScope,
+          scopeReason: fix.debugDiagnostics.scopeReason,
+          strategyChangedFromPriorAttempts:
+            fix.debugDiagnostics.strategyChangedFromPriorAttempts,
+          notes: fix.notes,
+          filesWritten: fix.filesWritten,
+          filesDeleted: fix.deletedFiles,
+        },
+      });
+
+      postGenerationReviews = runPostGenerationReviews({
+        spec,
+        architecture: architectureForStorage,
+        allFiles: agentVisibleFiles(files),
+        changedFiles: reviewChangedFiles,
+        changedFilePaths: reviewChangedFilePaths,
+        deletedFilePaths: reviewDeletedFilePaths,
+        changeMode,
+      });
+      await recordPostGenerationReviewArtifacts({
+        appId: app.id,
+        buildRunId,
+        reviews: postGenerationReviews,
+        rerunRound: stepRound,
+      });
+      postGenerationWarnings = uniqueStrings(
+        postGenerationReviews.flatMap((review) => review.warnings),
+      );
+      if (postGenerationWarnings.length > 0) {
+        await log(
+          buildRunId,
+          `Generated app review warnings: ${postGenerationWarnings.join(" ")}`,
+        );
+      }
+      postGenerationBlockingIssues =
+        getPostGenerationBlockingIssues(postGenerationReviews);
     }
     await log(buildRunId, "Generated app reviews passed.");
 
@@ -690,10 +860,6 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     await runner.writeFiles(files);
     await setStatus(buildRunId, "testing");
 
-    const debugBudget = createDebugBudget({
-      maxRoundsPerStep: MAX_DEBUG_ROUNDS_PER_STEP,
-      maxTotalRounds: MAX_TOTAL_DEBUG_ROUNDS,
-    });
     let stepIdx = 0;
     while (stepIdx < STEP_ORDER.length) {
       const step = STEP_ORDER[stepIdx];
@@ -736,18 +902,26 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         debugBudget,
         step,
       );
+      const debugPlan = createPhaseAwareDebugPlan({
+        spec,
+        files: agentVisibleFiles(files),
+        failedStep: step,
+        errorOutput: result.output,
+        generatedPhases: generated.phases,
+      });
 
       await setStatus(buildRunId, "debugging");
       await log(
         buildRunId,
-        `${step} failed — debug round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP} for this step (${debugBudget.totalRounds}/${MAX_TOTAL_DEBUG_ROUNDS} total)…`,
+        `${step} failed — phase-aware debug round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP} for ${debugPlan.classification.domainLabel} (${debugBudget.totalRounds}/${MAX_TOTAL_DEBUG_ROUNDS} total). Responsible phase: ${debugPlan.responsiblePhase.label}. Scope: ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} files.`,
       );
       const fix = await runDebugAgent({
         spec,
-        currentFiles: agentVisibleFiles(files),
+        currentFiles: debugPlan.scope.scopedFiles,
         failedStep: step,
         errorOutput: result.output,
         previousAttempts,
+        debugContext: debugPlan.context,
       });
       if (fix.filesWritten.length === 0) {
         await recordBuildAgentArtifact({
@@ -760,9 +934,21 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
           summary: `Debug ${step} produced no file changes.`,
           payload: {
             failedStep: step,
+            failedDomain: debugPlan.classification.domain,
+            domainLabel: debugPlan.classification.domainLabel,
+            focus: debugPlan.classification.focus,
+            responsiblePhase: debugPlan.responsiblePhase,
             stepRound,
             totalRounds: debugBudget.totalRounds,
             previousAttempts,
+            suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+            filesInspected: fix.debugDiagnostics.filesInspected,
+            preferredInspectionPaths:
+              fix.debugDiagnostics.preferredInspectionPaths,
+            visibleFileCount: fix.debugDiagnostics.visibleFileCount,
+            fullFileCount: fix.debugDiagnostics.fullFileCount,
+            strategyChangedFromPriorAttempts:
+              fix.debugDiagnostics.strategyChangedFromPriorAttempts,
             notes: fix.notes,
           },
         });
@@ -771,7 +957,9 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       recordDebugAttempt(
         debugBudget,
         step,
-        fix.notes || `(rewrote ${fix.filesWritten.join(", ")})`,
+        fix.debugDiagnostics.suspectedRootCause ||
+          fix.notes ||
+          `(rewrote ${fix.filesWritten.join(", ")})`,
       );
       applyCodegenResult(files, fix);
       await runner.deleteFiles(fix.deletedFiles);
@@ -794,9 +982,24 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         }),
         payload: {
           failedStep: step,
+          failedDomain: debugPlan.classification.domain,
+          domainLabel: debugPlan.classification.domainLabel,
+          focus: debugPlan.classification.focus,
+          responsiblePhase: debugPlan.responsiblePhase,
           stepRound,
           totalRounds: debugBudget.totalRounds,
           previousAttempts,
+          suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+          filesInspected: fix.debugDiagnostics.filesInspected,
+          inspectionOperations: fix.debugDiagnostics.inspectionOperations,
+          preferredInspectionPaths: fix.debugDiagnostics.preferredInspectionPaths,
+          visibleFilePaths: fix.debugDiagnostics.visibleFilePaths,
+          visibleFileCount: fix.debugDiagnostics.visibleFileCount,
+          fullFileCount: fix.debugDiagnostics.fullFileCount,
+          limitedScope: fix.debugDiagnostics.limitedScope,
+          scopeReason: fix.debugDiagnostics.scopeReason,
+          strategyChangedFromPriorAttempts:
+            fix.debugDiagnostics.strategyChangedFromPriorAttempts,
           notes: fix.notes,
           filesWritten: fix.filesWritten,
           filesDeleted: fix.deletedFiles,
