@@ -605,6 +605,7 @@ describe("generated app Google Maps template", () => {
     );
 
     expect(source).toContain('importLibrary("core")');
+    expect(source).toContain('loading: "async"');
     expect(source).toContain("resolveLatLngBoundsConstructor");
     expect(source).toContain(
       "const bounds = LatLngBounds ? new LatLngBounds() : null;",

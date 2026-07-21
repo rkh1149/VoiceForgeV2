@@ -911,6 +911,7 @@ function loadGoogleMapsApi(
     const params = new URLSearchParams({
       key: config.apiKey,
       v: "weekly",
+      loading: "async",
       callback: callbackName,
       libraries: "maps,marker,geometry,places",
       auth_referrer_policy: config.authReferrerPolicy,
