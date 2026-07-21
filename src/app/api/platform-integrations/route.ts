@@ -14,6 +14,7 @@ import {
 } from "@/lib/platform/data";
 import {
   consumePlatformIntegrationRateLimit,
+  getGoogleMapsBrowserConfig,
   invokePlatformIntegrationAction,
   listPlatformIntegrationCredentials,
   listPlatformIntegrationProviders,
@@ -81,6 +82,10 @@ const bodySchema = z.discriminatedUnion("action", [
   }),
   z.object({
     ...baseActionSchema,
+    action: z.literal("getGoogleMapsBrowserConfig"),
+  }),
+  z.object({
+    ...baseActionSchema,
     action: z.literal("listCredentials"),
   }),
   z.object({
@@ -141,6 +146,11 @@ export async function POST(req: Request) {
       case "listProviders": {
         return NextResponse.json({
           providers: listPlatformIntegrationProviders(),
+        });
+      }
+      case "getGoogleMapsBrowserConfig": {
+        return NextResponse.json({
+          config: getGoogleMapsBrowserConfig(),
         });
       }
       case "listCredentials": {

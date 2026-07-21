@@ -20,14 +20,16 @@ test("home page loads cleanly, survives clicks, and is accessible", async ({
     }
   });
   // Generated apps must be self-contained: any request to another host is
-  // a hallucinated stock photo / CDN / placeholder service — a bug.
+  // a hallucinated stock photo / CDN / placeholder service — a bug. The only
+  // exception is Google Maps asset traffic from the locked map component.
   page.on("request", (req) => {
     const url = req.url();
     if (
       baseURL &&
       !url.startsWith(baseURL) &&
       !url.startsWith("data:") &&
-      !url.startsWith("blob:")
+      !url.startsWith("blob:") &&
+      !isAllowedGoogleMapsAsset(url)
     ) {
       externalRequests.push(url);
     }
@@ -74,3 +76,23 @@ test("home page loads cleanly, survives clicks, and is accessible", async ({
     "Serious accessibility violations",
   ).toEqual([]);
 });
+
+function isAllowedGoogleMapsAsset(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  const host = parsed.hostname.toLowerCase();
+  if (
+    host === "maps.googleapis.com" ||
+    host === "maps.gstatic.com" ||
+    host === "fonts.googleapis.com" ||
+    host === "fonts.gstatic.com"
+  ) {
+    return true;
+  }
+  return /^(khms|mts|mt)\d*\.googleapis\.com$/.test(host);
+}

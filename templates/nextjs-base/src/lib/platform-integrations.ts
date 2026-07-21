@@ -27,8 +27,48 @@ export type InvokePlatformIntegrationInput = {
   input?: Record<string, unknown>;
 };
 
+export type GoogleMapsBrowserConfig = {
+  enabled: boolean;
+  apiKey: string | null;
+  mapId: string;
+  language?: string;
+  region?: string;
+  authReferrerPolicy: "origin";
+};
+
+export type GoogleMapsCoordinate = {
+  latitude: number;
+  longitude: number;
+};
+
+export type GoogleMapsPlace = {
+  placeId?: string;
+  id?: string;
+  name: string;
+  formattedAddress?: string;
+  location?: GoogleMapsCoordinate | null;
+  rating?: number;
+  userRatingCount?: number;
+  types?: string[];
+  googleMapsUri?: string;
+};
+
+export type GoogleMapsRoute = {
+  encodedPolyline?: string | null;
+  path?: GoogleMapsCoordinate[];
+  localizedDistance?: string;
+  localizedDuration?: string;
+  legs?: Array<{
+    startLocation?: GoogleMapsCoordinate | null;
+    endLocation?: GoogleMapsCoordinate | null;
+    localizedDistance?: string;
+    localizedDuration?: string;
+  }>;
+};
+
 type RequestBody =
   | { action: "listProviders" }
+  | { action: "getGoogleMapsBrowserConfig" }
   | ({ action: "invoke" } & InvokePlatformIntegrationInput);
 
 async function request<TResponse>(body: RequestBody): Promise<TResponse> {
@@ -67,4 +107,11 @@ export async function invokePlatformIntegration<TOutput = unknown>(
     ...input,
   });
   return result.result;
+}
+
+export async function getGoogleMapsBrowserConfig(): Promise<GoogleMapsBrowserConfig> {
+  const result = await request<{ config: GoogleMapsBrowserConfig }>({
+    action: "getGoogleMapsBrowserConfig",
+  });
+  return result.config;
 }

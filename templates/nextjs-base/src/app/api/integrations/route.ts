@@ -9,7 +9,7 @@ import { NextResponse } from "next/server";
  * to the browser.
  */
 
-type IntegrationAction = "listProviders" | "invoke";
+type IntegrationAction = "listProviders" | "invoke" | "getGoogleMapsBrowserConfig";
 
 type IntegrationBody = {
   action?: unknown;
@@ -39,7 +39,11 @@ type LocalPlace = {
   websiteUri?: string;
 };
 
-const ACTIONS = new Set<IntegrationAction>(["listProviders", "invoke"]);
+const ACTIONS = new Set<IntegrationAction>([
+  "listProviders",
+  "invoke",
+  "getGoogleMapsBrowserConfig",
+]);
 
 const demoContacts: DemoContact[] = [
   {
@@ -232,6 +236,15 @@ function handleLocalIntegrations(
   switch (body.action) {
     case "listProviders":
       return NextResponse.json({ providers: [demoProvider, googleMapsProvider] });
+    case "getGoogleMapsBrowserConfig":
+      return NextResponse.json({
+        config: {
+          enabled: false,
+          apiKey: null,
+          mapId: "DEMO_MAP_ID",
+          authReferrerPolicy: "origin",
+        },
+      });
     case "invoke":
       return invokeLocalIntegration(body);
   }

@@ -403,6 +403,23 @@ describe("generated app local platform fallback", () => {
       ]),
     });
 
+    const browserConfig = await integrationsPOST(
+      new Request("http://local.test/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({ action: "getGoogleMapsBrowserConfig" }),
+      }),
+    );
+
+    expect(browserConfig.status).toBe(200);
+    await expect(browserConfig.json()).resolves.toEqual({
+      config: {
+        enabled: false,
+        apiKey: null,
+        mapId: "DEMO_MAP_ID",
+        authReferrerPolicy: "origin",
+      },
+    });
+
     const contacts = await integrationsPOST(
       new Request("http://local.test/api/integrations", {
         method: "POST",

@@ -35,6 +35,7 @@ const PROTECTED_FILES = new Set([
   "src/lib/platform-integrations.ts", // locked platform integration client (Stage 12A/12C)
   "src/lib/voiceforge-modules.ts", // locked reusable helpers (Stage 10)
   "src/components/voiceforge-reusable.tsx", // locked reusable UI components (Stage 10)
+  "src/components/voiceforge-google-map.tsx", // locked Google Maps UI component (Stage 12C)
   "src/app/api/ai/route.ts", // locked AI endpoint (Stage 7)
   "src/app/api/data/route.ts", // locked platform data endpoint (Stage 9B)
   "src/app/api/files/route.ts", // locked platform files endpoint (Stage 11A)

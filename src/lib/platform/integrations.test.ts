@@ -12,6 +12,7 @@ import {
   consumePlatformIntegrationRateLimit,
   decryptIntegrationSecrets,
   encryptIntegrationSecrets,
+  getGoogleMapsBrowserConfig,
   resetPlatformIntegrationRateLimitsForTests,
   sanitizeIntegrationPayload,
 } from "./integrations";
@@ -19,6 +20,7 @@ import {
 describe("integration catalogue", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("publishes only approved provider/action metadata", () => {
@@ -154,6 +156,23 @@ describe("integration catalogue", () => {
           location: { latitude: 43.6426, longitude: -79.3871 },
         }),
       ],
+    });
+  });
+
+  it("uses browser-specific Google Maps config when present", () => {
+    vi.stubEnv("VOICEFORGE_GOOGLE_MAPS_API_KEY", "server-maps-key");
+    vi.stubEnv("VOICEFORGE_GOOGLE_MAPS_BROWSER_KEY", "browser-maps-key");
+    vi.stubEnv("VOICEFORGE_GOOGLE_MAPS_MAP_ID", "voiceforge-map-id");
+    vi.stubEnv("VOICEFORGE_GOOGLE_MAPS_LANGUAGE", "en");
+    vi.stubEnv("VOICEFORGE_GOOGLE_MAPS_REGION", "CA");
+
+    expect(getGoogleMapsBrowserConfig()).toEqual({
+      enabled: true,
+      apiKey: "browser-maps-key",
+      mapId: "voiceforge-map-id",
+      language: "en",
+      region: "CA",
+      authReferrerPolicy: "origin",
     });
   });
 });

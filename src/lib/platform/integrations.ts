@@ -51,6 +51,15 @@ export type IntegrationCredentialDraft = {
   expiresAt?: Date | null;
 };
 
+export type GoogleMapsBrowserConfig = {
+  enabled: boolean;
+  apiKey: string | null;
+  mapId: string;
+  language?: string;
+  region?: string;
+  authReferrerPolicy: "origin";
+};
+
 type EncryptedSecretPayload = {
   version: 1;
   algorithm: "aes-256-gcm";
@@ -67,6 +76,27 @@ const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
 
 export function listPlatformIntegrationProviders(): PublicIntegrationProvider[] {
   return listPublicIntegrationProviders();
+}
+
+export function getGoogleMapsBrowserConfig(): GoogleMapsBrowserConfig {
+  const apiKey = firstConfiguredEnvValue(
+    "VOICEFORGE_GOOGLE_MAPS_BROWSER_KEY",
+    "NEXT_PUBLIC_GOOGLE_MAPS_API_KEY",
+    "VOICEFORGE_GOOGLE_MAPS_API_KEY",
+    "GOOGLE_MAPS_API_KEY",
+  );
+  const mapId =
+    firstConfiguredEnvValue("VOICEFORGE_GOOGLE_MAPS_MAP_ID") ?? "DEMO_MAP_ID";
+  const language = firstConfiguredEnvValue("VOICEFORGE_GOOGLE_MAPS_LANGUAGE");
+  const region = firstConfiguredEnvValue("VOICEFORGE_GOOGLE_MAPS_REGION");
+  return {
+    enabled: Boolean(apiKey),
+    apiKey: apiKey ?? null,
+    mapId,
+    ...(language ? { language } : {}),
+    ...(region ? { region } : {}),
+    authReferrerPolicy: "origin",
+  };
 }
 
 export function consumePlatformIntegrationRateLimit(
@@ -467,14 +497,23 @@ function platformCredentialForProvider(
   providerKey: string,
 ): { scopes: string[]; secrets: JsonObject } | undefined {
   if (providerKey !== "google_maps") return undefined;
-  const apiKey =
-    process.env.VOICEFORGE_GOOGLE_MAPS_API_KEY?.trim() ??
-    process.env.GOOGLE_MAPS_API_KEY?.trim();
+  const apiKey = firstConfiguredEnvValue(
+    "VOICEFORGE_GOOGLE_MAPS_API_KEY",
+    "GOOGLE_MAPS_API_KEY",
+  );
   if (!apiKey) return undefined;
   return {
     scopes: ["places", "geocoding", "routes"],
     secrets: { apiKey },
   };
+}
+
+function firstConfiguredEnvValue(...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = process.env[key]?.trim();
+    if (value) return value;
+  }
+  return undefined;
 }
 
 async function assertIntegrationDailyQuota(

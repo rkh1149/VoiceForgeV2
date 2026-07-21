@@ -34,6 +34,9 @@ describe("agent file tool path policy", () => {
     expect(isAgentWritablePath("src/components/voiceforge-reusable.tsx").ok).toBe(
       false,
     );
+    expect(isAgentWritablePath("src/components/voiceforge-google-map.tsx").ok).toBe(
+      false,
+    );
     expect(isAgentWritablePath("src/app/api/data/route.ts").ok).toBe(false);
     expect(isAgentWritablePath("src/app/api/files/route.ts").ok).toBe(false);
     expect(isAgentWritablePath("src/app/api/notifications/route.ts").ok).toBe(
