@@ -70,6 +70,21 @@ const MEMBER_ACCESS_NOTE_PATTERN =
   /\b(VoiceForge dashboard|managed from VoiceForge|managed in VoiceForge|VoiceForge app dashboard|access is managed)\b/i;
 const PLATFORM_RECORD_CALL_PATTERN =
   /\b(createPlatformRecord|updatePlatformRecord)\s*\(\s*["'`]([A-Za-z0-9_-]+)["'`]\s*,([\s\S]{0,1200}?)\)/g;
+const PLATFORM_RECORD_WRITE_CALLS = [
+  "createPlatformRecord",
+  "updatePlatformRecord",
+  "deletePlatformRecord",
+] as const;
+const INTEGRATION_RUNTIME_CALL_PATTERN =
+  /\b(listPlatformIntegrationProviders|invokePlatformIntegration|searchGoogleMapsPlaces|getGoogleMapsPlaceDetails|geocodeGoogleMapsAddress|computeGoogleMapsRoute|getGoogleMapsElevationProfile)\s*\(/;
+const GOOGLE_MAPS_RUNTIME_CALL_PATTERN =
+  /\b(searchGoogleMapsPlaces|getGoogleMapsPlaceDetails|geocodeGoogleMapsAddress|computeGoogleMapsRoute|getGoogleMapsElevationProfile)\s*\(/;
+const GOOGLE_MAPS_INVOKE_PATTERN =
+  /\binvokePlatformIntegration\s*\([\s\S]{0,900}\bproviderKey\s*:\s*["'`]google_maps["'`]/;
+const GOOGLE_MAPS_MAP_COMPONENT_PATTERN = /<\s*GoogleMapsTripMap\b/;
+const GOOGLE_MAPS_AUTOCOMPLETE_PATTERN = /<\s*GooglePlaceAutocomplete\b/;
+const GOOGLE_MAPS_BICYCLE_PATTERN =
+  /\btravelMode\s*:\s*["'`]BICYCLE["'`]|\btravelMode\s*=\s*["'`]BICYCLE["'`]/;
 const OBJECT_KEY_PATTERN = /[{,]\s*([A-Za-z_$][\w$]*)\s*:/g;
 const NON_PAYLOAD_OBJECT_KEYS = new Set([
   "children",
@@ -91,6 +106,59 @@ const FORM_CONTROL_PATTERN = /<(input|select|textarea)\b(?![^>]*type=["']hidden[
 const ACCESSIBLE_NAME_PATTERN = /(<label\b|htmlFor=|aria-label=|aria-labelledby=)/i;
 const IMAGE_WITHOUT_ALT_PATTERN = /<img\b(?![^>]*\balt=)/i;
 const H1_PATTERN = /<h1(\s|>)/i;
+const WRITE_ACTION_WORDS = [
+  "add",
+  "calculate",
+  "change",
+  "choose",
+  "compare",
+  "create",
+  "delete",
+  "edit",
+  "export",
+  "filter",
+  "new",
+  "plan",
+  "record",
+  "remove",
+  "request",
+  "save",
+  "search",
+  "select",
+  "submit",
+  "update",
+  "upload",
+] as const;
+const WRITE_ACTION_PATTERN = new RegExp(
+  `\\b(${WRITE_ACTION_WORDS.join("|")})(?:s|d|ed|ing)?\\b`,
+  "i",
+);
+const GENERIC_ENTITY_TERMS = new Set([
+  "app",
+  "data",
+  "day",
+  "detail",
+  "entry",
+  "info",
+  "item",
+  "option",
+  "record",
+  "trip",
+  "update",
+]);
+const GENERIC_WORKFLOW_TERMS = new Set([
+  "app",
+  "data",
+  "detail",
+  "information",
+  "member",
+  "page",
+  "record",
+  "screen",
+  "shared",
+  "user",
+  "workflow",
+]);
 
 export function runPostGenerationReviews(
   input: PostGenerationReviewInput,
@@ -197,16 +265,12 @@ function reviewGeneratedCode(
     );
   }
 
-  if (requiresService(input.architecture, "integrations") && !usesAny(
-    combinedSource,
-    [
-      "platform-integrations",
-      "listPlatformIntegrationProviders",
-      "invokePlatformIntegration",
-    ],
-  )) {
+  if (
+    requiresService(input.architecture, "integrations") &&
+    !hasRuntimeIntegrationUsage(combinedSource)
+  ) {
     blockingIssues.push(
-      "code_review: Integration-enabled app did not use the locked platform-integrations client.",
+      "code_review: Integration-enabled app did not make a runtime call through the locked platform-integrations client.",
     );
   }
 
@@ -247,6 +311,12 @@ function reviewGeneratedCode(
 
   blockingIssues.push(...detectPlatformFieldKeyIssues(input.spec, appSource));
   blockingIssues.push(...detectFakeMemberAccessIssues(appSource));
+  blockingIssues.push(
+    ...detectGoogleMapsImplementationIssues(input.spec, appSource),
+  );
+  blockingIssues.push(
+    ...detectAdvancedWorkflowUiCoverageIssues(input.spec, input.architecture, appSource),
+  );
 
   return reviewResult({
     agentKey: "code_reviewer",
@@ -265,6 +335,10 @@ function reviewGeneratedCode(
       expectedPageFiles,
       missingPageFiles,
       requiredServices: requiredServices(input.architecture),
+      strictWorkflowCoverage: requiresStrictWorkflowCoverage(
+        input.spec,
+        input.architecture,
+      ),
     },
   });
 }
@@ -317,6 +391,13 @@ function reviewGeneratedTests(
     );
   }
 
+  blockingIssues.push(
+    ...detectAdvancedWorkflowTestCoverageIssues(input.spec, input.architecture, [
+      ...unitTestFiles,
+      ...browserTestFiles,
+    ].map((path): [string, string | undefined] => [path, input.allFiles[path]])),
+  );
+
   return reviewResult({
     agentKey: "test_reviewer",
     phaseKey: "generated-tests-review",
@@ -328,6 +409,10 @@ function reviewGeneratedTests(
       browserTestFiles,
       acceptanceTestCount: input.architecture.acceptanceTests.length,
       testScenarioCount: input.spec.testScenarios.length,
+      strictWorkflowCoverage: requiresStrictWorkflowCoverage(
+        input.spec,
+        input.architecture,
+      ),
     },
   });
 }
@@ -688,6 +773,547 @@ function detectFakeMemberAccessIssues(
     );
 }
 
+function detectAdvancedWorkflowUiCoverageIssues(
+  spec: AppSpec,
+  architecture: ArchitecturePlan,
+  source: readonly [string, string][],
+): string[] {
+  if (!requiresStrictWorkflowCoverage(spec, architecture)) return [];
+
+  const combinedSource = stripTypeOnlyIntegrationImports(combine(source));
+  const snippets = interactiveSnippets(source).map(normalizeForSearch);
+  const missingEntities = editableEntityTargets(spec, architecture)
+    .map((target) => {
+      const missing: string[] = [];
+      if (!hasEntitySaveWiring(combinedSource, target)) {
+        missing.push("save/update/delete wiring");
+      }
+      if (!hasInteractiveCoverage(snippets, target.terms)) {
+        missing.push("visible create/edit controls");
+      }
+      return { ...target, missing };
+    })
+    .filter((target) => target.missing.length > 0);
+
+  const missingWorkflows = workflowTargets(spec)
+    .filter((target) => !hasInteractiveCoverage(snippets, target.terms))
+    .map((target) => target.name);
+
+  const issues: string[] = [];
+  if (missingEntities.length > 0) {
+    issues.push(
+      `code_review: Advanced workflow coverage is incomplete; editable entities without complete visible controls/save wiring: ${formatCoverageList(
+        missingEntities.map(
+          (target) => `${target.name} (${target.missing.join(", ")})`,
+        ),
+      )}.`,
+    );
+  }
+  if (missingWorkflows.length > 0) {
+    issues.push(
+      `code_review: Advanced workflow coverage is incomplete; planned workflows without visible action controls: ${formatCoverageList(
+        missingWorkflows,
+      )}.`,
+    );
+  }
+  return uniqueStrings(issues);
+}
+
+function detectAdvancedWorkflowTestCoverageIssues(
+  spec: AppSpec,
+  architecture: ArchitecturePlan,
+  testEntries: readonly [string, string | undefined][],
+): string[] {
+  if (!requiresStrictWorkflowCoverage(spec, architecture)) return [];
+
+  const testText = normalizeForSearch(combine(testEntries));
+  const issues: string[] = [];
+  if (!testText.trim()) {
+    return [
+      "tests_review: Advanced app requires generated tests for each editable entity and planned workflow.",
+    ];
+  }
+
+  const missingEntities = editableEntityTargets(spec, architecture)
+    .filter((target) => !hasActionNearAnyTerm(testText, target.terms))
+    .map((target) => target.name);
+  const missingWorkflows = workflowTargets(spec)
+    .filter((target) => !hasActionNearAnyTerm(testText, target.terms))
+    .map((target) => target.name);
+
+  if (missingEntities.length > 0) {
+    issues.push(
+      `tests_review: Advanced workflow test coverage is incomplete; missing generated tests for editable entities: ${formatCoverageList(
+        missingEntities,
+      )}.`,
+    );
+  }
+  if (missingWorkflows.length > 0) {
+    issues.push(
+      `tests_review: Advanced workflow test coverage is incomplete; missing generated tests for planned workflows: ${formatCoverageList(
+        missingWorkflows,
+      )}.`,
+    );
+  }
+  return uniqueStrings(issues);
+}
+
+function detectGoogleMapsImplementationIssues(
+  spec: AppSpec,
+  source: readonly [string, string][],
+): string[] {
+  if (!requiresGoogleMaps(spec)) return [];
+
+  const sourceText = stripTypeOnlyIntegrationImports(combine(source));
+  const issues: string[] = [];
+  if (!hasGoogleMapsRuntimeUsage(sourceText)) {
+    issues.push(
+      "code_review: Google Maps integration was requested, but generated code only references Maps types or placeholders; call the locked Google Maps integration helpers at runtime.",
+    );
+  }
+  if (
+    requiresGoogleMapsRouting(spec) &&
+    !hasGoogleMapsAction(sourceText, "computeGoogleMapsRoute", "compute_route")
+  ) {
+    issues.push(
+      "code_review: Google Maps route planning was requested, but generated code does not call computeGoogleMapsRoute or the google_maps compute_route action.",
+    );
+  }
+  if (
+    requiresGoogleMapsPlaceSearch(spec) &&
+    !hasGoogleMapsAction(sourceText, "searchGoogleMapsPlaces", "search_places") &&
+    !GOOGLE_MAPS_AUTOCOMPLETE_PATTERN.test(sourceText)
+  ) {
+    issues.push(
+      "code_review: Google Maps place search/autocomplete was requested, but generated code does not call searchGoogleMapsPlaces or render GooglePlaceAutocomplete.",
+    );
+  }
+  if (
+    requiresGoogleMapsElevation(spec) &&
+    !hasGoogleMapsAction(
+      sourceText,
+      "getGoogleMapsElevationProfile",
+      "get_elevation_profile",
+    )
+  ) {
+    issues.push(
+      "code_review: Google Maps elevation profiles were requested, but generated code does not call getGoogleMapsElevationProfile or the google_maps get_elevation_profile action.",
+    );
+  }
+  if (
+    requiresGoogleMapsRendering(spec) &&
+    !GOOGLE_MAPS_MAP_COMPONENT_PATTERN.test(sourceText)
+  ) {
+    issues.push(
+      "code_review: Interactive Google map rendering was requested, but generated code does not render the locked GoogleMapsTripMap component.",
+    );
+  }
+  if (requiresBicycleRouting(spec) && !GOOGLE_MAPS_BICYCLE_PATTERN.test(sourceText)) {
+    issues.push(
+      "code_review: Bicycle routing was requested, but generated Google Maps route calls do not set travelMode:\"BICYCLE\".",
+    );
+  }
+  return uniqueStrings(issues);
+}
+
+function requiresStrictWorkflowCoverage(
+  spec: AppSpec,
+  architecture: ArchitecturePlan,
+): boolean {
+  return (
+    spec.capabilityTier === "advanced" ||
+    architecture.implementationTier === "advanced"
+  );
+}
+
+type EntityCoverageTarget = {
+  name: string;
+  key: string;
+  aliases: string[];
+  terms: string[];
+  storage: ArchitecturePlan["dataModel"][number]["storage"];
+};
+
+function editableEntityTargets(
+  spec: AppSpec,
+  architecture: ArchitecturePlan,
+): EntityCoverageTarget[] {
+  const sourceLike = architecture.dataModel
+    .map((entity) => `${entity.name}:${entity.storage}`)
+    .join("\n");
+  return spec.dataEntities
+    .filter((entity) => isEditableEntity(spec, entity.name, entity.ownership))
+    .flatMap((entity) => {
+      const planned = architecture.dataModel.find(
+        (plannedEntity) =>
+          normalizeIdentifier(plannedEntity.name) === normalizeIdentifier(entity.name),
+      );
+      if (planned?.storage === "none" || planned?.storage === "future") return [];
+      const schema = platformEntityFromSpec(entity, spec);
+      return [{
+        name: entity.name,
+        key: schema.key,
+        aliases: [camelCase(schema.key), ...entityAliasesForKey(sourceLike, schema.key)],
+        terms: entityTerms(entity.name, schema.key),
+        storage: planned?.storage ?? "platformData",
+      }];
+    });
+}
+
+function isEditableEntity(
+  spec: AppSpec,
+  entityName: string,
+  ownership: AppSpec["dataEntities"][number]["ownership"],
+): boolean {
+  if (ownership === "system" || ownership === "public_read") return false;
+  const matchingRules = spec.permissionRules.filter((rule) =>
+    ruleTargetsEntity(rule.entity, entityName),
+  );
+  if (matchingRules.length === 0) return true;
+  return matchingRules.some((rule) =>
+    rule.actions.some((action) =>
+      ["create", "update", "delete", "admin"].includes(action),
+    ),
+  );
+}
+
+function ruleTargetsEntity(ruleEntity: string, entityName: string): boolean {
+  const rule = normalizeForSearch(ruleEntity);
+  if (/\ball\b.*\b(saved|record|data|information)\b/.test(rule)) return true;
+  const entity = normalizeForSearch(entityName);
+  return rule.includes(entity) || entity.includes(rule);
+}
+
+function workflowTargets(
+  spec: AppSpec,
+): Array<{ name: string; terms: string[] }> {
+  return spec.workflows
+    .map((workflow) => {
+      const text = [
+        workflow.name,
+        workflow.actor,
+        workflow.trigger,
+        workflow.successOutcome,
+        ...workflow.steps,
+      ].join(" ");
+      return {
+        name: workflow.name,
+        text: normalizeForSearch(text),
+        terms: workflowTerms(text),
+      };
+    })
+    .filter((workflow) => workflow.terms.length > 0)
+    .filter((workflow) => WRITE_ACTION_PATTERN.test(workflow.text))
+    .map(({ name, terms }) => ({ name, terms }));
+}
+
+function hasPlatformEntityWriteCall(
+  sourceText: string,
+  target: { key: string; aliases: readonly string[] },
+): boolean {
+  const directKey = `["'\`]${escapeRegExp(target.key)}["'\`]`;
+  const aliases = uniqueStrings([...target.aliases])
+    .filter(Boolean)
+    .map((alias) => `ENTITY_KEYS\\.${escapeRegExp(alias)}`);
+  const entityArgument = [directKey, ...aliases].join("|");
+  const pattern = new RegExp(
+    `\\b(?:${PLATFORM_RECORD_WRITE_CALLS.join("|")})\\s*\\(\\s*(?:${entityArgument})`,
+  );
+  return pattern.test(sourceText);
+}
+
+function hasEntitySaveWiring(
+  sourceText: string,
+  target: EntityCoverageTarget,
+): boolean {
+  if (target.storage === "platformData") {
+    return hasPlatformEntityWriteCall(sourceText, target);
+  }
+  const normalizedSource = normalizeForSearch(sourceText);
+  return (
+    /\b(localStorage\.setItem|save[A-Za-z0-9_$]*|update[A-Za-z0-9_$]*|delete[A-Za-z0-9_$]*|set[A-Z][A-Za-z0-9_$]*)\b/.test(
+      sourceText,
+    ) && hasActionNearAnyTerm(normalizedSource, target.terms)
+  );
+}
+
+function hasInteractiveCoverage(
+  snippets: readonly string[],
+  terms: readonly string[],
+): boolean {
+  return snippets.some(
+    (snippet) => WRITE_ACTION_PATTERN.test(snippet) && containsAnyTerm(snippet, terms),
+  );
+}
+
+function hasActionNearAnyTerm(
+  normalizedText: string,
+  terms: readonly string[],
+): boolean {
+  for (const term of terms) {
+    const normalizedTerm = normalizeForSearch(term);
+    if (!normalizedTerm) continue;
+    let index = normalizedText.indexOf(normalizedTerm);
+    while (index >= 0) {
+      const window = normalizedText.slice(
+        Math.max(0, index - 120),
+        index + normalizedTerm.length + 120,
+      );
+      if (WRITE_ACTION_PATTERN.test(window)) return true;
+      index = normalizedText.indexOf(normalizedTerm, index + normalizedTerm.length);
+    }
+  }
+  return false;
+}
+
+function containsAnyTerm(
+  normalizedText: string,
+  terms: readonly string[],
+): boolean {
+  return terms.some((term) => containsTerm(normalizedText, term));
+}
+
+function containsTerm(normalizedText: string, term: string): boolean {
+  const normalizedTerm = normalizeForSearch(term);
+  if (!normalizedTerm) return false;
+  return new RegExp(`\\b${escapeRegExp(normalizedTerm).replace(/\s+/g, "\\s+")}\\b`).test(
+    normalizedText,
+  );
+}
+
+function entityTerms(name: string, key: string): string[] {
+  const words = splitWords(name);
+  const terms = new Set([words.join(" "), splitWords(key).join(" "), key]);
+  const last = words.at(-1);
+  if (last && !GENERIC_ENTITY_TERMS.has(last)) terms.add(last);
+  const first = words[0];
+  if (first && !GENERIC_ENTITY_TERMS.has(first)) terms.add(first);
+  if (words.join(" ") === "end of day update") {
+    terms.add("end of day");
+    terms.add("check in");
+    terms.add("check-in");
+  }
+  if (words.join(" ").includes("photo journal")) {
+    terms.add("photo");
+    terms.add("journal");
+  }
+  return uniqueStrings([...terms].filter(Boolean));
+}
+
+function workflowTerms(text: string): string[] {
+  const words = splitWords(text).filter(
+    (word) =>
+      word.length > 2 &&
+      !GENERIC_WORKFLOW_TERMS.has(word) &&
+      !WRITE_ACTION_WORDS.includes(word as (typeof WRITE_ACTION_WORDS)[number]),
+  );
+  const terms = new Set<string>();
+  for (const word of words) {
+    terms.add(word);
+    if (terms.size >= 6) break;
+  }
+  for (let index = 0; index < words.length - 1 && terms.size < 10; index++) {
+    terms.add(`${words[index]} ${words[index + 1]}`);
+  }
+  return [...terms];
+}
+
+function interactiveSnippets(source: readonly [string, string][]): string[] {
+  const snippets: string[] = [];
+  const patterns = [
+    /<form\b[\s\S]{0,5000}?<\/form>/gi,
+    /<button\b[\s\S]{0,2500}?<\/button>/gi,
+    /<PrimaryAction\b[\s\S]{0,2500}?(?:\/>|<\/PrimaryAction>)/gi,
+    /<AddButton\b[\s\S]{0,2500}?(?:\/>|<\/AddButton>)/gi,
+    /<PlatformFileUploadInput\b[\s\S]{0,2500}?(?:\/>|<\/PlatformFileUploadInput>)/gi,
+    /<GooglePlaceAutocomplete\b[\s\S]{0,2500}?(?:\/>|<\/GooglePlaceAutocomplete>)/gi,
+    /<GoogleMapsTripMap\b[\s\S]{0,2500}?(?:\/>|<\/GoogleMapsTripMap>)/gi,
+  ];
+  for (const [, content] of source) {
+    for (const pattern of patterns) {
+      pattern.lastIndex = 0;
+      for (const match of content.matchAll(pattern)) {
+        snippets.push(match[0]);
+      }
+    }
+  }
+  return snippets;
+}
+
+function hasRuntimeIntegrationUsage(sourceText: string): boolean {
+  return INTEGRATION_RUNTIME_CALL_PATTERN.test(
+    stripTypeOnlyIntegrationImports(sourceText),
+  );
+}
+
+function requiresGoogleMaps(spec: AppSpec): boolean {
+  return spec.integrations.some((integration) =>
+    /\bgoogle\s*maps\b/i.test(`${integration.name} ${integration.purpose}`),
+  );
+}
+
+function requiresGoogleMapsRouting(spec: AppSpec): boolean {
+  return /\b(route|routing|directions?|waypoints?|stops?|origin|destination)\b/.test(
+    normalizedSpecText(spec),
+  );
+}
+
+function requiresGoogleMapsPlaceSearch(spec: AppSpec): boolean {
+  return /\b(place search|autocomplete|place|places|destination|origin|stop|stops|accommodation|attraction|restaurant|cafe|repair)\b/.test(
+    normalizedSpecText(spec),
+  );
+}
+
+function requiresGoogleMapsElevation(spec: AppSpec): boolean {
+  return /\b(elevation|climb|descent|terrain)\b/.test(normalizedSpecText(spec));
+}
+
+function requiresGoogleMapsRendering(spec: AppSpec): boolean {
+  return /\b(interactive map|map display|map view|map tiles?|route line|route overlay|pins?|bicycling map)\b/.test(
+    normalizedSpecText(spec),
+  );
+}
+
+function requiresBicycleRouting(spec: AppSpec): boolean {
+  return /\b(bike|bicycle|bicycling|cycling|cyclist|ride|rider)\b/.test(
+    normalizedSpecText(spec),
+  );
+}
+
+function hasGoogleMapsRuntimeUsage(sourceText: string): boolean {
+  return (
+    GOOGLE_MAPS_RUNTIME_CALL_PATTERN.test(sourceText) ||
+    GOOGLE_MAPS_INVOKE_PATTERN.test(sourceText)
+  );
+}
+
+function hasGoogleMapsAction(
+  sourceText: string,
+  helperName: string,
+  actionKey: string,
+): boolean {
+  const helperPattern = new RegExp(`\\b${escapeRegExp(helperName)}\\s*\\(`);
+  return (
+    helperPattern.test(sourceText) ||
+    (sourceText.includes(`providerKey: "google_maps"`) &&
+      sourceText.includes(`actionKey: "${actionKey}"`)) ||
+    (sourceText.includes("providerKey: 'google_maps'") &&
+      sourceText.includes(`actionKey: '${actionKey}'`))
+  );
+}
+
+function normalizedSpecText(spec: AppSpec): string {
+  return normalizeForSearch(
+    [
+      spec.purpose,
+      spec.deploymentNotes,
+      ...spec.features,
+      ...spec.dataToStore,
+      ...spec.testPlan,
+      ...spec.privacyRequirements,
+      ...spec.riskFlags,
+      ...spec.workflows.flatMap((workflow) => [
+        workflow.name,
+        workflow.trigger,
+        workflow.successOutcome,
+        ...workflow.steps,
+        ...workflow.failureStates,
+      ]),
+      ...spec.dataEntities.flatMap((entity) => [
+        entity.name,
+        entity.description,
+        ...entity.fields.flatMap((field) => [
+          field.name,
+          field.label,
+          field.validation,
+        ]),
+      ]),
+      ...spec.integrations.flatMap((integration) => [
+        integration.name,
+        integration.purpose,
+      ]),
+      ...spec.reports.flatMap((report) => [
+        report.name,
+        report.description,
+        ...report.dataNeeded,
+        ...report.exportFormats,
+      ]),
+      ...spec.acceptanceCriteria.flatMap((criterion) => [
+        criterion.name,
+        criterion.scenario,
+        criterion.given,
+        criterion.when,
+        criterion.then,
+      ]),
+      ...spec.testScenarios.flatMap((scenario) => [
+        scenario.name,
+        ...scenario.steps,
+        scenario.expectedResult,
+      ]),
+    ].join(" "),
+  );
+}
+
+function stripTypeOnlyIntegrationImports(content: string): string {
+  return content.replace(
+    /\b(?:import|export)\s+type\s+[\s\S]{0,300}?\s+from\s+["'][^"']*platform-integrations["'];?/g,
+    "",
+  );
+}
+
+function entityAliasesForKey(sourceText: string, key: string): string[] {
+  const aliases = new Set<string>();
+  const pattern = new RegExp(
+    `\\b([A-Za-z_$][\\w$]*)\\s*:\\s*["'\`]${escapeRegExp(key)}["'\`]`,
+    "g",
+  );
+  for (const match of sourceText.matchAll(pattern)) {
+    if (match[1]) aliases.add(match[1]);
+  }
+  return [...aliases];
+}
+
+function normalizeForSearch(value: string): string {
+  return splitWords(value).join(" ");
+}
+
+function splitWords(value: string): string[] {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .split(/\s+/)
+    .map((word) => stemSearchWord(word.toLowerCase()))
+    .filter(Boolean);
+}
+
+function stemSearchWord(word: string): string {
+  if (word.length > 4 && word.endsWith("ies")) return `${word.slice(0, -3)}y`;
+  if (word.length > 3 && word.endsWith("s") && !word.endsWith("ss")) {
+    return word.slice(0, -1);
+  }
+  return word;
+}
+
+function camelCase(value: string): string {
+  const words = splitWords(value);
+  return words
+    .map((word, index) =>
+      index === 0 ? word : `${word.charAt(0).toUpperCase()}${word.slice(1)}`,
+    )
+    .join("");
+}
+
+function normalizeIdentifier(value: string): string {
+  return splitWords(value).join("");
+}
+
+function formatCoverageList(values: readonly string[]): string {
+  const shown = values.slice(0, 8);
+  const suffix = values.length > shown.length ? `, and ${values.length - shown.length} more` : "";
+  return `${shown.join(", ")}${suffix}`;
+}
+
 function usesAny(content: string, needles: readonly string[]): boolean {
   return needles.some((needle) => content.includes(needle));
 }
@@ -712,4 +1338,8 @@ function countMatches(content: string, pattern: RegExp): number {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
