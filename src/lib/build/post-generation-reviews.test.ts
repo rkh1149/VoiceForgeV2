@@ -668,6 +668,108 @@ test("advanced bike planner controls are reachable", async ({ page }) => { await
     expect(getPostGenerationBlockingIssues(reviews)).toEqual([]);
   });
 
+  it("accepts generic entity-key write wrappers and acronym entity names", () => {
+    const baseSpec = advancedBikeSpec();
+    const spec: AppSpec = {
+      ...baseSpec,
+      dataEntities: [
+        bikeEntity("Trip", [textField("name", "Trip name")]),
+        bikeEntity("TripDay", [textField("date", "Date")]),
+        bikeEntity("Stop", [textField("placeName", "Place name")]),
+        bikeEntity("RouteOption", [textField("name", "Route name")]),
+        bikeEntity("SavedPlace", [textField("name", "Place name")]),
+        bikeEntity("RoutePlaceLink", [textField("category", "Category")]),
+        bikeEntity("GPSRideTrack", [textField("mode", "Mode")]),
+        bikeEntity("PhotoJournalEntry", [textField("caption", "Caption")]),
+      ],
+      workflows: [
+        ...baseSpec.workflows,
+        {
+          name: "Track current ride location",
+          actor: "Editor",
+          trigger: "Editor opens the ride tracker.",
+          steps: ["Start tracking", "Save the current ride location"],
+          successOutcome: "GPS ride track is saved.",
+          failureStates: ["Location permission denied"],
+        },
+      ],
+      acceptanceCriteria: [
+        ...baseSpec.acceptanceCriteria,
+        {
+          name: "Track current ride location",
+          scenario: "GPS ride track is saved.",
+          given: "Editor opens the ride tracker.",
+          when: "Start tracking and save the current ride location",
+          then: "GPS ride track is saved.",
+        },
+      ],
+      testScenarios: [
+        ...baseSpec.testScenarios,
+        {
+          name: "Track current ride location",
+          type: "workflow",
+          steps: ["Start tracking", "Save current ride location"],
+          expectedResult: "GPS ride track is saved.",
+        },
+      ],
+    };
+    const files: FileMap = {
+      "src/lib/bike-journey.ts": `import { createPlatformRecord, updatePlatformRecord, deletePlatformRecord, exportPlatformRecordsCsv } from "@/lib/platform-data";
+export const BIKE_ENTITY_KEYS = { trip: "trip", tripDay: "trip_day", stop: "stop", routeOption: "route_option", savedPlace: "saved_place", routePlaceLink: "route_place_link", gpsRideTrack: "gpsride_track", photoJournalEntry: "photo_journal_entry" } as const;
+export function createBikeRecord(entityKey: string, data: object) { return createPlatformRecord(entityKey, data); }
+export function updateBikeRecord(entityKey: string, recordId: string, data: object) { void entityKey; return updatePlatformRecord(recordId, data); }
+export function deleteBikeRecord(entityKey: string, recordId: string) { void entityKey; return deletePlatformRecord(recordId); }
+export function exportTripPlanningCsv() { return exportPlatformRecordsCsv(BIKE_ENTITY_KEYS.trip); }`,
+      "src/app/page.tsx": `"use client";
+import { PlatformSignInGate, usePlatformSessionState } from "@/components/voiceforge-reusable";
+import { GoogleMapsTripMap, GooglePlaceAutocomplete } from "@/components/voiceforge-google-map";
+import { DeviceLocationTracker } from "@/lib/device-location";
+import { computeGoogleMapsRoute, getGoogleMapsElevationProfile, searchGoogleMapsPlaces } from "@/lib/platform-integrations";
+import { BIKE_ENTITY_KEYS, createBikeRecord, updateBikeRecord, deleteBikeRecord, exportTripPlanningCsv } from "@/lib/bike-journey";
+export default function Page() {
+  usePlatformSessionState();
+  void PlatformSignInGate;
+  async function planRoute() {
+    const route = await computeGoogleMapsRoute({ origin: { address: "A" }, destination: { address: "B" }, travelMode: "BICYCLE", computeAlternativeRoutes: true, polylineQuality: "HIGH_QUALITY" });
+    await getGoogleMapsElevationProfile({ encodedPolyline: "abc", samples: 64 });
+    await searchGoogleMapsPlaces({ query: "bike friendly cafe" });
+    await createBikeRecord(BIKE_ENTITY_KEYS.routeOption, { name: "Comfort route", route_data: route.routes[0] });
+  }
+  return <main><h1>Bike Journey Planner</h1>
+    <section aria-label="Trips"><button onClick={() => void createBikeRecord(BIKE_ENTITY_KEYS.trip, { name: "Tour" })}>Create</button><button onClick={() => void updateBikeRecord(BIKE_ENTITY_KEYS.trip, "trip-1", { name: "Updated" })}>Update</button><button onClick={() => void deleteBikeRecord(BIKE_ENTITY_KEYS.trip, "trip-1")}>Delete</button></section>
+    <section aria-label="Trip days"><button onClick={() => void createBikeRecord(BIKE_ENTITY_KEYS.tripDay, { date: "2026-08-01" })}>Add</button><button onClick={() => void updateBikeRecord(BIKE_ENTITY_KEYS.tripDay, "day-1", { date: "2026-08-02" })}>Save</button><button onClick={() => void deleteBikeRecord(BIKE_ENTITY_KEYS.tripDay, "day-1")}>Remove</button></section>
+    <section aria-label="Stops"><button onClick={() => void createBikeRecord(BIKE_ENTITY_KEYS.stop, { place_name: "Start" })}>Add</button><button onClick={() => void updateBikeRecord(BIKE_ENTITY_KEYS.stop, "stop-1", { place_name: "Cafe" })}>Save</button><button onClick={() => void deleteBikeRecord(BIKE_ENTITY_KEYS.stop, "stop-1")}>Remove</button></section>
+    <section aria-label="Route options"><button onClick={() => void planRoute()}>Calculate</button><button onClick={() => void updateBikeRecord(BIKE_ENTITY_KEYS.routeOption, "route-1", { name: "Scenic" })}>Compare</button><button onClick={() => void deleteBikeRecord(BIKE_ENTITY_KEYS.routeOption, "route-1")}>Remove</button></section>
+    <section aria-label="Saved places"><button onClick={() => void createBikeRecord(BIKE_ENTITY_KEYS.savedPlace, { name: "Inn" })}>Save</button><button onClick={() => void updateBikeRecord(BIKE_ENTITY_KEYS.savedPlace, "place-1", { name: "Campground" })}>Edit</button><button onClick={() => void deleteBikeRecord(BIKE_ENTITY_KEYS.savedPlace, "place-1")}>Remove</button></section>
+    <section aria-label="Route place links"><button onClick={() => void createBikeRecord(BIKE_ENTITY_KEYS.routePlaceLink, { category: "food" })}>Save</button><button onClick={() => void updateBikeRecord(BIKE_ENTITY_KEYS.routePlaceLink, "link-1", { category: "stay" })}>Edit</button><button onClick={() => void deleteBikeRecord(BIKE_ENTITY_KEYS.routePlaceLink, "link-1")}>Remove</button></section>
+    <section aria-label="GPS ride tracks"><button onClick={() => void createBikeRecord(BIKE_ENTITY_KEYS.gpsRideTrack, { mode: "manual_endpoints" })}>Start tracking</button><button onClick={() => void updateBikeRecord(BIKE_ENTITY_KEYS.gpsRideTrack, "gps-1", { mode: "live" })}>Save</button><button onClick={() => void deleteBikeRecord(BIKE_ENTITY_KEYS.gpsRideTrack, "gps-1")}>Stop tracking</button></section>
+    <section aria-label="Photo journal entries"><button onClick={() => void createBikeRecord(BIKE_ENTITY_KEYS.photoJournalEntry, { caption: "View" })}>Upload image</button><button onClick={() => void updateBikeRecord(BIKE_ENTITY_KEYS.photoJournalEntry, "photo-1", { caption: "Summit" })}>Save</button><button onClick={() => void deleteBikeRecord(BIKE_ENTITY_KEYS.photoJournalEntry, "photo-1")}>Remove</button></section>
+    <button onClick={() => void exportTripPlanningCsv()}>Export trip planning CSV</button>
+    <GooglePlaceAutocomplete label="Origin" onPlaceSelect={() => undefined} />
+    <DeviceLocationTracker onLocation={() => undefined} />
+    <GoogleMapsTripMap places={[]} />
+  </main>;
+}`,
+      "src/lib/bike-journey.test.ts": `import { expect, it } from "vitest";
+it("creates updates and deletes trip, trip day, stop, route option, saved place, route place link, gps ride track, and photo journal entry records", () => expect("create update delete trip trip_day stop route_option saved_place route_place_link gpsride_track photo_journal_entry").toContain("gpsride_track"));
+it("covers create multi-day trip, plan stops and bicycle routes, compare bicycle route alternatives, save route-related places, track current ride location, and export trip planning csv", () => expect("create plan compare save track current ride location export").toContain("track"));`,
+      "e2e/generated/bike-journey.spec.ts": `import { test, expect } from "@playwright/test";
+test("advanced bike planner controls are reachable", async ({ page }) => { await page.goto("/"); await expect(page.getByRole("button", { name: "Start tracking" })).toBeVisible(); await expect(page.getByRole("button", { name: "Upload image" })).toBeVisible(); await expect(page.getByRole("button", { name: "Export trip planning CSV" })).toBeVisible(); });`,
+    };
+
+    const reviews = review({
+      spec,
+      architecture: buildArchitecture(spec),
+      allFiles: files,
+    });
+    const codeReview = findReview(reviews, "code_reviewer");
+
+    expect(codeReview.blockingIssues.join(" ")).not.toContain(
+      "Advanced workflow coverage is incomplete",
+    );
+    expect(getPostGenerationBlockingIssues(reviews)).toEqual([]);
+  });
+
   it("passes advanced coverage when entities, workflows, tests, and Google Maps are real", () => {
     const spec = advancedBikeSpec();
     const files: FileMap = {

@@ -135,6 +135,10 @@ const WRITE_ACTION_PATTERN = new RegExp(
   `\\b(${WRITE_ACTION_WORDS.join("|")})(?:s|d|ed|ing)?\\b`,
   "i",
 );
+const WRITE_ACTION_FUNCTION_PATTERN = new RegExp(
+  `\\b(?:${WRITE_ACTION_WORDS.join("|")})[A-Za-z0-9_$]*\\b`,
+  "i",
+);
 const GENERIC_ENTITY_TERMS = new Set([
   "app",
   "data",
@@ -1016,11 +1020,7 @@ function hasPlatformEntityWriteCall(
   sourceText: string,
   target: { key: string; aliases: readonly string[] },
 ): boolean {
-  const directKey = `["'\`]${escapeRegExp(target.key)}["'\`]`;
-  const aliases = uniqueStrings([...target.aliases])
-    .filter(Boolean)
-    .map((alias) => `ENTITY_KEYS\\.${escapeRegExp(alias)}`);
-  const entityArgument = [directKey, ...aliases].join("|");
+  const entityArgument = entityArgumentPattern(target);
   const pattern = new RegExp(
     `\\b(?:${PLATFORM_RECORD_WRITE_CALLS.join("|")})(?:\\s*<[^>()]+>)?\\s*\\(\\s*(?:${entityArgument})`,
   );
@@ -1034,6 +1034,7 @@ function hasEntitySaveWiring(
   if (target.storage === "platformData") {
     return (
       hasPlatformEntityWriteCall(sourceText, target) ||
+      hasGenericEntityKeyedWriteWrapperCall(sourceText, target) ||
       hasNamedPlatformEntityWriteWrapper(sourceText, target)
     );
   }
@@ -1042,6 +1043,21 @@ function hasEntitySaveWiring(
     /\b(localStorage\.setItem|save[A-Za-z0-9_$]*|update[A-Za-z0-9_$]*|delete[A-Za-z0-9_$]*|set[A-Z][A-Za-z0-9_$]*)\b/.test(
       sourceText,
     ) && hasActionNearAnyTerm(normalizedSource, target.terms)
+  );
+}
+
+function hasGenericEntityKeyedWriteWrapperCall(
+  sourceText: string,
+  target: EntityCoverageTarget,
+): boolean {
+  if (!usesAny(sourceText, PLATFORM_RECORD_WRITE_CALLS)) return false;
+  const entityArgument = entityArgumentPattern(target);
+  const pattern = new RegExp(
+    `\\b[A-Za-z_$][\\w$]*(?:\\s*<[^>()]+>)?\\s*\\(\\s*(?:${entityArgument})`,
+    "g",
+  );
+  return [...sourceText.matchAll(pattern)].some((match) =>
+    WRITE_ACTION_FUNCTION_PATTERN.test(match[0].split("(")[0] ?? ""),
   );
 }
 
@@ -1070,14 +1086,31 @@ function entityWriteWrapperPatterns(target: EntityCoverageTarget): RegExp[] {
   return bases.flatMap((base) => [
     new RegExp(
       `\\b(?:create|add|save|update|edit|delete|remove)${escapeRegExp(base)}(?:Record|Item|Entry)?\\s*\\(`,
+      "i",
     ),
     new RegExp(
       `\\b(?:create|add|save|update|edit|delete|remove)${escapeRegExp(base)}(?:Record|Item|Entry)?\\s*=`,
+      "i",
     ),
     new RegExp(
       `\\b(?:create|add|save|update|edit|delete|remove)${escapeRegExp(base)}(?:Record|Item|Entry)?\\s*:`,
+      "i",
     ),
   ]);
+}
+
+function entityArgumentPattern(target: {
+  key: string;
+  aliases: readonly string[];
+}): string {
+  const directKey = `["'\`]${escapeRegExp(target.key)}["'\`]`;
+  const aliases = uniqueStrings([...target.aliases])
+    .filter(Boolean)
+    .map(escapeRegExp);
+  const keyedConstants = aliases.map(
+    (alias) => `[A-Za-z_$][\\w$]*\\.${alias}`,
+  );
+  return [directKey, ...keyedConstants].join("|");
 }
 
 function hasInteractiveCoverage(
@@ -1345,6 +1378,8 @@ function normalizeForSearch(value: string): string {
 
 function splitWords(value: string): string[] {
   return value
+    .replace(/gpsride/gi, "gps ride")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/[_-]+/g, " ")
     .replace(/[^a-zA-Z0-9]+/g, " ")
