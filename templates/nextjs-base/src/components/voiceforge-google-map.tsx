@@ -5,6 +5,7 @@ import {
   getGoogleMapsBrowserConfig,
   type GoogleMapsBrowserConfig,
   type GoogleMapsCoordinate,
+  type GoogleMapsElevationProfile,
   type GoogleMapsPlace,
   type GoogleMapsRoute,
 } from "@/lib/platform-integrations";
@@ -12,6 +13,10 @@ import {
 export type GoogleMapsTripMapProps = {
   places: GoogleMapsPlace[];
   route?: GoogleMapsRoute | null;
+  routes?: GoogleMapsRoute[] | null;
+  selectedRouteIndex?: number;
+  onSelectRoute?: (routeIndex: number) => void;
+  elevationProfile?: GoogleMapsElevationProfile | null;
   selectedPlaceId?: string | null;
   onSelectPlace?: (placeId: string) => void;
   center?: GoogleMapsCoordinate | null;
@@ -20,6 +25,24 @@ export type GoogleMapsTripMapProps = {
   height?: number | string;
   className?: string;
   title?: string;
+};
+
+export type GooglePlaceAutocompleteResult = {
+  placeId?: string;
+  name: string;
+  formattedAddress?: string;
+  location?: GoogleMapsCoordinate | null;
+  googleMapsUri?: string;
+};
+
+export type GooglePlaceAutocompleteProps = {
+  label?: string;
+  placeholder?: string;
+  includedRegionCodes?: string[];
+  includedPrimaryTypes?: string[];
+  locationBias?: GoogleMapsCoordinate & { radiusMeters?: number };
+  className?: string;
+  onPlaceSelect: (place: GooglePlaceAutocompleteResult) => void;
 };
 
 type LatLngLiteral = {
@@ -75,6 +98,42 @@ type GeometryLibrary = {
   };
 };
 
+type PlacesLibrary = {
+  PlaceAutocompleteElement?: new (
+    options?: Record<string, unknown>,
+  ) => PlaceAutocompleteElementInstance;
+};
+
+type PlaceAutocompleteElementInstance = HTMLElement & {
+  placeholder?: string;
+  includedRegionCodes?: string[];
+  includedPrimaryTypes?: string[];
+  locationBias?: Record<string, unknown> | null;
+};
+
+type GooglePlacePrediction = {
+  toPlace?: () => GooglePlaceResult;
+};
+
+type GooglePlaceResult = {
+  id?: string;
+  displayName?: string;
+  formattedAddress?: string;
+  location?: unknown;
+  googleMapsURI?: string;
+  googleMapsUri?: string;
+  fetchFields?: (options: { fields: string[] }) => Promise<void>;
+  toJSON?: () => unknown;
+};
+
+type GooglePlaceSelectEvent = Event & {
+  placePrediction?: GooglePlacePrediction;
+  detail?: {
+    placePrediction?: GooglePlacePrediction;
+    place?: GooglePlaceResult;
+  };
+};
+
 type GoogleMapsApi = {
   importLibrary: (libraryName: string) => Promise<Record<string, unknown>>;
   Polyline?: new (options: Record<string, unknown>) => PolylineInstance;
@@ -92,6 +151,10 @@ let googleMapsLoaderPromise: Promise<GoogleMapsApi> | null = null;
 export function GoogleMapsTripMap({
   places,
   route,
+  routes,
+  selectedRouteIndex = 0,
+  onSelectRoute,
+  elevationProfile,
   selectedPlaceId,
   onSelectPlace,
   center,
@@ -111,17 +174,33 @@ export function GoogleMapsTripMap({
     "loading" | "ready" | "fallback" | "error"
   >("loading");
   const [error, setError] = useState("");
+  const routeOptions = useMemo(
+    () => normalizeRouteOptions(route, routes),
+    [route, routes],
+  );
+  const activeRouteIndex =
+    routeOptions.length === 0
+      ? -1
+      : Math.min(Math.max(selectedRouteIndex, 0), routeOptions.length - 1);
+  const activeRoute =
+    activeRouteIndex >= 0 ? routeOptions[activeRouteIndex] ?? null : null;
 
   const validPlaces = useMemo(
     () => places.filter((place) => coordinateToLatLng(place.location)),
     [places],
   );
-  const fallbackRoutePath = useMemo(() => pathFromRouteLegs(route), [route]);
+  const fallbackRoutePath = useMemo(
+    () => pathFromRouteLegs(activeRoute),
+    [activeRoute],
+  );
   const selectedKey = selectedPlaceId ?? placeKey(validPlaces[0], 0);
-  const routeSafetyMessages = useMemo(() => routeWarnings(route), [route]);
+  const routeSafetyMessages = useMemo(
+    () => routeWarnings(activeRoute),
+    [activeRoute],
+  );
   const shouldShowBicyclingLayer =
     showBicyclingLayer === true ||
-    (showBicyclingLayer === "auto" && route?.travelMode === "BICYCLE");
+    (showBicyclingLayer === "auto" && activeRoute?.travelMode === "BICYCLE");
   const resolvedHeight = typeof height === "number" ? `${height}px` : height;
 
   useEffect(() => {
@@ -179,7 +258,7 @@ export function GoogleMapsTripMap({
         routeRef.current = null;
         bicyclingLayerRef.current = null;
 
-        const routePath = pathFromRoute(route, geometryLibrary);
+        const routePath = pathFromRoute(activeRoute, geometryLibrary);
         const initialCenter =
           coordinateToLatLng(center) ??
           coordinateToLatLng(validPlaces[0]?.location) ??
@@ -278,7 +357,7 @@ export function GoogleMapsTripMap({
     config,
     fallbackRoutePath,
     onSelectPlace,
-    route,
+    activeRoute,
     selectedKey,
     shouldShowBicyclingLayer,
     validPlaces,
@@ -313,9 +392,9 @@ export function GoogleMapsTripMap({
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold text-slate-950">{title}</h2>
-              {route?.localizedDistance || route?.localizedDuration ? (
+              {activeRoute?.localizedDistance || activeRoute?.localizedDuration ? (
                 <p className="mt-1 text-sm text-slate-600">
-                  {[route.localizedDistance, route.localizedDuration]
+                  {[activeRoute.localizedDistance, activeRoute.localizedDuration]
                     .filter(Boolean)
                     .join(" - ")}
                 </p>
@@ -344,6 +423,16 @@ export function GoogleMapsTripMap({
               ))}
             </div>
           )}
+          {routeOptions.length > 0 && (
+            <RouteCards
+              routes={routeOptions}
+              selectedRouteIndex={activeRouteIndex}
+              onSelectRoute={onSelectRoute}
+            />
+          )}
+          {elevationProfile && elevationProfile.points.length > 1 && (
+            <ElevationProfileCard profile={elevationProfile} />
+          )}
           <div className="mt-4 space-y-3">
             {validPlaces.length === 0 ? (
               <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-600">
@@ -366,6 +455,250 @@ export function GoogleMapsTripMap({
           </p>
         </aside>
       </div>
+    </section>
+  );
+}
+
+export function GooglePlaceAutocomplete({
+  label = "Search for a place",
+  placeholder = "Search for a place",
+  includedRegionCodes,
+  includedPrimaryTypes,
+  locationBias,
+  className = "",
+  onPlaceSelect,
+}: GooglePlaceAutocompleteProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [status, setStatus] = useState<
+    "loading" | "ready" | "fallback" | "error"
+  >("loading");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    let autocompleteElement: PlaceAutocompleteElementInstance | null = null;
+    const container = containerRef.current;
+    if (!container) return;
+
+    setStatus("loading");
+    setError("");
+    container.replaceChildren();
+
+    async function renderAutocomplete() {
+      try {
+        const config = await getGoogleMapsBrowserConfig();
+        if (!active) return;
+        if (!config.enabled || !config.apiKey) {
+          setStatus("fallback");
+          return;
+        }
+        const mapsApi = await loadGoogleMapsApi({
+          ...config,
+          apiKey: config.apiKey,
+        });
+        const placesLibrary = (await mapsApi.importLibrary(
+          "places",
+        )) as unknown as PlacesLibrary;
+        const AutocompleteElement = placesLibrary.PlaceAutocompleteElement;
+        if (!AutocompleteElement) {
+          throw new Error("Google Place Autocomplete is unavailable.");
+        }
+        if (!active || !containerRef.current) return;
+
+        const nextElement = new AutocompleteElement();
+        nextElement.placeholder = placeholder;
+        nextElement.setAttribute("aria-label", label);
+        nextElement.className = "block w-full";
+        if (includedRegionCodes?.length) {
+          nextElement.includedRegionCodes = includedRegionCodes;
+        }
+        if (includedPrimaryTypes?.length) {
+          nextElement.includedPrimaryTypes = includedPrimaryTypes;
+        }
+        nextElement.locationBias = locationBias
+          ? {
+              radius: locationBias.radiusMeters ?? 5_000,
+              center: {
+                lat: locationBias.latitude,
+                lng: locationBias.longitude,
+              },
+            }
+          : null;
+
+        const selectHandler = (event: Event) => {
+          void handleAutocompleteSelect(event, onPlaceSelect, setError);
+        };
+        nextElement.addEventListener("gmp-select", selectHandler);
+        containerRef.current.replaceChildren(nextElement);
+        autocompleteElement = nextElement;
+        setStatus("ready");
+
+        return () => {
+          nextElement.removeEventListener("gmp-select", selectHandler);
+        };
+      } catch (nextError) {
+        if (!active) return undefined;
+        setStatus("error");
+        setError(
+          nextError instanceof Error
+            ? nextError.message
+            : "Google Place Autocomplete could not be loaded.",
+        );
+        return undefined;
+      }
+    }
+
+    let cleanup: (() => void) | undefined;
+    void renderAutocomplete().then((nextCleanup) => {
+      cleanup = nextCleanup;
+    });
+
+    return () => {
+      active = false;
+      cleanup?.();
+      autocompleteElement?.remove();
+      container.replaceChildren();
+    };
+  }, [
+    includedPrimaryTypes,
+    includedRegionCodes,
+    label,
+    locationBias,
+    onPlaceSelect,
+    placeholder,
+  ]);
+
+  return (
+    <div className={className}>
+      <label className="mb-1 block text-sm font-medium text-slate-700">
+        {label}
+      </label>
+      <div
+        ref={containerRef}
+        className="min-h-11 rounded-md border border-slate-300 bg-white px-3 py-2"
+      />
+      {status !== "ready" && (
+        <p className="mt-1 text-xs text-slate-500">
+          {status === "loading"
+            ? "Loading place search..."
+            : error || "Place search is available when Google Maps is configured."}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function RouteCards({
+  routes,
+  selectedRouteIndex,
+  onSelectRoute,
+}: {
+  routes: GoogleMapsRoute[];
+  selectedRouteIndex: number;
+  onSelectRoute?: (routeIndex: number) => void;
+}) {
+  return (
+    <div className="mt-4 space-y-2">
+      <h3 className="text-sm font-semibold text-slate-950">Route options</h3>
+      {routes.map((route, index) => {
+        const selected = index === selectedRouteIndex;
+        return (
+          <button
+            key={`${route.encodedPolyline ?? "route"}-${index}`}
+            type="button"
+            onClick={() => onSelectRoute?.(index)}
+            className={`w-full rounded-md border p-3 text-left transition ${
+              selected
+                ? "border-emerald-500 bg-emerald-50"
+                : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+            }`}
+          >
+            <span className="flex items-start justify-between gap-3">
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-slate-950">
+                  {routeLabel(route, index)}
+                </span>
+                {(route.localizedDistance || route.localizedDuration) && (
+                  <span className="mt-1 block text-sm text-slate-600">
+                    {[route.localizedDistance, route.localizedDuration]
+                      .filter(Boolean)
+                      .join(" - ")}
+                  </span>
+                )}
+                {route.description && (
+                  <span className="mt-1 block text-xs text-slate-500">
+                    {route.description}
+                  </span>
+                )}
+                {route.legs?.length ? (
+                  <span className="mt-2 block text-xs text-slate-500">
+                    {route.legs.length} leg{route.legs.length === 1 ? "" : "s"}
+                    {routeStepCount(route) > 0
+                      ? `, ${routeStepCount(route)} cue${routeStepCount(route) === 1 ? "" : "s"}`
+                      : ""}
+                  </span>
+                ) : null}
+              </span>
+              <span className="shrink-0 rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
+                {route.travelMode ?? "Route"}
+              </span>
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ElevationProfileCard({ profile }: { profile: GoogleMapsElevationProfile }) {
+  const chartPoints = elevationChartPoints(profile);
+  const distance = profile.distanceMeters
+    ? `${(profile.distanceMeters / 1000).toFixed(1)} km`
+    : undefined;
+  return (
+    <section className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-950">Elevation</h3>
+          <p className="mt-1 text-xs text-slate-600">
+            {[
+              `${Math.round(profile.totalClimbMeters)} m climb`,
+              `${Math.round(profile.totalDescentMeters)} m descent`,
+              distance,
+            ]
+              .filter(Boolean)
+              .join(" - ")}
+          </p>
+        </div>
+        {typeof profile.maxElevationMeters === "number" && (
+          <span className="rounded-md bg-white px-2 py-1 text-xs font-medium text-slate-700">
+            {Math.round(profile.maxElevationMeters)} m high
+          </span>
+        )}
+      </div>
+      <svg
+        aria-label="Elevation profile"
+        role="img"
+        viewBox="0 0 240 72"
+        className="mt-3 h-24 w-full"
+        preserveAspectRatio="none"
+      >
+        <path
+          d="M0 70 H240"
+          stroke="#cbd5e1"
+          strokeWidth="1"
+          vectorEffect="non-scaling-stroke"
+        />
+        <polyline
+          points={chartPoints}
+          fill="none"
+          stroke="#0f766e"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
     </section>
   );
 }
@@ -410,6 +743,13 @@ function PlaceCard({
               {typeof place.userRatingCount === "number"
                 ? ` from ${place.userRatingCount.toLocaleString()} reviews`
                 : ""}
+            </span>
+          )}
+          {(place.phoneNumber || place.websiteUri) && (
+            <span className="mt-1 block text-xs text-slate-500">
+              {[place.phoneNumber, place.websiteUri ? domainLabel(place.websiteUri) : ""]
+                .filter(Boolean)
+                .join(" - ")}
             </span>
           )}
         </span>
@@ -476,6 +816,60 @@ function MapFallback({
   );
 }
 
+async function handleAutocompleteSelect(
+  event: Event,
+  onPlaceSelect: (place: GooglePlaceAutocompleteResult) => void,
+  setError: (message: string) => void,
+): Promise<void> {
+  try {
+    const selectEvent = event as GooglePlaceSelectEvent;
+    const place =
+      selectEvent.placePrediction?.toPlace?.() ??
+      selectEvent.detail?.placePrediction?.toPlace?.() ??
+      selectEvent.detail?.place;
+    if (!place) return;
+    await place.fetchFields?.({
+      fields: [
+        "id",
+        "displayName",
+        "formattedAddress",
+        "location",
+        "googleMapsURI",
+      ],
+    });
+    const json = place.toJSON?.();
+    const jsonRecord = isRecord(json) ? json : {};
+    const selected = compactAutocompleteResult({
+      placeId: place.id ?? stringFromRecord(jsonRecord, "id"),
+      name:
+        place.displayName ??
+        stringFromRecord(jsonRecord, "displayName") ??
+        stringFromNestedRecord(jsonRecord, ["displayName", "text"]) ??
+        place.formattedAddress ??
+        stringFromRecord(jsonRecord, "formattedAddress") ??
+        "Selected place",
+      formattedAddress:
+        place.formattedAddress ?? stringFromRecord(jsonRecord, "formattedAddress"),
+      location:
+        coordinateFromGoogleLocation(place.location) ??
+        coordinateFromGoogleLocation(jsonRecord.location),
+      googleMapsUri:
+        place.googleMapsURI ??
+        place.googleMapsUri ??
+        stringFromRecord(jsonRecord, "googleMapsURI") ??
+        stringFromRecord(jsonRecord, "googleMapsUri"),
+    });
+    setError("");
+    onPlaceSelect(selected);
+  } catch (nextError) {
+    setError(
+      nextError instanceof Error
+        ? nextError.message
+        : "Selected place details could not be loaded.",
+    );
+  }
+}
+
 function loadGoogleMapsApi(
   config: GoogleMapsBrowserConfig & { apiKey: string },
 ): Promise<GoogleMapsApi> {
@@ -503,7 +897,7 @@ function loadGoogleMapsApi(
       key: config.apiKey,
       v: "weekly",
       callback: callbackName,
-      libraries: "maps,marker,geometry",
+      libraries: "maps,marker,geometry,places",
       auth_referrer_policy: config.authReferrerPolicy,
     });
     if (config.language) params.set("language", config.language);
@@ -532,6 +926,80 @@ function clearMapObjects(
   });
   routeLine?.setMap(null);
   bicyclingLayer?.setMap(null);
+}
+
+function normalizeRouteOptions(
+  route: GoogleMapsRoute | null | undefined,
+  routes: GoogleMapsRoute[] | null | undefined,
+): GoogleMapsRoute[] {
+  const routeList = (routes ?? []).filter(Boolean);
+  if (routeList.length > 0) return routeList;
+  return route ? [route] : [];
+}
+
+function routeLabel(route: GoogleMapsRoute, index: number): string {
+  if (route.routeLabels?.includes("DEFAULT_ROUTE")) return "Recommended route";
+  if (route.routeLabels?.includes("DEFAULT_ROUTE_ALTERNATE")) {
+    return `Alternative ${index}`;
+  }
+  if (route.routeLabels?.length) {
+    return titleCase(route.routeLabels[0]);
+  }
+  return index === 0 ? "Recommended route" : `Alternative ${index}`;
+}
+
+function routeStepCount(route: GoogleMapsRoute): number {
+  return (route.legs ?? []).reduce(
+    (count, leg) => count + (leg.steps?.length ?? 0),
+    0,
+  );
+}
+
+function elevationChartPoints(profile: GoogleMapsElevationProfile): string {
+  const values = profile.points
+    .map((point) => point.elevationMeters)
+    .filter((value) => Number.isFinite(value));
+  if (values.length === 0) return "";
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(max - min, 1);
+  return values
+    .map((value, index) => {
+      const x = values.length === 1 ? 0 : (index / (values.length - 1)) * 240;
+      const y = 68 - ((value - min) / span) * 60;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+}
+
+function compactAutocompleteResult(
+  input: GooglePlaceAutocompleteResult,
+): GooglePlaceAutocompleteResult {
+  return {
+    ...(input.placeId ? { placeId: input.placeId } : {}),
+    name: input.name,
+    ...(input.formattedAddress
+      ? { formattedAddress: input.formattedAddress }
+      : {}),
+    ...(input.location ? { location: input.location } : {}),
+    ...(input.googleMapsUri ? { googleMapsUri: input.googleMapsUri } : {}),
+  };
+}
+
+function coordinateFromGoogleLocation(
+  location: unknown,
+): GoogleMapsCoordinate | null {
+  if (!isRecord(location)) return null;
+  const latValue = location.lat;
+  const lngValue = location.lng;
+  const latitude = typeof latValue === "function" ? latValue() : latValue;
+  const longitude = typeof lngValue === "function" ? lngValue() : lngValue;
+  return typeof latitude === "number" &&
+    Number.isFinite(latitude) &&
+    typeof longitude === "number" &&
+    Number.isFinite(longitude)
+    ? { latitude, longitude }
+    : null;
 }
 
 function coordinateToLatLng(
@@ -623,8 +1091,48 @@ function uniqueMessages(values: Array<string | undefined>): string[] {
   return [...new Set(values.map((value) => value?.trim()).filter(isString))];
 }
 
+function stringFromRecord(
+  input: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  return typeof input[key] === "string" ? input[key] : undefined;
+}
+
+function stringFromNestedRecord(
+  input: Record<string, unknown>,
+  path: string[],
+): string | undefined {
+  let current: unknown = input;
+  for (const key of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[key];
+  }
+  return typeof current === "string" ? current : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function isString(value: string | undefined): value is string {
   return Boolean(value);
+}
+
+function titleCase(value: string | undefined): string {
+  return (value ?? "Route")
+    .toLowerCase()
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function domainLabel(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
 }
 
 function fallbackPinPosition(

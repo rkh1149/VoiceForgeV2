@@ -128,7 +128,14 @@ const googleMapsProvider = {
       actionKey: "compute_route",
       displayName: "Compute route",
       description:
-        "Estimate route distance, duration, legs, and encoded polyline for an itinerary.",
+        "Estimate route distance, duration, alternatives, legs, waypoints, and encoded polyline for an itinerary.",
+      requiredRole: "viewer" as const,
+    },
+    {
+      actionKey: "get_elevation_profile",
+      displayName: "Get elevation profile",
+      description:
+        "Sample elevation along a route path or encoded polyline for bike-trip climb and descent planning.",
       requiredRole: "viewer" as const,
     },
   ],
@@ -421,42 +428,74 @@ function invokeLocalGoogleMaps(body: IntegrationBody) {
         "routingPreference is supported only for DRIVE or TWO_WHEELER routes.",
       );
     }
-    const distanceMeters = Math.max(
-      600,
-      Math.round(distanceBetween(origin.location, destination.location) * 1_000),
-    );
-    const durationSeconds = Math.round(
-      distanceMeters / localMetersPerSecond(travelMode),
-    );
-    const safetyNotice = localRouteSafetyNotice(travelMode);
+    const intermediateInputs = Array.isArray(input.intermediates)
+      ? input.intermediates
+      : [];
+    const intermediates = intermediateInputs
+      .map((waypoint) => ({
+        waypoint: isPlainObject(waypoint) ? waypoint : {},
+        place: placeFromWaypoint(waypoint),
+      }))
+      .filter(
+        (
+          item,
+        ): item is { waypoint: Record<string, unknown>; place: LocalPlace } =>
+          Boolean(item.place),
+      );
+    const primaryRoute = createLocalRoute({
+      origin,
+      destination,
+      intermediates,
+      travelMode,
+      distanceScale: 1,
+      routeLabels: ["DEFAULT_ROUTE"],
+      description: "Local preview route",
+      encodedPolyline: "local_preview_polyline",
+    });
+    const routes = [primaryRoute];
+    if (input.computeAlternativeRoutes === true && intermediates.length === 0) {
+      routes.push(
+        createLocalRoute({
+          origin,
+          destination,
+          intermediates: [],
+          travelMode,
+          distanceScale: 1.12,
+          routeLabels: ["DEFAULT_ROUTE_ALTERNATE"],
+          description: "Longer local preview alternative",
+          encodedPolyline: "local_preview_polyline_alt",
+        }),
+      );
+    }
     return NextResponse.json({
       providerKey: "google_maps",
       actionKey: "compute_route",
       result: {
         provider: "google_maps",
-        route: {
-          distanceMeters,
-          duration: `${durationSeconds}s`,
-          durationSeconds,
-          localizedDistance: `${(distanceMeters / 1000).toFixed(1)} km`,
-          localizedDuration: `${Math.max(1, Math.round(durationSeconds / 60))} min`,
-          travelMode,
-          warnings: safetyNotice ? [safetyNotice] : [],
-          ...(safetyNotice ? { safetyNotice } : {}),
-          encodedPolyline: "local_preview_polyline",
-          legs: [
-            {
-              distanceMeters,
-              duration: `${durationSeconds}s`,
-              durationSeconds,
-              localizedDistance: `${(distanceMeters / 1000).toFixed(1)} km`,
-              localizedDuration: `${Math.max(1, Math.round(durationSeconds / 60))} min`,
-              startLocation: origin.location,
-              endLocation: destination.location,
-            },
-          ],
-        },
+        route: primaryRoute,
+        routes,
+        ...(input.computeAlternativeRoutes === true && intermediates.length > 0
+          ? {
+              routeNotice:
+                "Google Routes does not return alternate routes when intermediate waypoints are present.",
+            }
+          : {}),
       },
+    });
+  }
+  if (body.actionKey === "get_elevation_profile") {
+    const path = Array.isArray(input.path)
+      ? input.path.map(localCoordinate).filter(isLocalCoordinate)
+      : [localPlaces[2].location, localPlaces[0].location];
+    const samples =
+      typeof input.samples === "number" && Number.isFinite(input.samples)
+        ? Math.min(Math.max(Math.floor(input.samples), 2), 256)
+        : 64;
+    const profile = createLocalElevationProfile(path, samples);
+    return NextResponse.json({
+      providerKey: "google_maps",
+      actionKey: "get_elevation_profile",
+      result: { provider: "google_maps", profile },
     });
   }
   return localPlatformError(
@@ -491,6 +530,112 @@ function localRouteSafetyNotice(travelMode: string) {
     : undefined;
 }
 
+function createLocalRoute(input: {
+  origin: LocalPlace;
+  destination: LocalPlace;
+  intermediates: Array<{ waypoint: Record<string, unknown>; place: LocalPlace }>;
+  travelMode: string;
+  distanceScale: number;
+  routeLabels: string[];
+  description: string;
+  encodedPolyline: string;
+}) {
+  const points = [
+    input.origin,
+    ...input.intermediates.map((item) => item.place),
+    input.destination,
+  ];
+  const distanceMeters = Math.max(
+    600,
+    Math.round(pathDistanceMeters(points) * input.distanceScale),
+  );
+  const durationSeconds = Math.round(
+    distanceMeters / localMetersPerSecond(input.travelMode),
+  );
+  const safetyNotice = localRouteSafetyNotice(input.travelMode);
+  return {
+    routeLabels: input.routeLabels,
+    description: input.description,
+    distanceMeters,
+    duration: `${durationSeconds}s`,
+    durationSeconds,
+    localizedDistance: `${(distanceMeters / 1000).toFixed(1)} km`,
+    localizedDuration: `${Math.max(1, Math.round(durationSeconds / 60))} min`,
+    travelMode: input.travelMode,
+    warnings: safetyNotice ? [safetyNotice] : [],
+    ...(safetyNotice ? { safetyNotice } : {}),
+    encodedPolyline: input.encodedPolyline,
+    path: points.map((point) => point.location),
+    viewport: localViewport(points),
+    legs: localRouteLegs(input),
+  };
+}
+
+function localRouteLegs(input: {
+  origin: LocalPlace;
+  destination: LocalPlace;
+  intermediates: Array<{ waypoint: Record<string, unknown>; place: LocalPlace }>;
+  travelMode: string;
+}) {
+  const legs = [];
+  let legStart = input.origin;
+  let previous = input.origin;
+  let legDistanceMeters = 0;
+  for (const item of input.intermediates) {
+    legDistanceMeters += Math.round(
+      distanceBetween(previous.location, item.place.location) * 1_000,
+    );
+    if (item.waypoint.via !== true) {
+      legs.push(localRouteLeg(legStart, item.place, legDistanceMeters, input.travelMode));
+      legStart = item.place;
+      legDistanceMeters = 0;
+    }
+    previous = item.place;
+  }
+  legDistanceMeters += Math.round(
+    distanceBetween(previous.location, input.destination.location) * 1_000,
+  );
+  legs.push(
+    localRouteLeg(legStart, input.destination, legDistanceMeters, input.travelMode),
+  );
+  return legs;
+}
+
+function localRouteLeg(
+  start: LocalPlace,
+  end: LocalPlace,
+  distanceMeters: number,
+  travelMode: string,
+) {
+  const durationSeconds = Math.round(
+    Math.max(distanceMeters, 600) / localMetersPerSecond(travelMode),
+  );
+  return {
+    distanceMeters: Math.max(distanceMeters, 600),
+    duration: `${durationSeconds}s`,
+    durationSeconds,
+    localizedDistance: `${(Math.max(distanceMeters, 600) / 1000).toFixed(1)} km`,
+    localizedDuration: `${Math.max(1, Math.round(durationSeconds / 60))} min`,
+    startLocation: start.location,
+    endLocation: end.location,
+    steps: [
+      {
+        distanceMeters: Math.max(distanceMeters, 600),
+        duration: `${durationSeconds}s`,
+        durationSeconds,
+        localizedDistance: `${(Math.max(distanceMeters, 600) / 1000).toFixed(1)} km`,
+        localizedDuration: `${Math.max(1, Math.round(durationSeconds / 60))} min`,
+        startLocation: start.location,
+        endLocation: end.location,
+        encodedPolyline: "local_preview_step_polyline",
+        instruction: `Travel from ${start.name} to ${end.name}.`,
+        maneuver: "STRAIGHT",
+        travelMode,
+      },
+    ],
+  };
+}
+
 function placeFromWaypoint(input: unknown): LocalPlace | undefined {
   if (!isPlainObject(input)) return undefined;
   const placeId = typeof input.placeId === "string" ? input.placeId : "";
@@ -507,7 +652,121 @@ function placeFromWaypoint(input: unknown): LocalPlace | undefined {
       ),
     );
   }
+  const location = localCoordinate(input.location);
+  if (location) {
+    return {
+      placeId: "local-coordinate",
+      name: "Selected location",
+      formattedAddress: `${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}`,
+      location,
+      rating: 0,
+      userRatingCount: 0,
+      types: ["point_of_interest"],
+      googleMapsUri: "https://maps.google.com/?q=local-coordinate",
+    };
+  }
   return undefined;
+}
+
+function pathDistanceMeters(points: LocalPlace[]) {
+  let distanceMeters = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    distanceMeters += distanceBetween(
+      points[index - 1].location,
+      points[index].location,
+    ) * 1_000;
+  }
+  return distanceMeters;
+}
+
+function localViewport(points: LocalPlace[]) {
+  const latitudes = points.map((point) => point.location.latitude);
+  const longitudes = points.map((point) => point.location.longitude);
+  return {
+    low: {
+      latitude: Math.min(...latitudes),
+      longitude: Math.min(...longitudes),
+    },
+    high: {
+      latitude: Math.max(...latitudes),
+      longitude: Math.max(...longitudes),
+    },
+  };
+}
+
+function createLocalElevationProfile(
+  path: Array<{ latitude: number; longitude: number }>,
+  samples: number,
+) {
+  const safePath =
+    path.length > 1 ? path : [localPlaces[2].location, localPlaces[0].location];
+  const points = Array.from({ length: samples }, (_, index) => {
+    const ratio = samples === 1 ? 0 : index / (samples - 1);
+    const location = interpolatePath(safePath, ratio);
+    return {
+      location,
+      elevationMeters:
+        Math.round((82 + Math.sin(ratio * Math.PI * 2) * 18 + ratio * 22) * 10) /
+        10,
+      resolutionMeters: 30,
+    };
+  });
+  let totalClimbMeters = 0;
+  let totalDescentMeters = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const delta = points[index].elevationMeters - points[index - 1].elevationMeters;
+    if (delta > 0) totalClimbMeters += delta;
+    if (delta < 0) totalDescentMeters += Math.abs(delta);
+  }
+  return {
+    samples,
+    points,
+    minElevationMeters: Math.min(...points.map((point) => point.elevationMeters)),
+    maxElevationMeters: Math.max(...points.map((point) => point.elevationMeters)),
+    totalClimbMeters: Math.round(totalClimbMeters * 10) / 10,
+    totalDescentMeters: Math.round(totalDescentMeters * 10) / 10,
+    distanceMeters: Math.round(
+      safePath.reduce((total, point, index) => {
+        if (index === 0) return 0;
+        return total + distanceBetween(safePath[index - 1], point) * 1_000;
+      }, 0),
+    ),
+  };
+}
+
+function interpolatePath(
+  path: Array<{ latitude: number; longitude: number }>,
+  ratio: number,
+) {
+  const clampedRatio = Math.min(Math.max(ratio, 0), 1);
+  const segmentCount = Math.max(path.length - 1, 1);
+  const rawIndex = clampedRatio * segmentCount;
+  const segmentIndex = Math.min(Math.floor(rawIndex), segmentCount - 1);
+  const segmentRatio = rawIndex - segmentIndex;
+  const start = path[segmentIndex];
+  const end = path[segmentIndex + 1] ?? start;
+  return {
+    latitude: start.latitude + (end.latitude - start.latitude) * segmentRatio,
+    longitude: start.longitude + (end.longitude - start.longitude) * segmentRatio,
+  };
+}
+
+function localCoordinate(input: unknown) {
+  if (!isPlainObject(input)) return undefined;
+  const latitude = input.latitude;
+  const longitude = input.longitude;
+  return typeof latitude === "number" &&
+    Number.isFinite(latitude) &&
+    typeof longitude === "number" &&
+    Number.isFinite(longitude)
+    ? { latitude, longitude }
+    : undefined;
+}
+
+function isLocalCoordinate(
+  value: { latitude: number; longitude: number } | undefined,
+): value is { latitude: number; longitude: number } {
+  return Boolean(value);
 }
 
 function distanceBetween(

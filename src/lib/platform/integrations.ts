@@ -501,7 +501,7 @@ function platformCredentialForProvider(
   );
   if (!apiKey) return undefined;
   return {
-    scopes: ["places", "geocoding", "routes"],
+    scopes: ["places", "geocoding", "routes", "elevation"],
     secrets: { apiKey },
   };
 }

@@ -453,6 +453,7 @@ describe("generated app local platform fallback", () => {
           input: {
             origin: { placeId: "local-union-station" },
             destination: { placeId: "local-cn-tower" },
+            computeAlternativeRoutes: true,
           },
         }),
       }),
@@ -474,6 +475,10 @@ describe("generated app local platform fallback", () => {
             }),
           ],
         },
+        routes: [
+          expect.objectContaining({ routeLabels: ["DEFAULT_ROUTE"] }),
+          expect.objectContaining({ routeLabels: ["DEFAULT_ROUTE_ALTERNATE"] }),
+        ],
       },
     });
 
@@ -500,6 +505,45 @@ describe("generated app local platform fallback", () => {
           travelMode: "BICYCLE",
           safetyNotice: expect.stringContaining("bicycling"),
           warnings: [expect.stringContaining("bicycling")],
+        },
+      },
+    });
+
+    const elevation = await integrationsPOST(
+      new Request("http://local.test/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "invoke",
+          providerKey: "google_maps",
+          actionKey: "get_elevation_profile",
+          input: {
+            path: [
+              { latitude: 43.6453, longitude: -79.3806 },
+              { latitude: 43.6426, longitude: -79.3871 },
+            ],
+            samples: 5,
+          },
+        }),
+      }),
+    );
+
+    expect(elevation.status).toBe(200);
+    await expect(elevation.json()).resolves.toMatchObject({
+      result: {
+        provider: "google_maps",
+        profile: {
+          samples: 5,
+          points: expect.arrayContaining([
+            expect.objectContaining({
+              location: expect.objectContaining({
+                latitude: expect.any(Number),
+                longitude: expect.any(Number),
+              }),
+              elevationMeters: expect.any(Number),
+            }),
+          ]),
+          totalClimbMeters: expect.any(Number),
+          totalDescentMeters: expect.any(Number),
         },
       },
     });

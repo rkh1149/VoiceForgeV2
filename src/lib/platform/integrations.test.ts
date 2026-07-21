@@ -44,6 +44,7 @@ describe("integration catalogue", () => {
           expect.objectContaining({ actionKey: "get_place_details" }),
           expect.objectContaining({ actionKey: "geocode_address" }),
           expect.objectContaining({ actionKey: "compute_route" }),
+          expect.objectContaining({ actionKey: "get_elevation_profile" }),
         ]),
       }),
     ]));
@@ -269,6 +270,289 @@ describe("integration catalogue", () => {
         ],
       },
     });
+  });
+
+  it("supports route alternatives, labels, and step cues from Google Routes", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("X-Goog-FieldMask")).toContain("routes.routeLabels");
+      expect(headers.get("X-Goog-FieldMask")).toContain("routes.legs.steps");
+      const body = JSON.parse(String(init?.body)) as {
+        computeAlternativeRoutes?: boolean;
+        polylineQuality?: string;
+        travelMode?: string;
+      };
+      expect(body.computeAlternativeRoutes).toBe(true);
+      expect(body.polylineQuality).toBe("HIGH_QUALITY");
+      expect(body.travelMode).toBe("BICYCLE");
+      return new Response(
+        JSON.stringify({
+          routes: [
+            {
+              routeLabels: ["DEFAULT_ROUTE"],
+              description: "Waterfront Trail",
+              distanceMeters: 18000,
+              duration: "5400s",
+              localizedValues: {
+                distance: { text: "18.0 km" },
+                duration: { text: "1 hr 30 min" },
+              },
+              polyline: { encodedPolyline: "primary-bike-polyline" },
+              legs: [
+                {
+                  distanceMeters: 18000,
+                  duration: "5400s",
+                  localizedValues: {
+                    distance: { text: "18.0 km" },
+                    duration: { text: "1 hr 30 min" },
+                  },
+                  startLocation: {
+                    latLng: { latitude: 43.64, longitude: -79.38 },
+                  },
+                  endLocation: {
+                    latLng: { latitude: 43.66, longitude: -79.45 },
+                  },
+                  steps: [
+                    {
+                      distanceMeters: 1200,
+                      staticDuration: "360s",
+                      localizedValues: {
+                        distance: { text: "1.2 km" },
+                        staticDuration: { text: "6 min" },
+                      },
+                      startLocation: {
+                        latLng: { latitude: 43.64, longitude: -79.38 },
+                      },
+                      endLocation: {
+                        latLng: { latitude: 43.65, longitude: -79.39 },
+                      },
+                      polyline: { encodedPolyline: "step-polyline" },
+                      navigationInstruction: {
+                        maneuver: "TURN_RIGHT",
+                        instructions: "Turn right onto the trail.",
+                      },
+                      travelMode: "BICYCLE",
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              routeLabels: ["DEFAULT_ROUTE_ALTERNATE"],
+              description: "Park path alternate",
+              distanceMeters: 19400,
+              duration: "6000s",
+              localizedValues: {
+                distance: { text: "19.4 km" },
+                duration: { text: "1 hr 40 min" },
+              },
+              polyline: { encodedPolyline: "alternate-bike-polyline" },
+              legs: [],
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await invokeCatalogIntegrationAction({
+      providerKey: "google_maps",
+      actionKey: "compute_route",
+      input: {
+        origin: { placeId: "origin-place" },
+        destination: { placeId: "destination-place" },
+        travelMode: "BICYCLE",
+        computeAlternativeRoutes: true,
+        polylineQuality: "HIGH_QUALITY",
+      },
+      context: {
+        appId: "app_1",
+        userId: "user_1",
+        credential: {
+          id: "credential_1",
+          scopes: ["routes"],
+          secrets: { apiKey: "test-google-maps-key-12345" },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      provider: "google_maps",
+      route: {
+        routeLabels: ["DEFAULT_ROUTE"],
+        description: "Waterfront Trail",
+        encodedPolyline: "primary-bike-polyline",
+        legs: [
+          {
+            steps: [
+              {
+                instruction: "Turn right onto the trail.",
+                maneuver: "TURN_RIGHT",
+                travelMode: "BICYCLE",
+              },
+            ],
+          },
+        ],
+      },
+      routes: [
+        expect.objectContaining({ routeLabels: ["DEFAULT_ROUTE"] }),
+        expect.objectContaining({ routeLabels: ["DEFAULT_ROUTE_ALTERNATE"] }),
+      ],
+    });
+  });
+
+  it("passes via waypoints and rejects optimizing their order", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        intermediates?: Array<{ via?: boolean; placeId?: string }>;
+      };
+      expect(body.intermediates).toEqual([
+        { placeId: "trailhead-place", via: true },
+      ]);
+      return new Response(
+        JSON.stringify({
+          routes: [
+            {
+              routeLabels: ["DEFAULT_ROUTE"],
+              distanceMeters: 7000,
+              duration: "1800s",
+              localizedValues: {
+                distance: { text: "7.0 km" },
+                duration: { text: "30 min" },
+              },
+              legs: [],
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await invokeCatalogIntegrationAction({
+      providerKey: "google_maps",
+      actionKey: "compute_route",
+      input: {
+        origin: { placeId: "origin-place" },
+        destination: { placeId: "destination-place" },
+        intermediates: [{ placeId: "trailhead-place", via: true }],
+        travelMode: "BICYCLE",
+        computeAlternativeRoutes: true,
+      },
+      context: {
+        appId: "app_1",
+        userId: "user_1",
+        credential: {
+          id: "credential_1",
+          scopes: ["routes"],
+          secrets: { apiKey: "test-google-maps-key-12345" },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      routeNotice: expect.stringContaining("intermediate waypoints"),
+    });
+
+    await expect(
+      invokeCatalogIntegrationAction({
+        providerKey: "google_maps",
+        actionKey: "compute_route",
+        input: {
+          origin: { placeId: "origin-place" },
+          destination: { placeId: "destination-place" },
+          intermediates: [{ placeId: "trailhead-place", via: true }],
+          optimizeWaypointOrder: true,
+        },
+        context: {
+          appId: "app_1",
+          userId: "user_1",
+          credential: {
+            id: "credential_1",
+            scopes: ["routes"],
+            secrets: { apiKey: "test-google-maps-key-12345" },
+          },
+        },
+      }),
+    ).rejects.toThrow("optimizeWaypointOrder cannot be combined");
+  });
+
+  it("samples Google elevation profiles for bike routes", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url));
+      expect(requestUrl.pathname).toBe("/maps/api/elevation/json");
+      expect(requestUrl.searchParams.get("path")).toBe("enc:encoded-bike-polyline");
+      expect(requestUrl.searchParams.get("samples")).toBe("4");
+      expect(requestUrl.searchParams.get("key")).toBe("test-google-maps-key-12345");
+      return new Response(
+        JSON.stringify({
+          status: "OK",
+          results: [
+            {
+              elevation: 100,
+              location: { lat: 43.64, lng: -79.38 },
+              resolution: 30,
+            },
+            {
+              elevation: 125.4,
+              location: { lat: 43.65, lng: -79.39 },
+              resolution: 30,
+            },
+            {
+              elevation: 118.1,
+              location: { lat: 43.66, lng: -79.4 },
+              resolution: 30,
+            },
+            {
+              elevation: 140.1,
+              location: { lat: 43.67, lng: -79.41 },
+              resolution: 30,
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await invokeCatalogIntegrationAction({
+      providerKey: "google_maps",
+      actionKey: "get_elevation_profile",
+      input: { encodedPolyline: "encoded-bike-polyline", samples: 4 },
+      context: {
+        appId: "app_1",
+        userId: "user_1",
+        credential: {
+          id: "credential_1",
+          scopes: ["elevation"],
+          secrets: { apiKey: "test-google-maps-key-12345" },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      provider: "google_maps",
+      profile: {
+        samples: 4,
+        minElevationMeters: 100,
+        maxElevationMeters: 140.1,
+        totalClimbMeters: 47.4,
+        totalDescentMeters: 7.3,
+      },
+    });
+    const profile = result.profile as {
+      points: Array<{ location: { latitude: number; longitude: number }; elevationMeters: number }>;
+    };
+    expect(profile.points).toEqual(
+      expect.arrayContaining([
+        {
+          location: { latitude: 43.64, longitude: -79.38 },
+          elevationMeters: 100,
+          resolutionMeters: 30,
+        },
+      ]),
+    );
   });
 
   it("uses browser-specific Google Maps config when present", () => {
