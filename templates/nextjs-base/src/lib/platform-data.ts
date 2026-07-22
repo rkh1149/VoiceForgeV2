@@ -177,6 +177,7 @@ type RequestBody =
     };
 
 const SESSION_STORAGE_KEY = "voiceforge.platformSessionToken";
+const PLATFORM_RECORD_LIST_MAX_LIMIT = 200;
 
 async function request<TResponse>(body: RequestBody): Promise<TResponse> {
   const sessionToken =
@@ -267,10 +268,15 @@ export async function listPlatformRecords<TData extends object>(
   entityKey: string,
   options: { includeDeleted?: boolean; limit?: number } = {},
 ): Promise<Array<PlatformRecord<TData>>> {
+  const limit =
+    typeof options.limit === "number"
+      ? Math.min(Math.max(Math.trunc(options.limit), 1), PLATFORM_RECORD_LIST_MAX_LIMIT)
+      : undefined;
   const result = await request<{ records: Array<PlatformRecord<TData>> }>({
     action: "listRecords",
     entityKey,
     ...options,
+    ...(limit ? { limit } : {}),
   });
   return result.records;
 }
