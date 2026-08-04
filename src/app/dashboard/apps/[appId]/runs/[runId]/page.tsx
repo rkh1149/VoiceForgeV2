@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   architecturePlans,
@@ -77,7 +77,12 @@ export default async function BuildRunPage({
       createdAt: buildAgentArtifacts.createdAt,
     })
     .from(buildAgentArtifacts)
-    .where(eq(buildAgentArtifacts.buildRunId, run.id))
+    .where(
+      and(
+        eq(buildAgentArtifacts.buildRunId, run.id),
+        ne(buildAgentArtifacts.artifactType, "checkpoint"),
+      ),
+    )
     .orderBy(buildAgentArtifacts.createdAt);
 
   const logs = (run.logs ?? []) as LogEntry[];

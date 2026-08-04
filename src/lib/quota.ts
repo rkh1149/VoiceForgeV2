@@ -1,6 +1,7 @@
 import { and, count, eq, gte, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { apps, buildRuns, type User } from "@/db/schema";
+import { getBuildRunsWithCheckpoints } from "@/lib/build/checkpoints";
 
 /** Per-user monthly build quota (users.monthly_build_limit, default 10). */
 export async function checkBuildQuota(
@@ -63,6 +64,12 @@ export async function failStaleRuns(appId: string): Promise<void> {
     .map((run) => run.id);
   if (staleRunIds.length === 0) return;
 
+  // Runs with durable source checkpoints are not failed by the generic stale
+  // reaper; the status heartbeat can resume them from the latest checkpoint.
+  const checkpointedRunIds = await getBuildRunsWithCheckpoints(staleRunIds);
+  const failedRunIds = staleRunIds.filter((id) => !checkpointedRunIds.has(id));
+  if (failedRunIds.length === 0) return;
+
   await db
     .update(buildRuns)
     .set({
@@ -74,7 +81,7 @@ export async function failStaleRuns(appId: string): Promise<void> {
     .where(
       and(
         eq(buildRuns.appId, appId),
-        inArray(buildRuns.id, staleRunIds),
+        inArray(buildRuns.id, failedRunIds),
       ),
     );
   const [app] = await db

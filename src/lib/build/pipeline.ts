@@ -2,14 +2,20 @@ import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   architecturePlans,
+  type App,
   apps,
   buildRuns,
   changeRequests,
   deployments,
+  type Requirement,
   requirements,
   testResults,
 } from "@/db/schema";
-import { computeSpecComplexity, normalizeAppSpec } from "@/lib/spec";
+import {
+  computeSpecComplexity,
+  normalizeAppSpec,
+  type AppSpec,
+} from "@/lib/spec";
 import { runArchitectAgent } from "@/lib/agents/architect";
 import {
   createFallbackArchitecturePlan,
@@ -48,8 +54,12 @@ import {
 import { randomBytes } from "crypto";
 import {
   createDebugBudget,
+  hydrateDebugBudget,
   recordDebugAttempt,
   reserveDebugRound,
+  serializeDebugBudget,
+  type DebugBudget,
+  type SerializedDebugBudget,
 } from "./debug-budget";
 import {
   buildMetricsArtifactStatus,
@@ -76,6 +86,10 @@ import {
 } from "./post-generation-reviews";
 import { createPhaseAwareDebugPlan } from "./phase-aware-debug";
 import { validateGeneratedAppDependencies } from "./dependencies";
+import {
+  loadLatestBuildCheckpoint,
+  saveBuildCheckpoint,
+} from "./checkpoints";
 import { loadTemplate, type FileMap } from "./template";
 import { createRunner, type Runner, type StepName } from "./runner";
 
@@ -98,6 +112,20 @@ const STEP_ORDER: PipelineStepName[] = [
 ];
 const MAX_DEBUG_ROUNDS_PER_STEP = 5;
 const MAX_TOTAL_DEBUG_ROUNDS = 12;
+const VERCEL_WORKER_RESUME_AFTER_MS = 315_000;
+const LOCAL_WORKER_RESUME_AFTER_MS = 15 * 60_000;
+
+type StoredCodegenResult = Pick<
+  CodegenResult,
+  "deletedFiles" | "filesWritten" | "notes" | "phases"
+>;
+
+type DurableBuildMetadata = {
+  generated: StoredCodegenResult;
+  debugBudget: SerializedDebugBudget;
+  metrics: BuildMetrics;
+  seededPlatformEntities: unknown[];
+};
 
 class ArchitectureBlockedError extends Error {
   constructor(
@@ -124,8 +152,131 @@ const SUITE_FOR_STEP: Record<
 
 type LogEntry = { ts: string; message: string };
 
+type RunWithLogs = {
+  status: string;
+  createdAt: Date;
+  startedAt: Date | null;
+  logs: unknown;
+};
+
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function durableMetadata(input: {
+  generated: CodegenResult;
+  debugBudget: DebugBudget;
+  metrics: BuildMetrics;
+  seededPlatformEntities: unknown[];
+}): Record<string, unknown> {
+  const metadata: DurableBuildMetadata = {
+    generated: {
+      deletedFiles: input.generated.deletedFiles,
+      filesWritten: input.generated.filesWritten,
+      notes: input.generated.notes,
+      phases: input.generated.phases,
+    },
+    debugBudget: serializeDebugBudget(input.debugBudget),
+    metrics: input.metrics,
+    seededPlatformEntities: input.seededPlatformEntities,
+  };
+  return metadata as unknown as Record<string, unknown>;
+}
+
+function restoreGeneratedResult(value: unknown): CodegenResult {
+  const generated = isRecord(value) ? value : {};
+  return {
+    files: {},
+    deletedFiles: stringArray(generated.deletedFiles),
+    notes: typeof generated.notes === "string" ? generated.notes : "",
+    filesWritten: stringArray(generated.filesWritten),
+    phases: Array.isArray(generated.phases)
+      ? (generated.phases as CodegenResult["phases"])
+      : [],
+    operations: [],
+  };
+}
+
+function restoreBuildMetrics(value: unknown): BuildMetrics {
+  const base = createBuildMetrics();
+  if (!isRecord(value)) return base;
+  return {
+    generatedFilesByPhase: Array.isArray(value.generatedFilesByPhase)
+      ? (value.generatedFilesByPhase as BuildMetrics["generatedFilesByPhase"])
+      : base.generatedFilesByPhase,
+    reviewWarnings: Array.isArray(value.reviewWarnings)
+      ? (value.reviewWarnings as BuildMetrics["reviewWarnings"])
+      : base.reviewWarnings,
+    reviewFailures: Array.isArray(value.reviewFailures)
+      ? (value.reviewFailures as BuildMetrics["reviewFailures"])
+      : base.reviewFailures,
+    debugRounds: Array.isArray(value.debugRounds)
+      ? (value.debugRounds as BuildMetrics["debugRounds"])
+      : base.debugRounds,
+    debugRoundsByStep: isRecord(value.debugRoundsByStep)
+      ? (value.debugRoundsByStep as BuildMetrics["debugRoundsByStep"])
+      : base.debugRoundsByStep,
+    failureCategory:
+      typeof value.failureCategory === "string"
+        ? (value.failureCategory as BuildMetrics["failureCategory"])
+        : null,
+  };
+}
+
+function restoreDebugBudget(value: unknown): DebugBudget {
+  return hydrateDebugBudget(
+    isSerializedDebugBudget(value) ? value : undefined,
+    {
+      maxRoundsPerStep: MAX_DEBUG_ROUNDS_PER_STEP,
+      maxTotalRounds: MAX_TOTAL_DEBUG_ROUNDS,
+    },
+  );
+}
+
+function restoreSeededPlatformEntities(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function isSerializedDebugBudget(
+  value: unknown,
+): value is SerializedDebugBudget {
+  return (
+    isRecord(value) &&
+    typeof value.maxRoundsPerStep === "number" &&
+    typeof value.maxTotalRounds === "number" &&
+    typeof value.totalRounds === "number" &&
+    isRecord(value.roundsByStep) &&
+    isRecord(value.notesByStep)
+  );
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function lastLogDate(run: RunWithLogs): Date {
+  const logs = Array.isArray(run.logs) ? (run.logs as LogEntry[]) : [];
+  const last = logs.at(-1)?.ts;
+  const date = last ? new Date(last) : run.startedAt ?? run.createdAt;
+  return Number.isNaN(date.getTime()) ? run.startedAt ?? run.createdAt : date;
+}
+
+function shouldResumeAbandonedWorker(run: RunWithLogs): boolean {
+  const now = Date.now();
+  const startedAt = run.startedAt ?? run.createdAt;
+  const resumeAfter = process.env.VERCEL
+    ? VERCEL_WORKER_RESUME_AFTER_MS
+    : LOCAL_WORKER_RESUME_AFTER_MS;
+  return (
+    startedAt.getTime() <= now - resumeAfter &&
+    lastLogDate(run).getTime() <= now - 30_000
+  );
 }
 
 async function log(buildRunId: string, message: string): Promise<void> {
@@ -317,7 +468,6 @@ function architectureUsesPlatformSearchReports(
  */
 export async function startBuildPipeline(buildRunId: string): Promise<void> {
   const db = getDb();
-  let runner: Runner | null = null;
 
   const [run] = await db
     .select()
@@ -478,11 +628,6 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     }
 
     const usesPlatformData = architectureUsesPlatformData(architectureForStorage);
-    const usesPlatformFiles = architectureUsesPlatformFiles(architectureForStorage);
-    const usesPlatformNotifications =
-      architectureUsesPlatformNotifications(architectureForStorage);
-    const usesPlatformIntegrations =
-      architectureUsesPlatformIntegrations(architectureForStorage);
     const usesPlatformSearchReports =
       architectureUsesPlatformSearchReports(architectureForStorage);
     let seededPlatformEntities: Awaited<
@@ -882,335 +1027,62 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     }
     await log(buildRunId, "Generated app reviews passed.");
 
-    // 2. Test gauntlet with bounded debug loop.
-    runner = await createRunner(buildRunId, {
-      env:
-        seededPlatformEntities.length > 0
-          ? {
-              VOICEFORGE_PLATFORM_SCHEMA_JSON:
-                JSON.stringify(seededPlatformEntities),
-            }
-          : undefined,
-    });
-    await log(
-      buildRunId,
-      runner.kind === "sandbox"
-        ? "Testing in an isolated cloud sandbox…"
-        : "Testing on the local build machine…",
-    );
-    await runner.writeFiles(files);
-    await setStatus(buildRunId, "testing");
-
-    let stepIdx = 0;
-    while (stepIdx < STEP_ORDER.length) {
-      const step = STEP_ORDER[stepIdx];
-
-      // Browser tests need Chromium, which isn't available in the cloud
-      // sandbox image yet — record as skipped there rather than failing.
-      if (step === "e2e" && runner.kind === "sandbox") {
-        await db.insert(testResults).values({
-          buildRunId,
-          suite: "e2e",
-          status: "skipped",
-          summary: "browser tests (skipped on cloud builds)",
-        });
-        await log(buildRunId, "Skipping browser tests on cloud build.");
-        stepIdx++;
-        continue;
-      }
-
-      await log(buildRunId, `Running ${step}…`);
-      const result =
-        step === "dependencies"
-          ? runDependencySecurityStep(files)
-          : await runner.run(step);
-
-      await db.insert(testResults).values({
-        buildRunId,
-        suite: SUITE_FOR_STEP[step],
-        status: result.ok ? "passed" : "failed",
-        summary: `${step} (${Math.round(result.durationMs / 1000)}s)`,
-        details: { output: result.output },
-      });
-
-      if (result.ok) {
-        await log(buildRunId, `${step} passed.`);
-        stepIdx++;
-        continue;
-      }
-
-      const { stepRound, previousAttempts } = reserveDebugRound(
-        debugBudget,
-        step,
-      );
-      const debugPlan = createPhaseAwareDebugPlan({
-        spec,
-        files: agentVisibleFiles(files),
-        failedStep: step,
-        errorOutput: result.output,
-        generatedPhases: generated.phases,
-      });
-      recordDebugRoundMetric(metrics, {
-        step,
-        domain: debugPlan.classification.domain,
-        focus: debugPlan.classification.focus,
-        responsiblePhaseId: debugPlan.responsiblePhase.id,
-        responsibleAgentKey: debugPlan.responsiblePhase.agentKey,
-      });
-
-      await setStatus(buildRunId, "debugging");
-      await log(
-        buildRunId,
-        `${step} failed — phase-aware debug round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP} for ${debugPlan.classification.domainLabel} (${debugBudget.totalRounds}/${MAX_TOTAL_DEBUG_ROUNDS} total). Responsible phase: ${debugPlan.responsiblePhase.label}. Scope: ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} files.`,
-      );
-      const fix = await runDebugAgent({
-        spec,
-        currentFiles: debugPlan.scope.scopedFiles,
-        failedStep: step,
-        errorOutput: result.output,
-        previousAttempts,
-        debugContext: debugPlan.context,
-      });
-      if (fix.filesWritten.length === 0) {
-        await recordBuildAgentArtifact({
-          appId: app.id,
-          buildRunId,
-          agentKey: "debug_agent",
-          phaseKey: `debug-${step}`,
-          artifactType: "debug_fix",
-          status: "failed",
-          summary: `Debug ${step} produced no file changes.`,
-          payload: {
-            failedStep: step,
-            failedDomain: debugPlan.classification.domain,
-            domainLabel: debugPlan.classification.domainLabel,
-            focus: debugPlan.classification.focus,
-            responsiblePhase: debugPlan.responsiblePhase,
-            stepRound,
-            totalRounds: debugBudget.totalRounds,
-            previousAttempts,
-            suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
-            filesInspected: fix.debugDiagnostics.filesInspected,
-            preferredInspectionPaths:
-              fix.debugDiagnostics.preferredInspectionPaths,
-            visibleFileCount: fix.debugDiagnostics.visibleFileCount,
-            fullFileCount: fix.debugDiagnostics.fullFileCount,
-            strategyChangedFromPriorAttempts:
-              fix.debugDiagnostics.strategyChangedFromPriorAttempts,
-            notes: fix.notes,
-          },
-        });
-        throw new Error(`Debug agent could not produce a fix for ${step}`);
-      }
-      recordDebugAttempt(
-        debugBudget,
-        step,
-        fix.debugDiagnostics.suspectedRootCause ||
-          fix.notes ||
-          `(rewrote ${fix.filesWritten.join(", ")})`,
-      );
-      applyCodegenResult(files, fix);
-      await runner.deleteFiles(fix.deletedFiles);
-      await runner.writeFiles(fix.files);
-      await log(
-        buildRunId,
-        `Debug agent changed: ${fix.filesWritten.join(", ")}${fix.deletedFiles.length > 0 ? `; deleted: ${fix.deletedFiles.join(", ")}` : ""}. ${fix.notes}`,
-      );
-      await recordBuildAgentArtifact({
-        appId: app.id,
-        buildRunId,
-        agentKey: "debug_agent",
-        phaseKey: `debug-${step}`,
-        artifactType: "debug_fix",
-        status: "warning",
-        summary: summarizeArtifactFiles({
-          label: `Debug ${step}`,
-          filesWritten: fix.filesWritten,
-          filesDeleted: fix.deletedFiles,
-        }),
-        payload: {
-          failedStep: step,
-          failedDomain: debugPlan.classification.domain,
-          domainLabel: debugPlan.classification.domainLabel,
-          focus: debugPlan.classification.focus,
-          responsiblePhase: debugPlan.responsiblePhase,
-          stepRound,
-          totalRounds: debugBudget.totalRounds,
-          previousAttempts,
-          suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
-          filesInspected: fix.debugDiagnostics.filesInspected,
-          inspectionOperations: fix.debugDiagnostics.inspectionOperations,
-          preferredInspectionPaths: fix.debugDiagnostics.preferredInspectionPaths,
-          visibleFilePaths: fix.debugDiagnostics.visibleFilePaths,
-          visibleFileCount: fix.debugDiagnostics.visibleFileCount,
-          fullFileCount: fix.debugDiagnostics.fullFileCount,
-          limitedScope: fix.debugDiagnostics.limitedScope,
-          scopeReason: fix.debugDiagnostics.scopeReason,
-          strategyChangedFromPriorAttempts:
-            fix.debugDiagnostics.strategyChangedFromPriorAttempts,
-          notes: fix.notes,
-          filesWritten: fix.filesWritten,
-          filesDeleted: fix.deletedFiles,
-        },
-      });
-      await setStatus(buildRunId, "testing");
-      // Re-run from typecheck (install output can't be affected by src changes).
-      stepIdx = Math.min(stepIdx, 1);
-      if (step === "install") stepIdx = 0;
-    }
-
-    // 3. Push the passing code to a build branch on GitHub.
-    await log(buildRunId, "All checks passed. Creating GitHub repo…");
-    const repoName = getGeneratedAppName(app.slug);
-    const repo = await createRepoIfMissing({
-      name: repoName,
-      description: `${app.name} — built by VoiceForge V2. ${spec.purpose}`,
-      userId: app.ownerId,
+    await saveBuildCheckpoint({
       appId: app.id,
-    });
-
-    const branch = `build-${buildRunId.slice(0, 8)}`;
-    await createBranch({
-      repo: repo.repo,
-      branch,
-      fromBranch: repo.defaultBranch,
-    });
-    const { commitSha } = await commitFiles({
-      repo: repo.repo,
-      branch,
+      buildRunId,
+      stage: "testing",
       files,
-      message: `VoiceForge V2 build (spec v${requirement.version}): ${app.name}`,
-      userId: app.ownerId,
-      appId: app.id,
+      metadata: durableMetadata({
+        generated,
+        debugBudget,
+        metrics,
+        seededPlatformEntities,
+      }),
     });
     await log(
       buildRunId,
-      `Committed ${commitSha.slice(0, 7)} to branch ${branch} (${repo.htmlUrl})`,
+      `Durable checkpoint saved before checks (${Object.keys(files).length} files).`,
     );
-    await db
-      .update(apps)
-      .set({ githubRepoUrl: repo.htmlUrl, updatedAt: new Date() })
-      .where(eq(apps.id, app.id));
 
-    // 4. Preview deployment on Vercel + smoke test.
-    await setStatus(buildRunId, "deploying", { commitSha, branch });
-    await log(buildRunId, "Creating preview deployment on Vercel…");
-    const project = await ensureProject({
-      name: repoName,
-      githubRepo: `${repo.owner}/${repo.repo}`,
-      userId: app.ownerId,
-      appId: app.id,
+    await runTestGauntlet({
+      app,
+      buildRunId,
+      spec,
+      files,
+      generated,
+      debugBudget,
+      metrics,
+      seededPlatformEntities,
     });
-    await db
-      .update(apps)
-      .set({ vercelProjectId: project.id, updatedAt: new Date() })
-      .where(eq(apps.id, app.id));
 
-    // Platform-enabled apps: provision server-side env vars on the app's own
-    // Vercel project. Secrets never appear in generated browser code.
-    if (
-      spec.aiFeatures.length > 0 ||
-      usesPlatformData ||
-      usesPlatformFiles ||
-      usesPlatformNotifications ||
-      usesPlatformIntegrations
-    ) {
-      let platformToken = app.platformToken ?? app.aiToken;
-      if (!platformToken) platformToken = randomBytes(24).toString("hex");
-      const tokenUpdate: {
-        platformToken: string;
-        updatedAt: Date;
-        aiToken?: string;
-      } = {
-        platformToken,
-        updatedAt: new Date(),
-      };
-      if (spec.aiFeatures.length > 0 && !app.aiToken) {
-        tokenUpdate.aiToken = platformToken;
-      }
-      await db.update(apps).set(tokenUpdate).where(eq(apps.id, app.id));
-
-      const publicUrl = process.env.VOICEFORGE_PUBLIC_URL;
-      const vars: Record<string, string> = {
-        VOICEFORGE_APP_ID: app.id,
-        VOICEFORGE_APP_TOKEN: platformToken,
-        VOICEFORGE_REQUIRE_SIGN_IN: spec.needsLogin ? "1" : "0",
-        VOICEFORGE_SHARING_MODEL: spec.sharingModel,
-        ...(publicUrl ? { VOICEFORGE_PUBLIC_URL: publicUrl } : {}),
-      };
-      if (spec.aiFeatures.length > 0) {
-        Object.assign(vars, {
-          OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
-          AI_MODEL: process.env.OPENAI_GENAPP_MODEL ?? "gpt-5.6-terra",
-          AI_IMAGE_MODEL: process.env.OPENAI_GENAPP_IMAGE_MODEL ?? "gpt-image-2",
-        });
-      }
-      await setProjectEnvVars({
-        projectId: project.id,
-        vars,
-        userId: app.ownerId,
-        appId: app.id,
-      });
-      if (usesPlatformData) {
-        await log(buildRunId, "Platform data is enabled for this generated app.");
-      }
-      if (usesPlatformFiles) {
-        await log(buildRunId, "Platform files are enabled for this generated app.");
-      }
-      if (usesPlatformNotifications) {
-        await log(
-          buildRunId,
-          "Platform notifications and scheduled job metadata are enabled for this generated app.",
-        );
-      }
-      if (usesPlatformIntegrations) {
-        await log(
-          buildRunId,
-          "Approved platform integrations are enabled for this generated app.",
-        );
-      }
-      if (spec.aiFeatures.length > 0) {
-        await log(
-          buildRunId,
-          `AI features enabled (daily limit: ${app.aiDailyRequestLimit} requests).` +
-            (publicUrl
-              ? ""
-              : " Warning: VOICEFORGE_PUBLIC_URL is not set, so platform callbacks are INACTIVE for this app."),
-        );
-      } else if (!publicUrl) {
-        await log(
-          buildRunId,
-          "Warning: VOICEFORGE_PUBLIC_URL is not set, so platform data/files/notifications/integrations will not work in the deployed app.",
-        );
-      }
-    }
-
-    const deployment = await createDeployment({
-      projectName: repoName,
-      githubRepoId: repo.repoId,
-      ref: branch,
-      production: false,
-      userId: app.ownerId,
-      appId: app.id,
-    });
-    await db.insert(deployments).values({
+    await saveBuildCheckpoint({
       appId: app.id,
       buildRunId,
-      environment: "preview",
-      vercelDeploymentId: deployment.id,
-      status: "building",
+      stage: "publish_pending",
+      files,
+      metadata: durableMetadata({
+        generated,
+        debugBudget,
+        metrics,
+        seededPlatformEntities,
+      }),
     });
-
-    // The run stays in "deploying"; the status endpoint finalizes it
-    // (smoke test + awaiting_user_test) once Vercel reports READY.
     await log(
       buildRunId,
-      "Vercel is building the preview — this page will update when it's ready.",
+      `Durable checkpoint saved for publishing (${Object.keys(files).length} files).`,
     );
     await recordBuildMetricsArtifact({
       appId: app.id,
       buildRunId,
       metrics,
+    });
+    await publishCheckedBuild({
+      app,
+      buildRunId,
+      requirement,
+      spec,
+      files,
+      architecture: architectureForStorage,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1279,9 +1151,554 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       buildRunId,
       message,
     });
+  }
+}
+
+async function runTestGauntlet(input: {
+  app: App;
+  buildRunId: string;
+  spec: AppSpec;
+  files: FileMap;
+  generated: CodegenResult;
+  debugBudget: DebugBudget;
+  metrics: BuildMetrics;
+  seededPlatformEntities: unknown[];
+}): Promise<void> {
+  const db = getDb();
+  let runner: Runner | null = null;
+  try {
+    runner = await createRunner(input.buildRunId, {
+      env:
+        input.seededPlatformEntities.length > 0
+          ? {
+              VOICEFORGE_PLATFORM_SCHEMA_JSON: JSON.stringify(
+                input.seededPlatformEntities,
+              ),
+            }
+          : undefined,
+    });
+    await log(
+      input.buildRunId,
+      runner.kind === "sandbox"
+        ? "Testing in an isolated cloud sandbox…"
+        : "Testing on the local build machine…",
+    );
+    await runner.writeFiles(input.files);
+    await setStatus(input.buildRunId, "testing");
+
+    let stepIdx = 0;
+    while (stepIdx < STEP_ORDER.length) {
+      const step = STEP_ORDER[stepIdx];
+
+      // Browser tests need Chromium, which isn't available in the cloud
+      // sandbox image yet — record as skipped there rather than failing.
+      if (step === "e2e" && runner.kind === "sandbox") {
+        await db.insert(testResults).values({
+          buildRunId: input.buildRunId,
+          suite: "e2e",
+          status: "skipped",
+          summary: "browser tests (skipped on cloud builds)",
+        });
+        await log(input.buildRunId, "Skipping browser tests on cloud build.");
+        stepIdx++;
+        continue;
+      }
+
+      await log(input.buildRunId, `Running ${step}…`);
+      const result =
+        step === "dependencies"
+          ? runDependencySecurityStep(input.files)
+          : await runner.run(step);
+
+      await db.insert(testResults).values({
+        buildRunId: input.buildRunId,
+        suite: SUITE_FOR_STEP[step],
+        status: result.ok ? "passed" : "failed",
+        summary: `${step} (${Math.round(result.durationMs / 1000)}s)`,
+        details: { output: result.output },
+      });
+
+      if (result.ok) {
+        await log(input.buildRunId, `${step} passed.`);
+        stepIdx++;
+        continue;
+      }
+
+      const { stepRound, previousAttempts } = reserveDebugRound(
+        input.debugBudget,
+        step,
+      );
+      const debugPlan = createPhaseAwareDebugPlan({
+        spec: input.spec,
+        files: agentVisibleFiles(input.files),
+        failedStep: step,
+        errorOutput: result.output,
+        generatedPhases: input.generated.phases,
+      });
+      recordDebugRoundMetric(input.metrics, {
+        step,
+        domain: debugPlan.classification.domain,
+        focus: debugPlan.classification.focus,
+        responsiblePhaseId: debugPlan.responsiblePhase.id,
+        responsibleAgentKey: debugPlan.responsiblePhase.agentKey,
+      });
+
+      await setStatus(input.buildRunId, "debugging");
+      await log(
+        input.buildRunId,
+        `${step} failed — phase-aware debug round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP} for ${debugPlan.classification.domainLabel} (${input.debugBudget.totalRounds}/${MAX_TOTAL_DEBUG_ROUNDS} total). Responsible phase: ${debugPlan.responsiblePhase.label}. Scope: ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} files.`,
+      );
+      const fix = await runDebugAgent({
+        spec: input.spec,
+        currentFiles: debugPlan.scope.scopedFiles,
+        failedStep: step,
+        errorOutput: result.output,
+        previousAttempts,
+        debugContext: debugPlan.context,
+      });
+      if (fix.filesWritten.length === 0) {
+        await recordBuildAgentArtifact({
+          appId: input.app.id,
+          buildRunId: input.buildRunId,
+          agentKey: "debug_agent",
+          phaseKey: `debug-${step}`,
+          artifactType: "debug_fix",
+          status: "failed",
+          summary: `Debug ${step} produced no file changes.`,
+          payload: {
+            failedStep: step,
+            failedDomain: debugPlan.classification.domain,
+            domainLabel: debugPlan.classification.domainLabel,
+            focus: debugPlan.classification.focus,
+            responsiblePhase: debugPlan.responsiblePhase,
+            stepRound,
+            totalRounds: input.debugBudget.totalRounds,
+            previousAttempts,
+            suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+            filesInspected: fix.debugDiagnostics.filesInspected,
+            preferredInspectionPaths:
+              fix.debugDiagnostics.preferredInspectionPaths,
+            visibleFileCount: fix.debugDiagnostics.visibleFileCount,
+            fullFileCount: fix.debugDiagnostics.fullFileCount,
+            strategyChangedFromPriorAttempts:
+              fix.debugDiagnostics.strategyChangedFromPriorAttempts,
+            notes: fix.notes,
+          },
+        });
+        throw new Error(`Debug agent could not produce a fix for ${step}`);
+      }
+      recordDebugAttempt(
+        input.debugBudget,
+        step,
+        fix.debugDiagnostics.suspectedRootCause ||
+          fix.notes ||
+          `(rewrote ${fix.filesWritten.join(", ")})`,
+      );
+      applyCodegenResult(input.files, fix);
+      await runner.deleteFiles(fix.deletedFiles);
+      await runner.writeFiles(fix.files);
+      await log(
+        input.buildRunId,
+        `Debug agent changed: ${fix.filesWritten.join(", ")}${fix.deletedFiles.length > 0 ? `; deleted: ${fix.deletedFiles.join(", ")}` : ""}. ${fix.notes}`,
+      );
+      await recordBuildAgentArtifact({
+        appId: input.app.id,
+        buildRunId: input.buildRunId,
+        agentKey: "debug_agent",
+        phaseKey: `debug-${step}`,
+        artifactType: "debug_fix",
+        status: "warning",
+        summary: summarizeArtifactFiles({
+          label: `Debug ${step}`,
+          filesWritten: fix.filesWritten,
+          filesDeleted: fix.deletedFiles,
+        }),
+        payload: {
+          failedStep: step,
+          failedDomain: debugPlan.classification.domain,
+          domainLabel: debugPlan.classification.domainLabel,
+          focus: debugPlan.classification.focus,
+          responsiblePhase: debugPlan.responsiblePhase,
+          stepRound,
+          totalRounds: input.debugBudget.totalRounds,
+          previousAttempts,
+          suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+          filesInspected: fix.debugDiagnostics.filesInspected,
+          inspectionOperations: fix.debugDiagnostics.inspectionOperations,
+          preferredInspectionPaths: fix.debugDiagnostics.preferredInspectionPaths,
+          visibleFilePaths: fix.debugDiagnostics.visibleFilePaths,
+          visibleFileCount: fix.debugDiagnostics.visibleFileCount,
+          fullFileCount: fix.debugDiagnostics.fullFileCount,
+          limitedScope: fix.debugDiagnostics.limitedScope,
+          scopeReason: fix.debugDiagnostics.scopeReason,
+          strategyChangedFromPriorAttempts:
+            fix.debugDiagnostics.strategyChangedFromPriorAttempts,
+          notes: fix.notes,
+          filesWritten: fix.filesWritten,
+          filesDeleted: fix.deletedFiles,
+        },
+      });
+      await saveBuildCheckpoint({
+        appId: input.app.id,
+        buildRunId: input.buildRunId,
+        stage: "testing",
+        files: input.files,
+        metadata: durableMetadata({
+          generated: input.generated,
+          debugBudget: input.debugBudget,
+          metrics: input.metrics,
+          seededPlatformEntities: input.seededPlatformEntities,
+        }),
+      });
+      await setStatus(input.buildRunId, "testing");
+      // Re-run from typecheck (install output can't be affected by src changes).
+      stepIdx = Math.min(stepIdx, 1);
+      if (step === "install") stepIdx = 0;
+    }
   } finally {
     await runner?.dispose();
   }
+}
+
+async function publishCheckedBuild(input: {
+  app: App;
+  buildRunId: string;
+  requirement: Requirement;
+  spec: AppSpec;
+  architecture: ArchitecturePlan;
+  files: FileMap;
+}): Promise<void> {
+  const db = getDb();
+  const [existingDeployment] = await db
+    .select({ id: deployments.id })
+    .from(deployments)
+    .where(eq(deployments.buildRunId, input.buildRunId))
+    .orderBy(desc(deployments.createdAt))
+    .limit(1);
+  if (existingDeployment) return;
+
+  const usesPlatformData = architectureUsesPlatformData(input.architecture);
+  const usesPlatformFiles = architectureUsesPlatformFiles(input.architecture);
+  const usesPlatformNotifications = architectureUsesPlatformNotifications(
+    input.architecture,
+  );
+  const usesPlatformIntegrations = architectureUsesPlatformIntegrations(
+    input.architecture,
+  );
+
+  await setStatus(input.buildRunId, "deploying");
+  await log(input.buildRunId, "All checks passed. Creating GitHub repo…");
+  const repoName = getGeneratedAppName(input.app.slug);
+  const repo = await createRepoIfMissing({
+    name: repoName,
+    description: `${input.app.name} — built by VoiceForge V2. ${input.spec.purpose}`,
+    userId: input.app.ownerId,
+    appId: input.app.id,
+  });
+
+  const branch = `build-${input.buildRunId.slice(0, 8)}`;
+  await createBranch({
+    repo: repo.repo,
+    branch,
+    fromBranch: repo.defaultBranch,
+  });
+  const { commitSha } = await commitFiles({
+    repo: repo.repo,
+    branch,
+    files: input.files,
+    message: `VoiceForge V2 build (spec v${input.requirement.version}): ${input.app.name}`,
+    userId: input.app.ownerId,
+    appId: input.app.id,
+  });
+  await log(
+    input.buildRunId,
+    `Committed ${commitSha.slice(0, 7)} to branch ${branch} (${repo.htmlUrl})`,
+  );
+  await db
+    .update(apps)
+    .set({ githubRepoUrl: repo.htmlUrl, updatedAt: new Date() })
+    .where(eq(apps.id, input.app.id));
+
+  await setStatus(input.buildRunId, "deploying", { commitSha, branch });
+  await log(input.buildRunId, "Creating preview deployment on Vercel…");
+  const project = await ensureProject({
+    name: repoName,
+    githubRepo: `${repo.owner}/${repo.repo}`,
+    userId: input.app.ownerId,
+    appId: input.app.id,
+  });
+  await db
+    .update(apps)
+    .set({ vercelProjectId: project.id, updatedAt: new Date() })
+    .where(eq(apps.id, input.app.id));
+
+  // Platform-enabled apps: provision server-side env vars on the app's own
+  // Vercel project. Secrets never appear in generated browser code.
+  if (
+    input.spec.aiFeatures.length > 0 ||
+    usesPlatformData ||
+    usesPlatformFiles ||
+    usesPlatformNotifications ||
+    usesPlatformIntegrations
+  ) {
+    let platformToken = input.app.platformToken ?? input.app.aiToken;
+    if (!platformToken) platformToken = randomBytes(24).toString("hex");
+    const tokenUpdate: {
+      platformToken: string;
+      updatedAt: Date;
+      aiToken?: string;
+    } = {
+      platformToken,
+      updatedAt: new Date(),
+    };
+    if (input.spec.aiFeatures.length > 0 && !input.app.aiToken) {
+      tokenUpdate.aiToken = platformToken;
+    }
+    await db.update(apps).set(tokenUpdate).where(eq(apps.id, input.app.id));
+
+    const publicUrl = process.env.VOICEFORGE_PUBLIC_URL;
+    const vars: Record<string, string> = {
+      VOICEFORGE_APP_ID: input.app.id,
+      VOICEFORGE_APP_TOKEN: platformToken,
+      VOICEFORGE_REQUIRE_SIGN_IN: input.spec.needsLogin ? "1" : "0",
+      VOICEFORGE_SHARING_MODEL: input.spec.sharingModel,
+      ...(publicUrl ? { VOICEFORGE_PUBLIC_URL: publicUrl } : {}),
+    };
+    if (input.spec.aiFeatures.length > 0) {
+      Object.assign(vars, {
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
+        AI_MODEL: process.env.OPENAI_GENAPP_MODEL ?? "gpt-5.6-terra",
+        AI_IMAGE_MODEL: process.env.OPENAI_GENAPP_IMAGE_MODEL ?? "gpt-image-2",
+      });
+    }
+    await setProjectEnvVars({
+      projectId: project.id,
+      vars,
+      userId: input.app.ownerId,
+      appId: input.app.id,
+    });
+    if (usesPlatformData) {
+      await log(input.buildRunId, "Platform data is enabled for this generated app.");
+    }
+    if (usesPlatformFiles) {
+      await log(input.buildRunId, "Platform files are enabled for this generated app.");
+    }
+    if (usesPlatformNotifications) {
+      await log(
+        input.buildRunId,
+        "Platform notifications and scheduled job metadata are enabled for this generated app.",
+      );
+    }
+    if (usesPlatformIntegrations) {
+      await log(
+        input.buildRunId,
+        "Approved platform integrations are enabled for this generated app.",
+      );
+    }
+    if (input.spec.aiFeatures.length > 0) {
+      await log(
+        input.buildRunId,
+        `AI features enabled (daily limit: ${input.app.aiDailyRequestLimit} requests).` +
+          (publicUrl
+            ? ""
+            : " Warning: VOICEFORGE_PUBLIC_URL is not set, so platform callbacks are INACTIVE for this app."),
+      );
+    } else if (!publicUrl) {
+      await log(
+        input.buildRunId,
+        "Warning: VOICEFORGE_PUBLIC_URL is not set, so platform data/files/notifications/integrations will not work in the deployed app.",
+      );
+    }
+  }
+
+  const deployment = await createDeployment({
+    projectName: repoName,
+    githubRepoId: repo.repoId,
+    ref: branch,
+    production: false,
+    userId: input.app.ownerId,
+    appId: input.app.id,
+  });
+  await db.insert(deployments).values({
+    appId: input.app.id,
+    buildRunId: input.buildRunId,
+    environment: "preview",
+    vercelDeploymentId: deployment.id,
+    status: "building",
+  });
+
+  // The run stays in "deploying"; the status endpoint finalizes it
+  // (smoke test + awaiting_user_test) once Vercel reports READY.
+  await log(
+    input.buildRunId,
+    "Vercel is building the preview — this page will update when it's ready.",
+  );
+}
+
+export async function resumeBuildPipelineContinuation(
+  appId: string,
+): Promise<void> {
+  const db = getDb();
+  const [run] = await db
+    .select()
+    .from(buildRuns)
+    .where(eq(buildRuns.appId, appId))
+    .orderBy(desc(buildRuns.createdAt))
+    .limit(1);
+  if (
+    !run ||
+    !["testing", "debugging", "deploying"].includes(run.status) ||
+    !shouldResumeAbandonedWorker(run)
+  ) {
+    return;
+  }
+
+  const checkpoint = await loadLatestBuildCheckpoint<DurableBuildMetadata>(
+    run.id,
+  );
+  if (!checkpoint) return;
+
+  const [existingDeployment] = await db
+    .select({ id: deployments.id })
+    .from(deployments)
+    .where(eq(deployments.buildRunId, run.id))
+    .orderBy(desc(deployments.createdAt))
+    .limit(1);
+  if (existingDeployment) return;
+
+  const [app] = await db.select().from(apps).where(eq(apps.id, appId)).limit(1);
+  if (!app) return;
+  const [requirement] = run.requirementId
+    ? await db
+        .select()
+        .from(requirements)
+        .where(eq(requirements.id, run.requirementId))
+        .limit(1)
+    : [];
+  if (!requirement) return;
+  const [architectureRow] = await db
+    .select()
+    .from(architecturePlans)
+    .where(eq(architecturePlans.buildRunId, run.id))
+    .limit(1);
+  if (!architectureRow) return;
+
+  const spec = normalizeAppSpec(requirement.spec);
+  const architecture = architectureRow.plan as ArchitecturePlan;
+
+  try {
+    if (checkpoint.stage === "publish_pending") {
+      await log(
+        run.id,
+        "Resuming durable publishing from the saved source checkpoint…",
+      );
+      await publishCheckedBuild({
+        app,
+        buildRunId: run.id,
+        requirement,
+        spec,
+        architecture,
+        files: checkpoint.files,
+      });
+      return;
+    }
+
+    await log(run.id, "Resuming checks from the saved source checkpoint…");
+    const metadata = checkpoint.metadata;
+    const generated = restoreGeneratedResult(metadata.generated);
+    const metrics = restoreBuildMetrics(metadata.metrics);
+    const debugBudget = restoreDebugBudget(metadata.debugBudget);
+    const seededPlatformEntities = restoreSeededPlatformEntities(
+      metadata.seededPlatformEntities,
+    );
+
+    await runTestGauntlet({
+      app,
+      buildRunId: run.id,
+      spec,
+      files: checkpoint.files,
+      generated,
+      debugBudget,
+      metrics,
+      seededPlatformEntities,
+    });
+    await saveBuildCheckpoint({
+      appId: app.id,
+      buildRunId: run.id,
+      stage: "publish_pending",
+      files: checkpoint.files,
+      metadata: durableMetadata({
+        generated,
+        debugBudget,
+        metrics,
+        seededPlatformEntities,
+      }),
+    });
+    await log(
+      run.id,
+      `Durable checkpoint saved for publishing (${Object.keys(checkpoint.files).length} files).`,
+    );
+    await recordBuildMetricsArtifact({
+      appId: app.id,
+      buildRunId: run.id,
+      metrics,
+    });
+    await publishCheckedBuild({
+      app,
+      buildRunId: run.id,
+      requirement,
+      spec,
+      architecture,
+      files: checkpoint.files,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await markBuildFailed({
+      app,
+      buildRunId: run.id,
+      requirementId: run.requirementId,
+      message,
+    });
+  }
+}
+
+async function markBuildFailed(input: {
+  app: App;
+  buildRunId: string;
+  requirementId: string | null;
+  message: string;
+}): Promise<void> {
+  const db = getDb();
+  await log(input.buildRunId, `Build failed: ${input.message}`);
+  await setStatus(input.buildRunId, "failed", {
+    errorMessage: input.message,
+    finishedAt: new Date(),
+  });
+  await db
+    .update(apps)
+    .set({
+      status: input.app.productionUrl ? "deployed" : "failed",
+      updatedAt: new Date(),
+    })
+    .where(eq(apps.id, input.app.id));
+  if (input.requirementId) {
+    await db
+      .update(changeRequests)
+      .set({ status: "failed", updatedAt: new Date() })
+      .where(eq(changeRequests.requirementId, input.requirementId));
+  }
+  await audit({
+    userId: input.app.ownerId,
+    appId: input.app.id,
+    buildRunId: input.buildRunId,
+    action: "build.failed",
+    payload: { error: input.message },
+  });
+  await notifyBuildFailure(db, {
+    appId: input.app.id,
+    buildRunId: input.buildRunId,
+    message: input.message,
+  });
 }
 
 async function notifyBuildFailure(

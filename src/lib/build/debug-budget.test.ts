@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   DebugBudgetExceededError,
   createDebugBudget,
+  hydrateDebugBudget,
   recordDebugAttempt,
   reserveDebugRound,
+  serializeDebugBudget,
 } from "./debug-budget";
 
 describe("build debug budget", () => {
@@ -30,5 +32,23 @@ describe("build debug budget", () => {
     expect(() => reserveDebugRound(budget, "test")).toThrow(
       DebugBudgetExceededError,
     );
+  });
+
+  it("serializes and hydrates previous attempts for resumed builds", () => {
+    const budget = createDebugBudget({ maxRoundsPerStep: 5, maxTotalRounds: 12 });
+    reserveDebugRound(budget, "typecheck");
+    recordDebugAttempt(budget, "typecheck", "fixed nullable route params");
+
+    const restored = hydrateDebugBudget(serializeDebugBudget(budget), {
+      maxRoundsPerStep: 5,
+      maxTotalRounds: 12,
+    });
+    const next = reserveDebugRound(restored, "typecheck");
+
+    expect(next).toEqual({
+      stepRound: 2,
+      previousAttempts: ["fixed nullable route params"],
+    });
+    expect(restored.totalRounds).toBe(2);
   });
 });

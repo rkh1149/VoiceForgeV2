@@ -13,6 +13,14 @@ export type DebugBudget = {
   notesByStep: Map<string, string[]>;
 };
 
+export type SerializedDebugBudget = {
+  maxRoundsPerStep: number;
+  maxTotalRounds: number;
+  totalRounds: number;
+  roundsByStep: Record<string, number>;
+  notesByStep: Record<string, string[]>;
+};
+
 export function createDebugBudget(input: {
   maxRoundsPerStep: number;
   maxTotalRounds: number;
@@ -24,6 +32,32 @@ export function createDebugBudget(input: {
     roundsByStep: new Map(),
     notesByStep: new Map(),
   };
+}
+
+export function serializeDebugBudget(
+  budget: DebugBudget,
+): SerializedDebugBudget {
+  return {
+    maxRoundsPerStep: budget.maxRoundsPerStep,
+    maxTotalRounds: budget.maxTotalRounds,
+    totalRounds: budget.totalRounds,
+    roundsByStep: Object.fromEntries(budget.roundsByStep),
+    notesByStep: Object.fromEntries(budget.notesByStep),
+  };
+}
+
+export function hydrateDebugBudget(
+  input: SerializedDebugBudget | null | undefined,
+  fallback: { maxRoundsPerStep: number; maxTotalRounds: number },
+): DebugBudget {
+  const budget = createDebugBudget({
+    maxRoundsPerStep: input?.maxRoundsPerStep ?? fallback.maxRoundsPerStep,
+    maxTotalRounds: input?.maxTotalRounds ?? fallback.maxTotalRounds,
+  });
+  budget.totalRounds = input?.totalRounds ?? 0;
+  budget.roundsByStep = new Map(Object.entries(input?.roundsByStep ?? {}));
+  budget.notesByStep = new Map(Object.entries(input?.notesByStep ?? {}));
+  return budget;
 }
 
 export function reserveDebugRound(

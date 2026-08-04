@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import {
@@ -13,6 +13,7 @@ import type { ArchitecturePlan } from "@/lib/architecture";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import { failStaleRuns } from "@/lib/quota";
 import { finalizePendingDeployment } from "@/lib/build/finalize";
+import { resumeBuildPipelineContinuation } from "@/lib/build/pipeline";
 
 /** Poll endpoint for the app detail page: latest build run + test results.
  * Also advances pending deployments and reaps stale runs (the UI polls this
@@ -48,6 +49,7 @@ export async function GET(
 
   // Heartbeat duties: reap dead runs, advance pending deployments.
   try {
+    await resumeBuildPipelineContinuation(appId);
     await failStaleRuns(appId);
     await finalizePendingDeployment(appId);
   } catch (err) {
@@ -114,7 +116,12 @@ export async function GET(
           createdAt: buildAgentArtifacts.createdAt,
         })
         .from(buildAgentArtifacts)
-        .where(eq(buildAgentArtifacts.buildRunId, latestRun.id))
+        .where(
+          and(
+            eq(buildAgentArtifacts.buildRunId, latestRun.id),
+            ne(buildAgentArtifacts.artifactType, "checkpoint"),
+          ),
+        )
         .orderBy(buildAgentArtifacts.createdAt)
     : [];
 
