@@ -265,6 +265,75 @@ function advancedBikeSpec(): AppSpec {
   };
 }
 
+function mixMatchImageSpec(): AppSpec {
+  const base = normalizeAppSpec({
+    ...sharedSpecInput,
+    appName: "Mix and Match Grid",
+    purpose:
+      "Let family members arrange items in a grid, finish the grid, and generate a saved image of the creation.",
+    screens: [
+      {
+        name: "Grid Builder",
+        description: "Arrange items and finish the generated image.",
+      },
+    ],
+    features: ["Drag items into a grid", "Finish grid", "Generate image"],
+    dataToStore: ["finished creations with generated images"],
+    aiFeatures: ["Generate an image for the finished grid"],
+    testPlan: ["Add two items to the grid and finish it"],
+  });
+
+  const workflow = {
+    name: "Finish grid creation",
+    actor: "Editor",
+    trigger: "Editor has added items to the grid.",
+    steps: ["Finish grid", "Generate image", "Save creation"],
+    successOutcome: "A finished creation record is saved.",
+    failureStates: ["Grid is empty", "Image generation unavailable"],
+  } satisfies AppSpec["workflows"][number];
+
+  return {
+    ...base,
+    capabilityTier: "advanced",
+    dataEntities: [
+      {
+        name: "Creation",
+        description: "Finished generated grid creations.",
+        ownership: "shared",
+        fields: [
+          textField("phrase", "Phrase"),
+          {
+            name: "generatedImage",
+            label: "Generated image",
+            type: "image",
+            required: true,
+            validation: "Generated image is required.",
+          },
+        ],
+        relationships: [],
+      },
+    ],
+    workflows: [workflow],
+    acceptanceCriteria: [
+      {
+        name: workflow.name,
+        scenario: workflow.successOutcome,
+        given: workflow.trigger,
+        when: workflow.steps.join(" "),
+        then: workflow.successOutcome,
+      },
+    ],
+    testScenarios: [
+      {
+        name: workflow.name,
+        type: "workflow",
+        steps: workflow.steps,
+        expectedResult: workflow.successOutcome,
+      },
+    ],
+  };
+}
+
 describe("post-generation reviews", () => {
   it("records passing gates for a shared app with platform clients and generated tests", () => {
     const spec = normalizeAppSpec(sharedSpecInput);
@@ -503,6 +572,50 @@ export default function Page() {
 
     expect(codeReview.blockingIssues.join(" ")).toContain(
       "File upload workflow only uploads a file",
+    );
+  });
+
+  it("blocks raw generated images saved into platform-data records", () => {
+    const spec = mixMatchImageSpec();
+    const files: FileMap = {
+      "src/app/page.tsx": `"use client";
+import { PlatformSignInGate, usePlatformSessionState } from "@/components/voiceforge-reusable";
+import { createPlatformRecord, listPlatformRecords } from "@/lib/platform-data";
+
+async function createCreation(draft: { phrase: string; generatedImage: string }) {
+  return createPlatformRecord("creation", {
+    phrase: draft.phrase,
+    generated_image: draft.generatedImage.trim(),
+  });
+}
+
+export default function Page() {
+  usePlatformSessionState();
+  void PlatformSignInGate;
+  void listPlatformRecords;
+  async function finishGrid() {
+    const response = await fetch("/api/ai", { method: "POST", body: JSON.stringify({ mode: "image", prompt: "grid" }) });
+    const payload = await response.json() as { imageBase64: string };
+    await createCreation({ phrase: "A bright match", generatedImage: payload.imageBase64 });
+  }
+  return <main><h1>Mix and Match Grid</h1><button onClick={() => void finishGrid()}>Finish grid</button></main>;
+}`,
+      "src/lib/mix-match.test.ts": `import { expect, it } from "vitest";
+it("finishes a grid creation", () => expect("finish grid save creation").toContain("save"));`,
+    };
+
+    const reviews = review({
+      spec,
+      architecture: buildArchitecture(spec),
+      allFiles: files,
+    });
+    const codeReview = findReview(reviews, "code_reviewer");
+
+    expect(codeReview.blockingIssues.join(" ")).toContain(
+      "raw image/file data into platform-data records",
+    );
+    expect(codeReview.blockingIssues.join(" ")).toContain(
+      "platform-files",
     );
   });
 

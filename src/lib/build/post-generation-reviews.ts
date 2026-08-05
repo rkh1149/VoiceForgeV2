@@ -70,6 +70,8 @@ const MEMBER_ACCESS_NOTE_PATTERN =
   /\b(VoiceForge dashboard|managed from VoiceForge|managed in VoiceForge|VoiceForge app dashboard|access is managed)\b/i;
 const PLATFORM_RECORD_CALL_PATTERN =
   /\b(createPlatformRecord|updatePlatformRecord)\s*\(\s*["'`]([A-Za-z0-9_-]+)["'`]\s*,([\s\S]{0,1200}?)\)/g;
+const PLATFORM_DATA_WRITE_PATTERN =
+  /\b(?:createPlatformRecord|updatePlatformRecord)\b/;
 const PLATFORM_RECORD_WRITE_CALLS = [
   "createPlatformRecord",
   "updatePlatformRecord",
@@ -81,6 +83,10 @@ const PLATFORM_FILE_UPLOAD_PATTERN =
   /\b(uploadPlatformFile|uploadPlatformFileData|PlatformFileUploadInput)\b/;
 const PLATFORM_FILE_PERSISTENCE_PATTERN =
   /\b(createPlatformRecord|updatePlatformRecord|create[A-Za-z0-9_$]*(?:Photo|Image|File|Attachment|Journal)|listPlatformFiles|downloadPlatformFile|downloadPlatformFileToBrowser)\s*\(/;
+const RAW_PLATFORM_BINARY_PAYLOAD_PATTERN =
+  /\b(?:generated_)?(?:image|photo|file|attachment|pdf)[A-Za-z0-9_$]*\s*:\s*(?:[A-Za-z_$][\w$]*\.)?(?:imageBase64|base64Image|base64|dataUrl|generatedImage)\b/i;
+const PLATFORM_RECORD_RAW_BINARY_WINDOW_PATTERN =
+  /\b(?:createPlatformRecord|updatePlatformRecord)(?:\s*<[^>()]+>)?\s*\([\s\S]{0,1200}\b(?:imageBase64|base64Image|base64|dataUrl|generatedImage)\b/i;
 const GOOGLE_MAPS_RUNTIME_CALL_PATTERN =
   /\b(searchGoogleMapsPlaces|getGoogleMapsPlaceDetails|geocodeGoogleMapsAddress|computeGoogleMapsRoute|getGoogleMapsElevationProfile)\s*\(/;
 const GOOGLE_MAPS_INVOKE_PATTERN =
@@ -334,6 +340,13 @@ function reviewGeneratedCode(
   }
 
   blockingIssues.push(...detectPlatformFieldKeyIssues(input.spec, appSource));
+  blockingIssues.push(
+    ...detectOversizedPlatformDataPayloadIssues(
+      input.spec,
+      input.architecture,
+      appSource,
+    ),
+  );
   blockingIssues.push(...detectFakeMemberAccessIssues(appSource));
   blockingIssues.push(
     ...detectGoogleMapsImplementationIssues(input.spec, appSource),
@@ -753,6 +766,62 @@ function detectPlatformFieldKeyIssues(
   }
 
   return uniqueStrings(issues);
+}
+
+function detectOversizedPlatformDataPayloadIssues(
+  spec: AppSpec,
+  architecture: ArchitecturePlan,
+  source: readonly [string, string][],
+): string[] {
+  if (!requiresPlatformData(architecture) || !mentionsBinaryLikeStorage(spec)) {
+    return [];
+  }
+
+  const issues: string[] = [];
+  for (const [path, content] of source) {
+    if (!PLATFORM_DATA_WRITE_PATTERN.test(content)) continue;
+    if (
+      RAW_PLATFORM_BINARY_PAYLOAD_PATTERN.test(content) ||
+      PLATFORM_RECORD_RAW_BINARY_WINDOW_PATTERN.test(content)
+    ) {
+      issues.push(
+        `code_review: ${path} appears to save raw image/file data into platform-data records. Platform records are limited JSON payloads; upload binary data with platform-files and store only the returned file id/reference.`,
+      );
+    }
+  }
+
+  return uniqueStrings(issues);
+}
+
+function mentionsBinaryLikeStorage(spec: AppSpec): boolean {
+  const specText = [
+    spec.appName,
+    spec.purpose,
+    ...spec.features,
+    ...spec.dataToStore,
+    ...spec.aiFeatures,
+    ...spec.fileRequirements.flatMap((requirement) => [
+      requirement.name,
+      requirement.attachedTo,
+      ...requirement.acceptedTypes,
+    ]),
+  ].join(" ");
+
+  return (
+    /\b(image|photo|picture|file|attachment|upload|pdf|generated image|generated picture)\b/i.test(
+      specText,
+    ) ||
+    spec.dataEntities.some((entity) =>
+      entity.fields.some(
+        (field) =>
+          field.type === "image" ||
+          field.type === "file" ||
+          /\b(image|photo|picture|file|attachment|pdf)\b/i.test(
+            `${field.name} ${field.label}`,
+          ),
+      ),
+    )
+  );
 }
 
 function directPlatformPayloadSnippet(

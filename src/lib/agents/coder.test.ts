@@ -56,4 +56,14 @@ describe("coder shared rules", () => {
     expect(source).toContain("Map<string, string>");
     expect(source).toContain("text/plain fallback overwrite");
   });
+
+  it("forbids raw generated images in platform data payloads", () => {
+    const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("64 KB");
+    expect(source).toContain("imageBase64");
+    expect(source).toContain("generatedImage");
+    expect(source).toContain("uploadPlatformFileData");
+    expect(source).toContain("save only the returned file id/reference");
+  });
 });

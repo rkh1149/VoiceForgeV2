@@ -754,7 +754,7 @@ function instructionsFor(
   ];
   if (classification.focus === "data_save") {
     common.push(
-      "For save/data validation failures, trace form state, payload helpers, schema keys, platform-data/localStorage calls, and post-save state refresh.",
+      "For save/data validation failures, trace form state, payload helpers, schema keys, platform-data/localStorage calls, oversized raw base64/data URL payloads, and post-save state refresh.",
     );
   }
   if (classification.domain === "browser_accessibility") {
