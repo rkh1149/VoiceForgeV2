@@ -42,6 +42,18 @@ describe("platform file validation", () => {
     ).toThrow(PlatformDataError);
   });
 
+  it("accepts generated images that are just over the old two megabyte cap", () => {
+    const oldLimitPlus = 2 * 1024 * 1024 + 256;
+    const result = validatePlatformFileUpload({
+      fileName: "generated-grid.png",
+      contentType: "image/png",
+      dataBase64: Buffer.alloc(oldLimitPlus).toString("base64"),
+    });
+
+    expect(result.sizeBytes).toBe(oldLimitPlus);
+    expect(result.sizeBytes).toBeLessThan(PLATFORM_FILES_MAX_FILE_BYTES);
+  });
+
   it("rejects oversized uploads", () => {
     expect(() =>
       validatePlatformFileUpload({

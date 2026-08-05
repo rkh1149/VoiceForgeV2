@@ -23,7 +23,9 @@ export type PlatformFileDownload = {
   dataBase64: string;
 };
 
-export const PLATFORM_FILES_MAX_FILE_BYTES = 2 * 1024 * 1024;
+export const PLATFORM_FILES_MAX_FILE_BYTES = 3 * 1024 * 1024;
+export const PLATFORM_FILES_MAX_BASE64_CHARS =
+  Math.ceil((PLATFORM_FILES_MAX_FILE_BYTES * 4) / 3) + 512;
 export const PLATFORM_FILES_MAX_FILES_PER_APP = 250;
 export const PLATFORM_FILES_MAX_TOTAL_BYTES_PER_APP = 25 * 1024 * 1024;
 export const PLATFORM_FILES_RATE_LIMIT_WINDOW_MS = 60_000;

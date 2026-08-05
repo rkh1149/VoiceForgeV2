@@ -15,7 +15,7 @@ import {
   deletePlatformFile,
   downloadPlatformFile,
   listPlatformFiles,
-  PLATFORM_FILES_MAX_FILE_BYTES,
+  PLATFORM_FILES_MAX_BASE64_CHARS,
   uploadPlatformFile,
 } from "@/lib/platform/files";
 import {
@@ -53,7 +53,7 @@ const bodySchema = z.discriminatedUnion("action", [
     recordId: z.string().uuid().optional(),
     fileName: z.string().min(1).max(200),
     contentType: z.string().min(1).max(120),
-    dataBase64: z.string().min(1).max(PLATFORM_FILES_MAX_FILE_BYTES * 2),
+    dataBase64: z.string().min(1).max(PLATFORM_FILES_MAX_BASE64_CHARS),
   }),
   z.object({
     ...baseActionSchema,
