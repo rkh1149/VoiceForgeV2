@@ -2,15 +2,13 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { approvals, apps, buildRuns } from "@/db/schema";
 
-const RESUMABLE_RUN_STATUSES = [
+export const RESUMABLE_RUN_STATUSES = [
   "queued",
   "generating",
   "testing",
   "debugging",
   "deploying",
-  "awaiting_user_test",
   "needs_input",
-  "failed",
 ] as const;
 
 const RESUMABLE_APP_STATUSES = [
