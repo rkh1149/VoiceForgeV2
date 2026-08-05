@@ -1101,7 +1101,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       await db
         .update(apps)
         .set({
-          status: app.productionUrl ? "deployed" : "spec_approved",
+          status: appStatusAfterNeedsInput(app),
           updatedAt: new Date(),
         })
         .where(eq(apps.id, app.id));
@@ -1125,11 +1125,10 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       errorMessage: message,
       finishedAt: new Date(),
     });
-    // A failed change build must not mark a live app as failed.
     await db
       .update(apps)
       .set({
-        status: app.productionUrl ? "deployed" : "failed",
+        status: appStatusAfterBuildFailure(app),
         updatedAt: new Date(),
       })
       .where(eq(apps.id, app.id));
@@ -1677,7 +1676,7 @@ async function markBuildFailed(input: {
   await db
     .update(apps)
     .set({
-      status: input.app.productionUrl ? "deployed" : "failed",
+      status: appStatusAfterBuildFailure(input.app),
       updatedAt: new Date(),
     })
     .where(eq(apps.id, input.app.id));
@@ -1699,6 +1698,18 @@ async function markBuildFailed(input: {
     buildRunId: input.buildRunId,
     message: input.message,
   });
+}
+
+function appStatusAfterNeedsInput(app: App): App["status"] {
+  if (app.productionUrl) return "deployed";
+  if (app.previewUrl) return "testing";
+  return "spec_approved";
+}
+
+function appStatusAfterBuildFailure(app: App): App["status"] {
+  if (app.productionUrl) return "deployed";
+  if (app.previewUrl) return "testing";
+  return "failed";
 }
 
 async function notifyBuildFailure(

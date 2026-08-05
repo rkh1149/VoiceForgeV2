@@ -84,9 +84,13 @@ const PLATFORM_FILE_UPLOAD_PATTERN =
 const PLATFORM_FILE_PERSISTENCE_PATTERN =
   /\b(createPlatformRecord|updatePlatformRecord|create[A-Za-z0-9_$]*(?:Photo|Image|File|Attachment|Journal)|listPlatformFiles|downloadPlatformFile|downloadPlatformFileToBrowser)\s*\(/;
 const RAW_PLATFORM_BINARY_PAYLOAD_PATTERN =
-  /\b(?:generated_)?(?:image|photo|file|attachment|pdf)[A-Za-z0-9_$]*\s*:\s*(?:[A-Za-z_$][\w$]*\.)?(?:imageBase64|base64Image|base64|dataUrl|generatedImage)\b/i;
+  /\b(?:generated_)?(?:image|photo|file|attachment|pdf)[A-Za-z0-9_$]*\s*:\s*(?:[A-Za-z_$][\w$]*\.)?(?:imageBase64|base64Image|generatedImageBase64|rawImageData|rawFileData|rawPdfData|dataUrl|base64)\b/i;
 const PLATFORM_RECORD_RAW_BINARY_WINDOW_PATTERN =
-  /\b(?:createPlatformRecord|updatePlatformRecord)(?:\s*<[^>()]+>)?\s*\([\s\S]{0,1200}\b(?:imageBase64|base64Image|base64|dataUrl|generatedImage)\b/i;
+  /\b(?:createPlatformRecord|updatePlatformRecord)(?:\s*<[^>()]+>)?\s*\([\s\S]{0,1200}\b(?:imageBase64|base64Image|generatedImageBase64|rawImageData|rawFileData|rawPdfData|dataUrl|base64)\b/i;
+const RAW_AI_IMAGE_TO_CREATION_PATTERN =
+  /\b(?:imageBase64|base64Image|generatedImageBase64|dataUrl|base64)\b[\s\S]{0,1200}\bcreate[A-Za-z0-9_$]*Creation\s*\([\s\S]{0,700}\bgeneratedImage\s*:\s*(?:[A-Za-z_$][\w$]*\.)?(?:imageBase64|base64Image|generatedImageBase64|dataUrl|base64)\b/i;
+const GENERATED_IMAGE_VARIABLE_TO_CREATION_PATTERN =
+  /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+generate[A-Za-z0-9_$]*Image\s*\([\s\S]{0,1400}\bcreate[A-Za-z0-9_$]*Creation\s*\([\s\S]{0,700}\bgeneratedImage\s*:\s*\1\b/i;
 const GOOGLE_MAPS_RUNTIME_CALL_PATTERN =
   /\b(searchGoogleMapsPlaces|getGoogleMapsPlaceDetails|geocodeGoogleMapsAddress|computeGoogleMapsRoute|getGoogleMapsElevationProfile)\s*\(/;
 const GOOGLE_MAPS_INVOKE_PATTERN =
@@ -779,11 +783,14 @@ function detectOversizedPlatformDataPayloadIssues(
 
   const issues: string[] = [];
   for (const [path, content] of source) {
-    if (!PLATFORM_DATA_WRITE_PATTERN.test(content)) continue;
-    if (
-      RAW_PLATFORM_BINARY_PAYLOAD_PATTERN.test(content) ||
-      PLATFORM_RECORD_RAW_BINARY_WINDOW_PATTERN.test(content)
-    ) {
+    const hasUnsafePlatformPayload =
+      (PLATFORM_DATA_WRITE_PATTERN.test(content) &&
+        RAW_PLATFORM_BINARY_PAYLOAD_PATTERN.test(content)) ||
+      PLATFORM_RECORD_RAW_BINARY_WINDOW_PATTERN.test(content);
+    const hasUnsafeGeneratedImageFlow =
+      RAW_AI_IMAGE_TO_CREATION_PATTERN.test(content) ||
+      GENERATED_IMAGE_VARIABLE_TO_CREATION_PATTERN.test(content);
+    if (hasUnsafePlatformPayload || hasUnsafeGeneratedImageFlow) {
       issues.push(
         `code_review: ${path} appears to save raw image/file data into platform-data records. Platform records are limited JSON payloads; upload binary data with platform-files and store only the returned file id/reference.`,
       );

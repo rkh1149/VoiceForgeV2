@@ -589,14 +589,17 @@ async function createCreation(draft: { phrase: string; generatedImage: string })
   });
 }
 
+async function generateCreationImage() {
+  return "raw-base64-png";
+}
+
 export default function Page() {
   usePlatformSessionState();
   void PlatformSignInGate;
   void listPlatformRecords;
   async function finishGrid() {
-    const response = await fetch("/api/ai", { method: "POST", body: JSON.stringify({ mode: "image", prompt: "grid" }) });
-    const payload = await response.json() as { imageBase64: string };
-    await createCreation({ phrase: "A bright match", generatedImage: payload.imageBase64 });
+    const image = await generateCreationImage();
+    await createCreation({ phrase: "A bright match", generatedImage: image });
   }
   return <main><h1>Mix and Match Grid</h1><button onClick={() => void finishGrid()}>Finish grid</button></main>;
 }`,
@@ -616,6 +619,62 @@ it("finishes a grid creation", () => expect("finish grid save creation").toConta
     );
     expect(codeReview.blockingIssues.join(" ")).toContain(
       "platform-files",
+    );
+  });
+
+  it("allows generated image platform file references in platform-data records", () => {
+    const spec = mixMatchImageSpec();
+    const files: FileMap = {
+      "src/lib/mix-match.ts": `import { createPlatformRecord } from "@/lib/platform-data";
+
+type CreationDraft = { phrase: string; generatedImage: string };
+
+export function creationPayload(draft: CreationDraft) {
+  const reference = draft.generatedImage.trim();
+  if (!reference || reference.startsWith("data:") || reference.length > 64000) {
+    throw new Error("Generated image must be a platform file reference.");
+  }
+  return {
+    phrase: draft.phrase,
+    generated_image: reference,
+  };
+}
+
+export function createCreation(draft: CreationDraft) {
+  return createPlatformRecord("creation", creationPayload(draft));
+}`,
+      "src/app/page.tsx": `"use client";
+import { PlatformSignInGate, usePlatformSessionState } from "@/components/voiceforge-reusable";
+import { uploadPlatformFileData } from "@/lib/platform-files";
+import { createCreation } from "@/lib/mix-match";
+
+export default function Page() {
+  usePlatformSessionState();
+  void PlatformSignInGate;
+  async function finishGrid() {
+    const imageBase64 = "x".repeat(70000);
+    const savedImage = await uploadPlatformFileData({
+      fileName: "finished-grid.png",
+      contentType: "image/png",
+      dataBase64: imageBase64,
+    });
+    await createCreation({ phrase: "A bright match", generatedImage: savedImage.id });
+  }
+  return <main><h1>Mix and Match Grid</h1><button onClick={() => void finishGrid()}>Finish grid</button></main>;
+}`,
+      "src/lib/mix-match.test.ts": `import { expect, it } from "vitest";
+it("finishes a grid creation with a file reference", () => expect("upload file id reference").toContain("reference"));`,
+    };
+
+    const reviews = review({
+      spec,
+      architecture: buildArchitecture(spec),
+      allFiles: files,
+    });
+    const codeReview = findReview(reviews, "code_reviewer");
+
+    expect(codeReview.blockingIssues.join(" ")).not.toContain(
+      "raw image/file data into platform-data records",
     );
   });
 
