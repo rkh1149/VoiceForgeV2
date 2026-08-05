@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { selectChangeWorkflow } from "./change-workflow";
 
@@ -43,5 +44,16 @@ describe("selectChangeWorkflow", () => {
     expect(workflow.mode).toBe("deep-diagnostic");
     expect(workflow.previousFailedChangeCount).toBe(2);
     expect(workflow.reasons).toContain("2 prior failed change attempt(s)");
+  });
+});
+
+describe("coder shared rules", () => {
+  it("requires drag/drop tests to mock DataTransfer as a MIME-keyed store", () => {
+    const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("DataTransfer");
+    expect(source).toContain("MIME-keyed store");
+    expect(source).toContain("Map<string, string>");
+    expect(source).toContain("text/plain fallback overwrite");
   });
 });

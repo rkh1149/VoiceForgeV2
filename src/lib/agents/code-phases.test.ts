@@ -30,6 +30,19 @@ describe("code generation specialist phases", () => {
     expect(foundation?.objective).toContain("large advanced apps");
   });
 
+  it("keeps drag/drop DataTransfer guidance in test-writing phases", () => {
+    const unitTests = CODE_GENERATION_PHASES.find(
+      (phase) => phase.id === "unit-workflow-tests",
+    );
+    const reproductionTests = DEEP_DIAGNOSTIC_CHANGE_PHASES.find(
+      (phase) => phase.id === "write-reproduction-tests",
+    );
+
+    expect(unitTests?.objective).toContain("MIME-keyed");
+    expect(unitTests?.objective).toContain("DataTransfer");
+    expect(reproductionTests?.objective).toContain("MIME-keyed DataTransfer");
+  });
+
   it("keeps change mode diagnostic, implementation, test, and final review phases separate", () => {
     expect(CHANGE_GENERATION_PHASES.map((phase) => phase.agentKey)).toEqual([
       "diagnostic_agent",

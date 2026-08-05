@@ -54,7 +54,7 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Test agent: own deterministic Vitest coverage for domain helpers, storage/platform wrappers, components, and acceptance-criterion workflows. Prefer robust behavior assertions over brittle text matching.",
     objective:
-      "Add deterministic vitest tests under src/ for domain helpers, storage behavior, components, and acceptance-criterion workflows. For advanced apps, cover every editable entity and planned workflow with assertions that exercise save/update/delete helpers or visible workflow handlers, including platform schema key correctness.",
+      "Add deterministic vitest tests under src/ for domain helpers, storage behavior, components, and acceptance-criterion workflows. For advanced apps, cover every editable entity and planned workflow with assertions that exercise save/update/delete helpers or visible workflow handlers, including platform schema key correctness. For drag/drop workflows tested with fireEvent, mock DataTransfer as a MIME-keyed store, not one shared string.",
     maxTurns: 24,
   },
   {
@@ -164,7 +164,7 @@ export const DEEP_DIAGNOSTIC_CHANGE_PHASES: GenerationPhase[] = [
     specialistRole:
       "Test agent: write a deterministic failing/proving test for the bug or requested behavior before the root-cause source fix.",
     objective:
-      "Step 4: add or update deterministic unit/workflow tests that reproduce the requested bug or prove the requested behavior before making the source fix. For Save-style issues, test fill fields, click Save, visible result, and persistence/refresh when practical.",
+      "Step 4: add or update deterministic unit/workflow tests that reproduce the requested bug or prove the requested behavior before making the source fix. For Save-style issues, test fill fields, click Save, visible result, and persistence/refresh when practical. For drag/drop bugs, use a MIME-keyed DataTransfer mock so custom JSON payloads and text/plain fallbacks do not overwrite each other.",
     maxTurns: 20,
   },
   {
