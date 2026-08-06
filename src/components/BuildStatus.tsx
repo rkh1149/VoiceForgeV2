@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import AgentArtifactsList, {
   type AgentArtifactItem,
 } from "@/components/AgentArtifactsList";
+import WorkflowContractList from "@/components/WorkflowContractList";
+import type { WorkflowContract } from "@/lib/workflow-contract";
 
 type LogEntry = { ts: string; message: string };
 
@@ -43,6 +45,8 @@ type StatusPayload = {
       blockingIssues: string[];
       warnings: string[];
     };
+    workflowContractVersion: number | null;
+    workflowContracts: WorkflowContract[];
   } | null;
   failedOutput: string | null;
 };
@@ -169,9 +173,15 @@ export default function BuildStatus({ appId }: { appId: string }) {
       ? userFacingFailureMessage(buildRun.errorMessage)
       : null;
   const technicalDetails =
-    buildRun?.errorMessage && buildRun.errorMessage !== failureMessage
+    buildRun?.errorMessage &&
+    buildRun.status !== "needs_input" &&
+    buildRun.errorMessage !== failureMessage
       ? buildRun.errorMessage
       : null;
+  const workflowPlanNeedsAttention =
+    architecturePlan?.validation.blockingIssues.some((issue) =>
+      issue.startsWith("workflow_contract:"),
+    ) ?? false;
 
   return (
     <div className="space-y-4">
@@ -198,8 +208,8 @@ export default function BuildStatus({ appId }: { appId: string }) {
         )}
         {buildRun?.status === "needs_input" && (
           <p className="mt-2 text-sm text-slate-600">
-            VoiceForge understood the plan, but this app needs platform
-            capabilities that are scheduled for a later stage.
+            {buildRun.errorMessage ??
+              "VoiceForge understood the plan, but it needs more information or a platform capability before building can continue."}
           </p>
         )}
         {technicalDetails && (
@@ -274,7 +284,11 @@ export default function BuildStatus({ appId }: { appId: string }) {
                   : "bg-amber-100 text-amber-800"
               }`}
             >
-              {architecturePlan.canBuildNow ? "buildable now" : "needs later stage"}
+              {architecturePlan.canBuildNow
+                ? "buildable now"
+                : workflowPlanNeedsAttention
+                  ? "workflow plan needs attention"
+                  : "needs later stage"}
             </span>
           </div>
           <p className="mt-2 text-sm text-slate-600">{architecturePlan.summary}</p>
@@ -295,6 +309,9 @@ export default function BuildStatus({ appId }: { appId: string }) {
               ))}
             </ul>
           )}
+          <WorkflowContractList
+            contracts={architecturePlan.workflowContracts}
+          />
         </div>
       )}
 

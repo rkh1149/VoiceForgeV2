@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  BUILD_CHECKPOINT_MAX_FILE_COUNT,
+  BUILD_CHECKPOINT_MAX_SOURCE_BYTES,
   decodeFileMapFromCheckpoint,
   encodeFileMapForCheckpoint,
 } from "./checkpoints";
@@ -23,5 +25,28 @@ describe("build checkpoints", () => {
     expect(() =>
       decodeFileMapFromCheckpoint({ encoding: "plain", data: "{}" }),
     ).toThrow("unsupported source archive");
+  });
+
+  it("rejects checkpoint file maps containing dependency-sized file counts", () => {
+    const files = Object.fromEntries(
+      Array.from(
+        { length: BUILD_CHECKPOINT_MAX_FILE_COUNT + 1 },
+        (_, index) => [`node_modules/package-${index}/index.js`, "module.exports = {}"],
+      ),
+    );
+
+    expect(() => encodeFileMapForCheckpoint(files)).toThrow(
+      `the limit is ${BUILD_CHECKPOINT_MAX_FILE_COUNT}`,
+    );
+  });
+
+  it("rejects oversized checkpoint source before JSON serialization", () => {
+    const files = {
+      "src/app/page.tsx": "x".repeat(BUILD_CHECKPOINT_MAX_SOURCE_BYTES + 1),
+    };
+
+    expect(() => encodeFileMapForCheckpoint(files)).toThrow(
+      "checkpoints may contain source files only",
+    );
   });
 });

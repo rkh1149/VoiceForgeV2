@@ -5,6 +5,7 @@ import {
   type ArchitecturePlan,
 } from "../architecture";
 import { computeSpecComplexity, normalizeAppSpec, type AppSpec } from "../spec";
+import { validateWorkflowContracts } from "../workflow-contract";
 import { validateGeneratedAppDependencies } from "./dependencies";
 import { GOLDEN_REGRESSION_SPECS } from "./golden-regression-specs";
 import { runPlanningSpecialistReviews } from "./planning-specialists";
@@ -63,10 +64,15 @@ describe("golden regression specs", () => {
     for (const golden of GOLDEN_REGRESSION_SPECS) {
       const architecture = buildArchitecture(golden.spec);
       const validation = validateArchitecturePlan(architecture, golden.spec);
+      const workflowValidation = validateWorkflowContracts(
+        golden.spec,
+        architecture,
+      );
       const reviews = planningReviews(golden.spec, architecture);
 
       expect.soft(golden.spec.capabilityTier).toBe(golden.expectedTier);
       expect.soft(validation.blockingIssues, golden.id).toEqual([]);
+      expect.soft(workflowValidation.blockingIssues, golden.id).toEqual([]);
       expect
         .soft(reviews.flatMap((review) => review.blockingIssues), golden.id)
         .toEqual([]);

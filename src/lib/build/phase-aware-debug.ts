@@ -69,6 +69,8 @@ export type PhaseAwareDebugContext = {
   visibleFileCount: number;
   visibleFilePaths: string[];
   preferredInspectionPaths: string[];
+  escalated: boolean;
+  escalationReason?: string;
   instructions: string[];
 };
 
@@ -118,6 +120,8 @@ export function createPhaseAwareDebugPlan(input: {
   errorOutput: string;
   generatedPhases: readonly DebugGenerationPhase[];
   changedFilePaths?: readonly string[];
+  forceFullScope?: boolean;
+  escalationReason?: string;
 }): PhaseAwareDebugPlan {
   const classification = classifyDebugFailure({
     failedStep: input.failedStep,
@@ -136,6 +140,8 @@ export function createPhaseAwareDebugPlan(input: {
     errorOutput: input.errorOutput,
     generatedPhases: input.generatedPhases,
     changedFilePaths: input.changedFilePaths ?? [],
+    forceFullScope: input.forceFullScope ?? false,
+    escalationReason: input.escalationReason,
   });
 
   return {
@@ -154,7 +160,12 @@ export function createPhaseAwareDebugPlan(input: {
       visibleFileCount: scope.visibleFileCount,
       visibleFilePaths: scope.visibleFilePaths,
       preferredInspectionPaths: scope.preferredInspectionPaths,
-      instructions: instructionsFor(classification, responsiblePhase),
+      escalated: input.forceFullScope ?? false,
+      escalationReason: input.escalationReason,
+      instructions: instructionsFor(classification, responsiblePhase, {
+        forceFullScope: input.forceFullScope ?? false,
+        escalationReason: input.escalationReason,
+      }),
     },
   };
 }
@@ -261,6 +272,8 @@ export function selectDebugFileScope(input: {
   errorOutput: string;
   generatedPhases: readonly DebugGenerationPhase[];
   changedFilePaths: readonly string[];
+  forceFullScope?: boolean;
+  escalationReason?: string;
 }): DebugFileScope {
   const allPaths = Object.keys(input.files).sort();
   const selected = new Set<string>();
@@ -344,9 +357,11 @@ export function selectDebugFileScope(input: {
   addExisting(selected, input.files, LOCKED_PLATFORM_HELPERS);
   addRelatedImportNeighbors(selected, input.files);
 
-  const scopedPaths = [...selected]
-    .filter((path) => input.files[path] !== undefined)
-    .sort();
+  const scopedPaths = input.forceFullScope
+    ? allPaths
+    : [...selected]
+        .filter((path) => input.files[path] !== undefined)
+        .sort();
   const visibleFilePaths =
     scopedPaths.length === 0 ? allPaths : scopedPaths;
   const scopedFiles = Object.fromEntries(
@@ -358,8 +373,15 @@ export function selectDebugFileScope(input: {
   const limited = visibleFilePaths.length < allPaths.length;
 
   return {
-    label: limited ? "focused debug scope" : "full generated-app scope",
-    reason: scopeReason(input.classification, limited),
+    label: input.forceFullScope
+      ? "escalated full workflow scope"
+      : limited
+        ? "focused debug scope"
+        : "full generated-app scope",
+    reason:
+      input.forceFullScope && input.escalationReason
+        ? input.escalationReason
+        : scopeReason(input.classification, limited),
     limited,
     fullFileCount: allPaths.length,
     visibleFileCount: visibleFilePaths.length,
@@ -746,6 +768,10 @@ function moduleNameForPath(path: string): string {
 function instructionsFor(
   classification: DebugFailureClassification,
   responsiblePhase: DebugResponsiblePhase,
+  escalation: {
+    forceFullScope: boolean;
+    escalationReason?: string;
+  },
 ): string[] {
   const common = [
     `Treat this as a ${classification.domainLabel} failure, not a general rewrite.`,
@@ -765,6 +791,12 @@ function instructionsFor(
   if (classification.domain === "unit_test") {
     common.push(
       "For unit/workflow failures, inspect the failing test and source together; avoid only weakening assertions when user-visible behavior is broken.",
+    );
+  }
+  if (escalation.forceFullScope) {
+    common.push(
+      `This debug round is deliberately escalated to the full generated app because earlier focused repairs did not make reliable progress${escalation.escalationReason ? `: ${escalation.escalationReason}` : "."}`,
+      "Trace the complete user workflow from form state through validation and persistence to refreshed UI before editing. Reconsider the root cause instead of repeating the prior test-only strategy.",
     );
   }
   if (classification.domain === "integration_review_gate") {

@@ -79,14 +79,25 @@ export async function GET(
         .where(eq(architecturePlans.buildRunId, latestRun.id))
         .limit(1)
     : [];
-  const architecturePlan = architectureRow
+  const storedArchitecture = architectureRow?.plan as
+    | Partial<ArchitecturePlan>
+    | undefined;
+  const architecturePlan = architectureRow && storedArchitecture
     ? {
         summary: architectureRow.summary,
         capabilityTier: architectureRow.capabilityTier,
         complexityScore: architectureRow.complexityScore,
         canBuildNow: architectureRow.canBuildNow,
         createdAt: architectureRow.createdAt,
-        validation: (architectureRow.plan as ArchitecturePlan).capabilityValidation,
+        validation: storedArchitecture.capabilityValidation ?? {
+          approach: "Architecture details are available in the build record.",
+          blockingIssues: [],
+          warnings: [],
+          canBuildNow: architectureRow.canBuildNow,
+        },
+        workflowContractVersion:
+          storedArchitecture.workflowContractVersion ?? null,
+        workflowContracts: storedArchitecture.workflowContracts ?? [],
       }
     : null;
 

@@ -9,6 +9,11 @@ import {
   inferDependencyProfiles,
 } from "./build/dependencies";
 import { isApprovedIntegrationRequirement } from "./platform/integration-catalog";
+import {
+  ensureWorkflowContracts,
+  WORKFLOW_CONTRACT_VERSION,
+  workflowContractSchema,
+} from "./workflow-contract";
 
 const capabilityTierSchema = z.enum(["personal", "shared", "advanced"]);
 
@@ -101,6 +106,14 @@ export const architecturePlanSchema = z.object({
   uxPlan: uxPlanSchema,
   testPlan: testPlanSchema,
   acceptanceTests: z.array(z.string()),
+  workflowContractVersion: z
+    .literal(WORKFLOW_CONTRACT_VERSION)
+    .describe("Version of the machine-checkable workflow contract format"),
+  workflowContracts: z
+    .array(workflowContractSchema)
+    .describe(
+      "One strict user-workflow contract for every promised workflow, including controls, persistence, success, and downstream handoffs",
+    ),
   riskNotes: z.array(z.string()),
   unsupportedCapabilities: z.array(z.string()),
   capabilityValidation: z.object({
@@ -133,7 +146,7 @@ export function createFallbackArchitecturePlan(
   const blockingIssues = blockingIssuesForServices(platformServices);
   const needsFuturePlatform = blockingIssues.length > 0;
 
-  return {
+  const plan: ArchitecturePlan = {
     summary: `${spec.appName} is planned as a ${spec.capabilityTier} app with ${spec.screens.length} screen(s), ${spec.dataEntities.length} data entity/entities, and ${spec.workflows.length} workflow(s).`,
     requestedTier: spec.capabilityTier,
     implementationTier: needsFuturePlatform ? "personal" : spec.capabilityTier,
@@ -337,6 +350,8 @@ export function createFallbackArchitecturePlan(
       (criterion) =>
         `${criterion.name}: given ${criterion.given}, when ${criterion.when}, then ${criterion.then}`,
     ),
+    workflowContractVersion: WORKFLOW_CONTRACT_VERSION,
+    workflowContracts: [],
     riskNotes: needsFuturePlatform
       ? [
           "Current generated apps can use shared platform records, file attachments, VoiceForge member sign-in, approved notifications, and approved integration catalogue providers. Unsupported external integrations remain blocked.",
@@ -358,6 +373,8 @@ export function createFallbackArchitecturePlan(
       warnings: [],
     },
   };
+
+  return ensureWorkflowContracts(spec, plan);
 }
 
 export type ArchitectureValidation = {

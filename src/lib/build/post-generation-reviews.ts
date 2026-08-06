@@ -87,6 +87,8 @@ const RAW_PLATFORM_BINARY_PAYLOAD_PATTERN =
   /\b(?:generated_)?(?:image|photo|file|attachment|pdf)[A-Za-z0-9_$]*\s*:\s*(?:[A-Za-z_$][\w$]*\.)?(?:imageBase64|base64Image|generatedImageBase64|rawImageData|rawFileData|rawPdfData|dataUrl|base64)\b/i;
 const PLATFORM_RECORD_RAW_BINARY_WINDOW_PATTERN =
   /\b(?:createPlatformRecord|updatePlatformRecord)(?:\s*<[^>()]+>)?\s*\([\s\S]{0,1200}\b(?:imageBase64|base64Image|generatedImageBase64|rawImageData|rawFileData|rawPdfData|dataUrl|base64)\b/i;
+const RELATION_VALUE_ERROR_COLLISION_PATTERN =
+  /\bconst\s+([A-Za-z_$][\w$]*Id)\s*=\s*(?:required|validateRequired|requiredText|requiredField|requiredString)\s*\(\s*[A-Za-z_$][\w$]*\.\1\b[\s\S]{0,1200}\b[A-Za-z_$][\w$]*Ids?\.has\(\s*[A-Za-z_$][\w$]*\.\1\b/i;
 const RAW_AI_IMAGE_TO_CREATION_PATTERN =
   /\b(?:imageBase64|base64Image|generatedImageBase64|dataUrl|base64)\b[\s\S]{0,1200}\bcreate[A-Za-z0-9_$]*Creation\s*\([\s\S]{0,700}\bgeneratedImage\s*:\s*(?:[A-Za-z_$][\w$]*\.)?(?:imageBase64|base64Image|generatedImageBase64|dataUrl|base64)\b/i;
 const GENERATED_IMAGE_VARIABLE_TO_CREATION_PATTERN =
@@ -344,6 +346,7 @@ function reviewGeneratedCode(
   }
 
   blockingIssues.push(...detectPlatformFieldKeyIssues(input.spec, appSource));
+  blockingIssues.push(...detectRelationValidationCollisions(appSource));
   blockingIssues.push(
     ...detectOversizedPlatformDataPayloadIssues(
       input.spec,
@@ -870,6 +873,17 @@ function detectFakeMemberAccessIssues(
     .map(
       ([path]) =>
         `code_review: ${path} appears to implement invite/remove access controls without explaining that real access is managed from the VoiceForge dashboard.`,
+    );
+}
+
+function detectRelationValidationCollisions(
+  source: readonly [string, string][],
+): string[] {
+  return source
+    .filter(([, content]) => RELATION_VALUE_ERROR_COLLISION_PATTERN.test(content))
+    .map(
+      ([path]) =>
+        `code_review: ${path} appears to store a required-field validation error in the related record id variable and then use it for membership validation. Rename the error to fieldNameError, preserve the selected id value, and test both a valid saved id and an unknown id.`,
     );
 }
 
