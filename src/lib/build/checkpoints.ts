@@ -6,6 +6,8 @@ import type { FileMap } from "./template";
 
 export const BUILD_CHECKPOINT_ARTIFACT_TYPE = "checkpoint";
 export const BUILD_CHECKPOINT_AGENT_KEY = "pipeline_checkpoint";
+export const BUILD_CHECKPOINT_MAX_FILE_COUNT = 2_000;
+export const BUILD_CHECKPOINT_MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 
 export type BuildCheckpointStage = "testing" | "publish_pending";
 
@@ -33,13 +35,37 @@ export type LoadedBuildCheckpoint<TMetadata = Record<string, unknown>> = {
 };
 
 export function encodeFileMapForCheckpoint(files: FileMap): EncodedFileMap {
+  const paths = Object.keys(files);
+  if (paths.length > BUILD_CHECKPOINT_MAX_FILE_COUNT) {
+    throw new Error(
+      `Build checkpoint contains ${paths.length} files; the limit is ${BUILD_CHECKPOINT_MAX_FILE_COUNT}. ` +
+        "Dependency or build-output directories must not be included in generated app source.",
+    );
+  }
+
+  let sourceBytes = 0;
+  for (const path of paths) {
+    sourceBytes +=
+      Buffer.byteLength(path, "utf8") + Buffer.byteLength(files[path], "utf8");
+    if (sourceBytes > BUILD_CHECKPOINT_MAX_SOURCE_BYTES) {
+      throw new Error(
+        `Build checkpoint source exceeds ${formatMegabytes(BUILD_CHECKPOINT_MAX_SOURCE_BYTES)}. ` +
+          "Generated app checkpoints may contain source files only, not dependencies or build output.",
+      );
+    }
+  }
+
   const json = JSON.stringify(files);
   return {
     encoding: "gzip+base64",
     data: gzipSync(Buffer.from(json, "utf8")).toString("base64"),
-    fileCount: Object.keys(files).length,
+    fileCount: paths.length,
     byteLength: Buffer.byteLength(json, "utf8"),
   };
+}
+
+function formatMegabytes(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
 }
 
 export function decodeFileMapFromCheckpoint(archive: unknown): FileMap {

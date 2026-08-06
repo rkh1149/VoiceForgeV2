@@ -452,6 +452,38 @@ export default function Page() { return <main><input id="item" /><img src="/miss
     expect(uxReview.warnings.join(" ")).toContain("Form controls need labels");
   });
 
+  it("blocks relation validation that confuses a selected id with its error", () => {
+    const spec = normalizeAppSpec(sharedSpecInput);
+    const files: FileMap = {
+      "src/app/page.tsx": `"use client";
+import { createPlatformRecord } from "@/lib/platform-data";
+export default function Page() { void createPlatformRecord; return <main><h1>Planner</h1></main>; }`,
+      "src/lib/meal-planner.ts": `
+const required = (value: string) => value.trim() ? undefined : "Required";
+export function validatePlannedMealDraft(draft: { recipeId: string }, recipeIds: Set<string>) {
+  const recipeId = required(draft.recipeId);
+  const recipe = !recipeId || !recipeIds.has(draft.recipeId)
+    ? "Choose an existing saved recipe."
+    : undefined;
+  return { recipe };
+}`,
+      "src/lib/meal-planner.test.ts": `import { expect, it } from "vitest";
+it("tests a planned meal", () => expect(true).toBe(true));`,
+    };
+
+    const codeReview = findReview(
+      review({ spec, architecture: buildArchitecture(spec), allFiles: files }),
+      "code_reviewer",
+    );
+
+    expect(codeReview.blockingIssues.join(" ")).toContain(
+      "required-field validation error in the related record id variable",
+    );
+    expect(codeReview.blockingIssues.join(" ")).toContain(
+      "valid saved id and an unknown id",
+    );
+  });
+
   it("blocks advanced placeholder apps with incomplete workflow controls and type-only Google Maps references", () => {
     const spec = advancedBikeSpec();
     const files: FileMap = {

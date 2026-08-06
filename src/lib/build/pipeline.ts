@@ -85,6 +85,14 @@ import {
   runPostGenerationReviews,
 } from "./post-generation-reviews";
 import { createPhaseAwareDebugPlan } from "./phase-aware-debug";
+import {
+  compareFailureFingerprints,
+  createFailureFingerprint,
+  restoreFileMap,
+  shouldEscalateDebugScope,
+  type FailureFingerprint,
+  type FailureProgress,
+} from "./debug-progress";
 import { validateGeneratedAppDependencies } from "./dependencies";
 import {
   loadLatestBuildCheckpoint,
@@ -92,6 +100,10 @@ import {
 } from "./checkpoints";
 import { loadTemplate, type FileMap } from "./template";
 import { createRunner, type Runner, type StepName } from "./runner";
+import {
+  ensureWorkflowContracts,
+  validateWorkflowContracts,
+} from "../workflow-contract";
 
 /**
  * Build pipeline (Stage 2): approved spec -> generated code -> local test
@@ -123,8 +135,23 @@ type StoredCodegenResult = Pick<
 type DurableBuildMetadata = {
   generated: StoredCodegenResult;
   debugBudget: SerializedDebugBudget;
+  debugProgress?: SerializedDebugProgress;
   metrics: BuildMetrics;
   seededPlatformEntities: unknown[];
+};
+
+type SerializedDebugProgress = {
+  ineffectiveRoundsByStep: Record<string, number>;
+  lastProgressByStep: Record<string, FailureProgress>;
+};
+
+type PendingDebugFix = {
+  step: PipelineStepName;
+  beforeFiles: FileMap;
+  beforeFingerprint: FailureFingerprint;
+  filesWritten: string[];
+  filesDeleted: string[];
+  stepRound: number;
 };
 
 class ArchitectureBlockedError extends Error {
@@ -166,6 +193,7 @@ function uniqueStrings(values: string[]): string[] {
 function durableMetadata(input: {
   generated: CodegenResult;
   debugBudget: DebugBudget;
+  debugProgress?: SerializedDebugProgress;
   metrics: BuildMetrics;
   seededPlatformEntities: unknown[];
 }): Record<string, unknown> {
@@ -177,6 +205,7 @@ function durableMetadata(input: {
       phases: input.generated.phases,
     },
     debugBudget: serializeDebugBudget(input.debugBudget),
+    debugProgress: input.debugProgress,
     metrics: input.metrics,
     seededPlatformEntities: input.seededPlatformEntities,
   };
@@ -231,6 +260,24 @@ function restoreDebugBudget(value: unknown): DebugBudget {
       maxTotalRounds: MAX_TOTAL_DEBUG_ROUNDS,
     },
   );
+}
+
+function restoreDebugProgress(value: unknown): SerializedDebugProgress {
+  if (!isRecord(value)) {
+    return { ineffectiveRoundsByStep: {}, lastProgressByStep: {} };
+  }
+  const ineffectiveRoundsByStep = isRecord(value.ineffectiveRoundsByStep)
+    ? Object.fromEntries(
+        Object.entries(value.ineffectiveRoundsByStep).filter(
+          (entry): entry is [string, number] =>
+            typeof entry[1] === "number" && Number.isFinite(entry[1]),
+        ),
+      )
+    : {};
+  const lastProgressByStep = isRecord(value.lastProgressByStep)
+    ? (value.lastProgressByStep as Record<string, FailureProgress>)
+    : {};
+  return { ineffectiveRoundsByStep, lastProgressByStep };
 }
 
 function restoreSeededPlatformEntities(value: unknown): unknown[] {
@@ -515,9 +562,38 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
 
     await log(buildRunId, "Creating architecture plan…");
     const usedArchitectAgent = shouldUseArchitectAgent();
-    const architecture = usedArchitectAgent
-      ? await runArchitectAgent({ spec, complexity })
-      : createFallbackArchitecturePlan(spec, complexity);
+    let architecture = ensureWorkflowContracts(
+      spec,
+      usedArchitectAgent
+        ? await runArchitectAgent({ spec, complexity })
+        : createFallbackArchitecturePlan(spec, complexity),
+    );
+    let workflowContractValidation = validateWorkflowContracts(
+      spec,
+      architecture,
+    );
+    if (
+      usedArchitectAgent &&
+      workflowContractValidation.blockingIssues.length > 0
+    ) {
+      await log(
+        buildRunId,
+        "Refining incomplete workflow contracts before code generation…",
+      );
+      architecture = ensureWorkflowContracts(
+        spec,
+        await runArchitectAgent({
+          spec,
+          complexity,
+          workflowContractFeedback:
+            workflowContractValidation.blockingIssues,
+        }),
+      );
+      workflowContractValidation = validateWorkflowContracts(
+        spec,
+        architecture,
+      );
+    }
     const architectureValidation = validateArchitecturePlan(architecture, spec);
     const planningReviews = runPlanningSpecialistReviews({
       spec,
@@ -533,14 +609,18 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     );
     const combinedArchitectureValidation = {
       canBuildNow:
-        architectureValidation.canBuildNow && planningBlockingIssues.length === 0,
+        architectureValidation.canBuildNow &&
+        planningBlockingIssues.length === 0 &&
+        workflowContractValidation.blockingIssues.length === 0,
       blockingIssues: uniqueStrings([
         ...architectureValidation.blockingIssues,
         ...planningBlockingIssues,
+        ...workflowContractValidation.blockingIssues,
       ]),
       warnings: uniqueStrings([
         ...architectureValidation.warnings,
         ...planningWarnings,
+        ...workflowContractValidation.warnings,
       ]),
     };
     const architectureForStorage = {
@@ -575,6 +655,8 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         canBuildNow: combinedArchitectureValidation.canBuildNow,
         blockingIssues: combinedArchitectureValidation.blockingIssues,
         warnings: combinedArchitectureValidation.warnings,
+        workflowContractVersion: architectureForStorage.workflowContractVersion,
+        workflowContractStats: workflowContractValidation.stats,
       },
     });
     await recordBuildAgentArtifact({
@@ -599,6 +681,43 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         components: architectureForStorage.componentMap.length,
         dataEntities: architectureForStorage.dataModel.length,
         platformServices: architectureForStorage.platformServices,
+        workflowContractVersion: architectureForStorage.workflowContractVersion,
+        workflowContractStats: workflowContractValidation.stats,
+      },
+    });
+    await recordBuildAgentArtifact({
+      appId: app.id,
+      buildRunId,
+      agentKey: "workflow_contract_planner",
+      phaseKey: "workflow-contracts",
+      artifactType: "workflow_contract",
+      status: artifactStatusFromIssues({
+        failed: workflowContractValidation.blockingIssues.length > 0,
+        warnings: workflowContractValidation.warnings,
+      }),
+      summary: `${workflowContractValidation.stats.workflows} promised workflow(s), ${workflowContractValidation.stats.steps} user step(s), ${workflowContractValidation.stats.savedRecordTransitions} saved-record transition(s), and ${workflowContractValidation.stats.handoffs} downstream handoff(s).`,
+      payload: {
+        version: architectureForStorage.workflowContractVersion,
+        stats: workflowContractValidation.stats,
+        blockingIssues: workflowContractValidation.blockingIssues,
+        warnings: workflowContractValidation.warnings,
+        workflows: architectureForStorage.workflowContracts.map((contract) => ({
+          id: contract.id,
+          name: contract.name,
+          roles: contract.actor.roles,
+          start: contract.start,
+          controls: contract.controls.map((control) => control.accessibleName),
+          saves: contract.expectedSaves.map((save) => ({
+            entityKey: save.entityKey,
+            operation: save.operation,
+            storage: save.storage,
+          })),
+          handoffs: contract.handoffs.map((handoff) => ({
+            produces: handoff.produces,
+            consumerWorkflowId: handoff.consumerWorkflowId,
+            consumerRoute: handoff.consumerRoute,
+          })),
+        })),
       },
     });
     for (const review of planningReviews) {
@@ -614,6 +733,10 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       });
     }
     await log(buildRunId, `Architecture: ${architectureForStorage.summary}`);
+    await log(
+      buildRunId,
+      `Workflow contracts ready: ${workflowContractValidation.stats.workflows} workflows, ${workflowContractValidation.stats.steps} user steps, ${workflowContractValidation.stats.savedRecordTransitions} saved-record transitions, and ${workflowContractValidation.stats.handoffs} cross-workflow handoffs.`,
+    );
     if (combinedArchitectureValidation.warnings.length > 0) {
       await log(
         buildRunId,
@@ -621,8 +744,15 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       );
     }
     if (!combinedArchitectureValidation.canBuildNow) {
+      const workflowContractOnly =
+        combinedArchitectureValidation.blockingIssues.length > 0 &&
+        combinedArchitectureValidation.blockingIssues.every((issue) =>
+          issue.startsWith("workflow_contract:"),
+        );
       throw new ArchitectureBlockedError(
-        `This app needs platform capabilities that are not available in VoiceForge V2 yet: ${combinedArchitectureValidation.blockingIssues.join(" ")}`,
+        workflowContractOnly
+          ? `VoiceForge could not produce a complete workflow plan yet: ${combinedArchitectureValidation.blockingIssues.join(" ")}`
+          : `This app needs planning or platform capabilities that are not available in VoiceForge V2 yet: ${combinedArchitectureValidation.blockingIssues.join(" ")}`,
         combinedArchitectureValidation.blockingIssues,
       );
     }
@@ -1160,6 +1290,7 @@ async function runTestGauntlet(input: {
   files: FileMap;
   generated: CodegenResult;
   debugBudget: DebugBudget;
+  debugProgress?: SerializedDebugProgress;
   metrics: BuildMetrics;
   seededPlatformEntities: unknown[];
 }): Promise<void> {
@@ -1176,6 +1307,7 @@ async function runTestGauntlet(input: {
             }
           : undefined,
     });
+    const activeRunner = runner;
     await log(
       input.buildRunId,
       runner.kind === "sandbox"
@@ -1184,6 +1316,87 @@ async function runTestGauntlet(input: {
     );
     await runner.writeFiles(input.files);
     await setStatus(input.buildRunId, "testing");
+
+    const passedSteps = new Set<PipelineStepName>();
+    const ineffectiveRoundsByStep = new Map<PipelineStepName, number>(
+      Object.entries(input.debugProgress?.ineffectiveRoundsByStep ?? {}) as [
+        PipelineStepName,
+        number,
+      ][],
+    );
+    const lastProgressByStep = new Map<PipelineStepName, FailureProgress>(
+      Object.entries(input.debugProgress?.lastProgressByStep ?? {}) as [
+        PipelineStepName,
+        FailureProgress,
+      ][],
+    );
+    let pendingFix: PendingDebugFix | null = null;
+    const getPendingFix = (): PendingDebugFix | null => pendingFix;
+
+    const saveTestingCheckpoint = async () => {
+      await saveBuildCheckpoint({
+        appId: input.app.id,
+        buildRunId: input.buildRunId,
+        stage: "testing",
+        files: input.files,
+        metadata: durableMetadata({
+          generated: input.generated,
+          debugBudget: input.debugBudget,
+          debugProgress: {
+            ineffectiveRoundsByStep: Object.fromEntries(
+              ineffectiveRoundsByStep,
+            ),
+            lastProgressByStep: Object.fromEntries(lastProgressByStep),
+          },
+          metrics: input.metrics,
+          seededPlatformEntities: input.seededPlatformEntities,
+        }),
+      });
+    };
+
+    const rollbackPendingFix = async (
+      failedResultStep: PipelineStepName,
+      reason: string,
+      progress?: FailureProgress,
+    ) => {
+      if (!pendingFix) return;
+      const rolledBack = pendingFix;
+      const removedPaths = restoreFileMap(input.files, rolledBack.beforeFiles);
+      await activeRunner.deleteFiles(removedPaths);
+      await activeRunner.writeFiles(input.files);
+      const ineffectiveRounds =
+        (ineffectiveRoundsByStep.get(rolledBack.step) ?? 0) + 1;
+      ineffectiveRoundsByStep.set(rolledBack.step, ineffectiveRounds);
+      if (progress) lastProgressByStep.set(rolledBack.step, progress);
+      await log(
+        input.buildRunId,
+        `Debug repair for ${rolledBack.step} was rolled back after validation: ${reason} (${ineffectiveRounds} ineffective round(s)).`,
+      );
+      await recordBuildAgentArtifact({
+        appId: input.app.id,
+        buildRunId: input.buildRunId,
+        agentKey: "debug_agent",
+        phaseKey: `debug-${rolledBack.step}`,
+        artifactType: "debug_validation",
+        status: "warning",
+        summary: `Rolled back debug ${rolledBack.step} round ${rolledBack.stepRound}: ${reason}`,
+        payload: {
+          failedStep: rolledBack.step,
+          validationStep: failedResultStep,
+          stepRound: rolledBack.stepRound,
+          outcome: "rolled_back",
+          reason,
+          progress,
+          beforeFingerprint: rolledBack.beforeFingerprint,
+          filesWritten: rolledBack.filesWritten,
+          filesDeleted: rolledBack.filesDeleted,
+          ineffectiveRounds,
+        },
+      });
+      pendingFix = null;
+      await saveTestingCheckpoint();
+      await setStatus(input.buildRunId, "testing");
+    };
 
     let stepIdx = 0;
     while (stepIdx < STEP_ORDER.length) {
@@ -1214,14 +1427,138 @@ async function runTestGauntlet(input: {
         suite: SUITE_FOR_STEP[step],
         status: result.ok ? "passed" : "failed",
         summary: `${step} (${Math.round(result.durationMs / 1000)}s)`,
-        details: { output: result.output },
+        details: {
+          output: result.output,
+          failureFingerprint: result.failureFingerprint,
+        },
       });
 
       if (result.ok) {
+        const successfulPendingFix = getPendingFix();
+        if (successfulPendingFix?.step === step) {
+          const validatedFix = successfulPendingFix;
+          const progress = compareFailureFingerprints(
+            validatedFix.beforeFingerprint,
+            createFailureFingerprint(step, ""),
+          );
+          lastProgressByStep.set(step, progress);
+          ineffectiveRoundsByStep.set(step, 0);
+          await recordBuildAgentArtifact({
+            appId: input.app.id,
+            buildRunId: input.buildRunId,
+            agentKey: "debug_agent",
+            phaseKey: `debug-${step}`,
+            artifactType: "debug_validation",
+            status: "passed",
+            summary: `Validated debug ${step} round ${validatedFix.stepRound}: failing step now passes.`,
+            payload: {
+              failedStep: step,
+              stepRound: validatedFix.stepRound,
+              outcome: "accepted",
+              progress,
+              beforeFingerprint: validatedFix.beforeFingerprint,
+              filesWritten: validatedFix.filesWritten,
+              filesDeleted: validatedFix.filesDeleted,
+            },
+          });
+          pendingFix = null;
+          await saveTestingCheckpoint();
+          await log(
+            input.buildRunId,
+            `Debug repair for ${step} validated and checkpointed: ${progress.summary}.`,
+          );
+        }
+        passedSteps.add(step);
         await log(input.buildRunId, `${step} passed.`);
         stepIdx++;
         continue;
       }
+
+      const failureFingerprint =
+        result.failureFingerprint ??
+        createFailureFingerprint(step, result.output);
+      const failedPendingFix = getPendingFix();
+
+      if (
+        failedPendingFix &&
+        failedPendingFix.step !== step &&
+        passedSteps.has(step)
+      ) {
+        const pendingStep = failedPendingFix.step;
+        await rollbackPendingFix(
+          step,
+          `the repair introduced a failure in previously passing ${step}`,
+        );
+        stepIdx = STEP_ORDER.indexOf(step);
+        if (pendingStep === "install") stepIdx = 0;
+        continue;
+      }
+
+      const sameStepPendingFix = getPendingFix();
+      if (sameStepPendingFix?.step === step) {
+        const validatedFix = sameStepPendingFix;
+        const progress = compareFailureFingerprints(
+          validatedFix.beforeFingerprint,
+          failureFingerprint,
+        );
+        lastProgressByStep.set(step, progress);
+
+        if (
+          progress.status === "regressed" ||
+          progress.status === "unchanged"
+        ) {
+          await rollbackPendingFix(step, progress.summary, progress);
+          continue;
+        }
+
+        const ineffectiveRounds =
+          progress.status === "improved"
+            ? 0
+            : (ineffectiveRoundsByStep.get(step) ?? 0) + 1;
+        ineffectiveRoundsByStep.set(step, ineffectiveRounds);
+        await recordBuildAgentArtifact({
+          appId: input.app.id,
+          buildRunId: input.buildRunId,
+          agentKey: "debug_agent",
+          phaseKey: `debug-${step}`,
+          artifactType: "debug_validation",
+          status: progress.status === "improved" ? "passed" : "warning",
+          summary: `Validated debug ${step} round ${validatedFix.stepRound}: ${progress.summary}.`,
+          payload: {
+            failedStep: step,
+            stepRound: validatedFix.stepRound,
+            outcome: "accepted_with_remaining_failures",
+            progress,
+            beforeFingerprint: validatedFix.beforeFingerprint,
+            afterFingerprint: failureFingerprint,
+            filesWritten: validatedFix.filesWritten,
+            filesDeleted: validatedFix.filesDeleted,
+            ineffectiveRounds,
+          },
+        });
+        pendingFix = null;
+        await saveTestingCheckpoint();
+        await log(
+          input.buildRunId,
+          `Debug repair for ${step} made ${progress.status} progress and was checkpointed: ${progress.summary}.`,
+        );
+      }
+
+      const ineffectiveRounds = ineffectiveRoundsByStep.get(step) ?? 0;
+      const forceFullScope = shouldEscalateDebugScope(ineffectiveRounds);
+      const priorProgress = lastProgressByStep.get(step);
+      const escalationReason = forceFullScope
+        ? `${ineffectiveRounds} earlier repair(s) failed to reduce the ${step} failure set. Inspect the complete source workflow and its tests together.`
+        : undefined;
+      const debugErrorOutput = [
+        result.output,
+        `STRUCTURED FAILURE FINGERPRINT: ${JSON.stringify(failureFingerprint)}`,
+        priorProgress
+          ? `PRIOR REPAIR PROGRESS: ${priorProgress.summary}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
 
       const { stepRound, previousAttempts } = reserveDebugRound(
         input.debugBudget,
@@ -1231,8 +1568,10 @@ async function runTestGauntlet(input: {
         spec: input.spec,
         files: agentVisibleFiles(input.files),
         failedStep: step,
-        errorOutput: result.output,
+        errorOutput: debugErrorOutput,
         generatedPhases: input.generated.phases,
+        forceFullScope,
+        escalationReason,
       });
       recordDebugRoundMetric(input.metrics, {
         step,
@@ -1241,17 +1580,20 @@ async function runTestGauntlet(input: {
         responsiblePhaseId: debugPlan.responsiblePhase.id,
         responsibleAgentKey: debugPlan.responsiblePhase.agentKey,
       });
+      // Keep the last proven source durable while this AI repair is in flight.
+      await saveTestingCheckpoint();
 
       await setStatus(input.buildRunId, "debugging");
       await log(
         input.buildRunId,
-        `${step} failed — phase-aware debug round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP} for ${debugPlan.classification.domainLabel} (${input.debugBudget.totalRounds}/${MAX_TOTAL_DEBUG_ROUNDS} total). Responsible phase: ${debugPlan.responsiblePhase.label}. Scope: ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} files.`,
+        `${step} failed — phase-aware debug round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP} for ${debugPlan.classification.domainLabel} (${input.debugBudget.totalRounds}/${MAX_TOTAL_DEBUG_ROUNDS} total). Responsible phase: ${debugPlan.responsiblePhase.label}. Scope: ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} files${forceFullScope ? " (escalated after repeated ineffective repairs)" : ""}.`,
       );
+      const beforeFiles = { ...input.files };
       const fix = await runDebugAgent({
         spec: input.spec,
         currentFiles: debugPlan.scope.scopedFiles,
         failedStep: step,
-        errorOutput: result.output,
+        errorOutput: debugErrorOutput,
         previousAttempts,
         debugContext: debugPlan.context,
       });
@@ -1273,6 +1615,10 @@ async function runTestGauntlet(input: {
             stepRound,
             totalRounds: input.debugBudget.totalRounds,
             previousAttempts,
+            failureFingerprint,
+            priorProgress,
+            forceFullScope,
+            escalationReason,
             suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
             filesInspected: fix.debugDiagnostics.filesInspected,
             preferredInspectionPaths:
@@ -1293,12 +1639,21 @@ async function runTestGauntlet(input: {
           fix.notes ||
           `(rewrote ${fix.filesWritten.join(", ")})`,
       );
+      await saveTestingCheckpoint();
       applyCodegenResult(input.files, fix);
       await runner.deleteFiles(fix.deletedFiles);
       await runner.writeFiles(fix.files);
+      pendingFix = {
+        step,
+        beforeFiles,
+        beforeFingerprint: failureFingerprint,
+        filesWritten: fix.filesWritten,
+        filesDeleted: fix.deletedFiles,
+        stepRound,
+      };
       await log(
         input.buildRunId,
-        `Debug agent changed: ${fix.filesWritten.join(", ")}${fix.deletedFiles.length > 0 ? `; deleted: ${fix.deletedFiles.join(", ")}` : ""}. ${fix.notes}`,
+        `Debug agent changed: ${fix.filesWritten.join(", ")}${fix.deletedFiles.length > 0 ? `; deleted: ${fix.deletedFiles.join(", ")}` : ""}. The repair remains uncheckpointed until the failing step proves progress. ${fix.notes}`,
       );
       await recordBuildAgentArtifact({
         appId: input.app.id,
@@ -1321,6 +1676,10 @@ async function runTestGauntlet(input: {
           stepRound,
           totalRounds: input.debugBudget.totalRounds,
           previousAttempts,
+          failureFingerprint,
+          priorProgress,
+          forceFullScope,
+          escalationReason,
           suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
           filesInspected: fix.debugDiagnostics.filesInspected,
           inspectionOperations: fix.debugDiagnostics.inspectionOperations,
@@ -1336,18 +1695,6 @@ async function runTestGauntlet(input: {
           filesWritten: fix.filesWritten,
           filesDeleted: fix.deletedFiles,
         },
-      });
-      await saveBuildCheckpoint({
-        appId: input.app.id,
-        buildRunId: input.buildRunId,
-        stage: "testing",
-        files: input.files,
-        metadata: durableMetadata({
-          generated: input.generated,
-          debugBudget: input.debugBudget,
-          metrics: input.metrics,
-          seededPlatformEntities: input.seededPlatformEntities,
-        }),
       });
       await setStatus(input.buildRunId, "testing");
       // Re-run from typecheck (install output can't be affected by src changes).
@@ -1583,7 +1930,21 @@ export async function resumeBuildPipelineContinuation(
   if (!architectureRow) return;
 
   const spec = normalizeAppSpec(requirement.spec);
-  const architecture = architectureRow.plan as ArchitecturePlan;
+  const storedArchitecture = architectureRow.plan as ArchitecturePlan;
+  const architecture = ensureWorkflowContracts(
+    spec,
+    storedArchitecture,
+  );
+  if (
+    storedArchitecture.workflowContractVersion !==
+      architecture.workflowContractVersion ||
+    !storedArchitecture.workflowContracts?.length
+  ) {
+    await db
+      .update(architecturePlans)
+      .set({ plan: architecture })
+      .where(eq(architecturePlans.id, architectureRow.id));
+  }
 
   try {
     if (checkpoint.stage === "publish_pending") {
@@ -1607,6 +1968,7 @@ export async function resumeBuildPipelineContinuation(
     const generated = restoreGeneratedResult(metadata.generated);
     const metrics = restoreBuildMetrics(metadata.metrics);
     const debugBudget = restoreDebugBudget(metadata.debugBudget);
+    const debugProgress = restoreDebugProgress(metadata.debugProgress);
     const seededPlatformEntities = restoreSeededPlatformEntities(
       metadata.seededPlatformEntities,
     );
@@ -1618,6 +1980,7 @@ export async function resumeBuildPipelineContinuation(
       files: checkpoint.files,
       generated,
       debugBudget,
+      debugProgress,
       metrics,
       seededPlatformEntities,
     });
@@ -1737,17 +2100,22 @@ function runDependencySecurityStep(files: FileMap): {
   ok: boolean;
   output: string;
   durationMs: number;
+  failureFingerprint?: FailureFingerprint;
 } {
   const started = Date.now();
   const result = validateGeneratedAppDependencies(files);
+  const output = result.ok
+    ? "Generated app dependency check passed."
+    : result.problems
+        .map((problem) => `${problem.path}: ${problem.message}`)
+        .join("\n");
   return {
     step: "dependencies",
     ok: result.ok,
-    output: result.ok
-      ? "Generated app dependency check passed."
-      : result.problems
-          .map((problem) => `${problem.path}: ${problem.message}`)
-          .join("\n"),
+    output,
     durationMs: Date.now() - started,
+    failureFingerprint: result.ok
+      ? undefined
+      : createFailureFingerprint("dependencies", output),
   };
 }

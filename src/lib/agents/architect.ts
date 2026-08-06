@@ -37,6 +37,10 @@ Current platform capabilities NOT available yet:
 
 Rules:
 - Produce a concrete file-level and component-level plan.
+- Produce exactly one workflow contract for every workflow in the approved specification. Treat each contract as a strict promise to the user: identify the allowed VoiceForge roles, exact starting route/screen, visible controls with clear accessible names, ordered steps, exact entity and field keys, expected persistent saves, visible success, failures, required services, and downstream workflow handoffs. Cross-screen or refresh-dependent handoffs must use localStorage, platformData, or platformFiles rather than transient React state. Use stable lowercase ids and exact routes from pageMap. Map every acceptance criterion and test scenario to a workflow contract.
+- Use owner/editor/viewer/public for contract access roles while preserving a friendly actor persona such as Rider or Family member. Viewers must not receive mutating controls. Public apps are read-only; anonymous shared-link apps may write when the approved specification allows it.
+- For workflow controls, record the label a person will actually see or hear through assistive technology, such as "Calculate bicycle routes", "Save selected route", or "Route to track". Do not use vague labels such as "Submit" or "Continue" when the action has a specific purpose.
+- When one workflow produces data needed by another, add a handoff that names the saved reference, persistent storage, consuming workflow, route, control, and reload rule. For example, a route saved on Explore must be loaded into the GPS route selector before tracking can begin.
 - Select dependencyProfile entries only from the approved catalogue below.
 - Be honest about unsupported capabilities. If the approved spec cannot be built faithfully with the current platform, set capabilityValidation.canBuildNow=false and list blockingIssues.
 - If a personal/browser-only approximation would be misleading for the user, block instead of downgrading silently.
@@ -53,6 +57,7 @@ ${APPROVED_DEPENDENCY_GUIDANCE}`;
 export async function runArchitectAgent(input: {
   spec: AppSpec;
   complexity: ComplexityResult;
+  workflowContractFeedback?: string[];
 }): Promise<ArchitecturePlan> {
   let plan: ArchitecturePlan | null = null;
 
@@ -78,7 +83,11 @@ export async function runArchitectAgent(input: {
     input.spec,
     null,
     2,
-  )}\n\nComplexity result:\n${JSON.stringify(input.complexity, null, 2)}`;
+  )}\n\nComplexity result:\n${JSON.stringify(input.complexity, null, 2)}${
+    input.workflowContractFeedback?.length
+      ? `\n\nThe prior architecture's workflow contracts failed validation. Repair these specific contract issues while preserving the approved specification and valid architecture decisions:\n${input.workflowContractFeedback.join("\n")}`
+      : ""
+  }`;
 
   await run(agent, [user(message)], { maxTurns: 8 });
 

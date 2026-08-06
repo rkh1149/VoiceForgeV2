@@ -6,6 +6,18 @@ export type FileMap = Record<string, string>;
 
 const TEMPLATE_DIR = path.join(process.cwd(), "templates", "nextjs-base");
 
+export const TEMPLATE_MAX_FILE_COUNT = 500;
+export const TEMPLATE_MAX_SOURCE_BYTES = 20 * 1024 * 1024;
+
+export const TEMPLATE_IGNORED_DIRECTORIES = new Set([
+  "node_modules",
+  ".next",
+  ".git",
+  "coverage",
+  "playwright-report",
+  "test-results",
+]);
+
 /** Paths the Code/Debug agents are allowed to create or overwrite. */
 const WRITABLE_PREFIXES = [
   "src/app/",
@@ -98,18 +110,35 @@ function sanitize(value: string): string {
   return value.replace(/[\\"`]/g, "'").replace(/\s+/g, " ").trim();
 }
 
-async function walk(dir: string, base = ""): Promise<string[]> {
+async function walk(
+  dir: string,
+  base: string,
+  files: string[],
+): Promise<void> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
-  const files: string[] = [];
   for (const entry of entries) {
     const rel = base ? `${base}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
-      files.push(...(await walk(path.join(dir, entry.name), rel)));
+      if (!TEMPLATE_IGNORED_DIRECTORIES.has(entry.name)) {
+        await walk(path.join(dir, entry.name), rel, files);
+      }
     } else {
       files.push(rel);
+      if (files.length > TEMPLATE_MAX_FILE_COUNT) {
+        throw new Error(
+          `App template contains more than ${TEMPLATE_MAX_FILE_COUNT} source files. ` +
+            "Remove dependency, build-output, coverage, and test-report directories from the template.",
+        );
+      }
     }
   }
-  return files;
+}
+
+/** List source-controlled template files while excluding local/generated output. */
+export async function listTemplateFiles(dir = TEMPLATE_DIR): Promise<string[]> {
+  const files: string[] = [];
+  await walk(dir, "", files);
+  return files.sort();
 }
 
 /** Load the base template with app name/slug/purpose substituted in. */
@@ -118,14 +147,26 @@ export async function loadTemplate(vars: {
   name: string;
   purpose: string;
 }): Promise<FileMap> {
-  const paths = await walk(TEMPLATE_DIR);
+  const paths = await listTemplateFiles();
   const map: FileMap = {};
+  let sourceBytes = 0;
   for (const rel of paths) {
     const raw = await fs.readFile(path.join(TEMPLATE_DIR, rel), "utf8");
+    sourceBytes += Buffer.byteLength(rel, "utf8") + Buffer.byteLength(raw, "utf8");
+    if (sourceBytes > TEMPLATE_MAX_SOURCE_BYTES) {
+      throw new Error(
+        `App template source exceeds ${formatMegabytes(TEMPLATE_MAX_SOURCE_BYTES)}. ` +
+          "Remove dependency, build-output, coverage, and test-report files from the template.",
+      );
+    }
     map[rel] = raw
       .replaceAll("__APP_SLUG__", sanitize(vars.slug))
       .replaceAll("__APP_NAME__", sanitize(vars.name))
       .replaceAll("__APP_PURPOSE__", sanitize(vars.purpose));
   }
   return map;
+}
+
+function formatMegabytes(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
 }

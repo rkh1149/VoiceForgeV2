@@ -2,6 +2,10 @@ import { spawn } from "child_process";
 import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
+import {
+  createFailureFingerprint,
+  type FailureFingerprint,
+} from "./debug-progress";
 import type { FileMap } from "./template";
 
 /**
@@ -25,6 +29,7 @@ export type StepResult = {
   ok: boolean;
   output: string; // tail of combined stdout+stderr
   durationMs: number;
+  failureFingerprint?: FailureFingerprint;
 };
 
 export type Runner = {
@@ -40,6 +45,7 @@ type RunnerOptions = {
 };
 
 const OUTPUT_TAIL = 8000;
+const DIAGNOSTIC_CAPTURE_LIMIT = 1024 * 1024;
 
 const STEPS: Record<
   StepName,
@@ -118,7 +124,7 @@ async function createLocalRunner(
 
         let output = "";
         const append = (chunk: Buffer) => {
-          output = (output + chunk.toString()).slice(-OUTPUT_TAIL * 2);
+          output = (output + chunk.toString()).slice(-DIAGNOSTIC_CAPTURE_LIMIT);
         };
         child.stdout.on("data", append);
         child.stderr.on("data", append);
@@ -130,11 +136,15 @@ async function createLocalRunner(
 
         child.on("close", (code) => {
           clearTimeout(timer);
+          const ok = code === 0;
           resolve({
             step,
-            ok: code === 0,
+            ok,
             output: output.slice(-OUTPUT_TAIL),
             durationMs: Date.now() - started,
+            failureFingerprint: ok
+              ? undefined
+              : createFailureFingerprint(step, output),
           });
         });
         child.on("error", (err) => {
@@ -144,6 +154,10 @@ async function createLocalRunner(
             ok: false,
             output: `Failed to start ${cmd}: ${err.message}`,
             durationMs: Date.now() - started,
+            failureFingerprint: createFailureFingerprint(
+              step,
+              `Failed to start ${cmd}: ${err.message}`,
+            ),
           });
         });
       });
@@ -205,18 +219,24 @@ async function createSandboxRunner(options: RunnerOptions): Promise<Runner> {
           ...args,
         ]);
         const output = `${await result.stdout()}\n${await result.stderr()}`;
+        const ok = result.exitCode === 0;
         return {
           step,
-          ok: result.exitCode === 0,
+          ok,
           output: output.slice(-OUTPUT_TAIL),
           durationMs: Date.now() - started,
+          failureFingerprint: ok
+            ? undefined
+            : createFailureFingerprint(step, output),
         };
       } catch (err) {
+        const output = `Sandbox command failed: ${err instanceof Error ? err.message : String(err)}`;
         return {
           step,
           ok: false,
-          output: `Sandbox command failed: ${err instanceof Error ? err.message : String(err)}`,
+          output,
           durationMs: Date.now() - started,
+          failureFingerprint: createFailureFingerprint(step, output),
         };
       }
     },

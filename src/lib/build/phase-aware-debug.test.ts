@@ -198,6 +198,27 @@ describe("phase-aware debug", () => {
     expect(plan.scope.visibleFilePaths).not.toContain("src/lib/unrelated.ts");
   });
 
+  it("escalates repeated ineffective failures to the full workflow scope", () => {
+    const plan = createPhaseAwareDebugPlan({
+      spec,
+      files,
+      failedStep: "test",
+      errorOutput: "FAIL src/components/task-form.test.tsx > TaskForm > saves",
+      generatedPhases: phases,
+      forceFullScope: true,
+      escalationReason: "Two repairs left the same save workflow failing.",
+    });
+
+    expect(plan.scope.limited).toBe(false);
+    expect(plan.scope.visibleFileCount).toBe(Object.keys(files).length);
+    expect(plan.scope.visibleFilePaths).toContain("src/lib/unrelated.ts");
+    expect(plan.scope.label).toBe("escalated full workflow scope");
+    expect(plan.context.escalated).toBe(true);
+    expect(plan.context.instructions.join(" ")).toContain(
+      "Trace the complete user workflow",
+    );
+  });
+
   it("routes review-gate workflow coverage failures back to pages and workflows", () => {
     const plan = createPhaseAwareDebugPlan({
       spec,

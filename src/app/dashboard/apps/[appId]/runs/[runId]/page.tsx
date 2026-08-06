@@ -12,6 +12,7 @@ import {
 import type { ArchitecturePlan } from "@/lib/architecture";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import AgentArtifactsList from "@/components/AgentArtifactsList";
+import WorkflowContractList from "@/components/WorkflowContractList";
 
 export const dynamic = "force-dynamic";
 
@@ -158,6 +159,9 @@ export default async function BuildRunPage({
               ))}
             </ul>
           )}
+          <WorkflowContractList
+            contracts={architecture.workflowContracts ?? []}
+          />
         </div>
       )}
 

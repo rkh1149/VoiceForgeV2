@@ -66,4 +66,14 @@ describe("coder shared rules", () => {
     expect(source).toContain("uploadPlatformFileData");
     expect(source).toContain("save only the returned file id/reference");
   });
+
+  it("requires relation validation to separate field values from errors", () => {
+    const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("recipeIdError");
+    expect(source).toContain("valid saved relation id is accepted");
+    expect(source).toContain("unknown relation id is rejected");
+    expect(source).toContain("valid save test must reach createPlatformRecord");
+    expect(source).toContain("Do not patch only the test or mock");
+  });
 });
