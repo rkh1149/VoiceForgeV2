@@ -5,6 +5,7 @@ import AgentArtifactsList, {
   type AgentArtifactItem,
 } from "@/components/AgentArtifactsList";
 import WorkflowContractList from "@/components/WorkflowContractList";
+import InterfaceReadinessReport from "@/components/InterfaceReadinessReport";
 import type { WorkflowContract } from "@/lib/workflow-contract";
 
 type LogEntry = { ts: string; message: string };
@@ -182,6 +183,14 @@ export default function BuildStatus({ appId }: { appId: string }) {
     architecturePlan?.validation.blockingIssues.some((issue) =>
       issue.startsWith("workflow_contract:"),
     ) ?? false;
+  const interfaceReadinessArtifact =
+    [...data.agentArtifacts]
+      .reverse()
+      .find((artifact) => artifact.artifactType === "ui_affordance_review") ??
+    null;
+  const otherAgentArtifacts = data.agentArtifacts.filter(
+    (artifact) => artifact.artifactType !== "ui_affordance_review",
+  );
 
   return (
     <div className="space-y-4">
@@ -315,8 +324,10 @@ export default function BuildStatus({ appId }: { appId: string }) {
         </div>
       )}
 
-      {data.agentArtifacts.length > 0 && (
-        <AgentArtifactsList artifacts={data.agentArtifacts} />
+      <InterfaceReadinessReport artifact={interfaceReadinessArtifact} />
+
+      {otherAgentArtifacts.length > 0 && (
+        <AgentArtifactsList artifacts={otherAgentArtifacts} />
       )}
 
       {/* Live app */}

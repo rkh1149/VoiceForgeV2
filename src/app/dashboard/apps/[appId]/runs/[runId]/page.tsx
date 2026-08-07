@@ -13,6 +13,7 @@ import type { ArchitecturePlan } from "@/lib/architecture";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import AgentArtifactsList from "@/components/AgentArtifactsList";
 import WorkflowContractList from "@/components/WorkflowContractList";
+import InterfaceReadinessReport from "@/components/InterfaceReadinessReport";
 
 export const dynamic = "force-dynamic";
 
@@ -92,6 +93,14 @@ export default async function BuildRunPage({
     run.status === "failed"
       ? ((lastFailed?.details as { output?: string } | null)?.output ?? null)
       : null;
+  const interfaceReadinessArtifact =
+    [...agentArtifacts]
+      .reverse()
+      .find((artifact) => artifact.artifactType === "ui_affordance_review") ??
+    null;
+  const otherAgentArtifacts = agentArtifacts.filter(
+    (artifact) => artifact.artifactType !== "ui_affordance_review",
+  );
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -165,9 +174,13 @@ export default async function BuildRunPage({
         </div>
       )}
 
-      {agentArtifacts.length > 0 && (
+      <div className="mt-4">
+        <InterfaceReadinessReport artifact={interfaceReadinessArtifact} />
+      </div>
+
+      {otherAgentArtifacts.length > 0 && (
         <div className="mt-4">
-          <AgentArtifactsList artifacts={agentArtifacts} />
+          <AgentArtifactsList artifacts={otherAgentArtifacts} />
         </div>
       )}
 

@@ -80,7 +80,9 @@ import {
 } from "./agent-artifact-utils";
 import { runPlanningSpecialistReviews } from "./planning-specialists";
 import {
+  comparePostGenerationIssueSets,
   getPostGenerationBlockingIssues,
+  shouldStopUnchangedInterfaceRepairs,
   type PostGenerationReview,
   runPostGenerationReviews,
 } from "./post-generation-reviews";
@@ -418,6 +420,13 @@ async function recordPostGenerationReviewArtifacts(input: {
           : { rerunRound: input.rerunRound }),
       },
     });
+  }
+
+  const interfaceReview = input.reviews.find(
+    (review) => review.agentKey === "ui_affordance_reviewer",
+  );
+  if (interfaceReview) {
+    await log(input.buildRunId, interfaceReview.summary);
   }
 }
 
@@ -998,6 +1007,10 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     }
     let postGenerationBlockingIssues =
       getPostGenerationBlockingIssues(postGenerationReviews);
+    let previousPostGenerationBlockingIssues = [
+      ...postGenerationBlockingIssues,
+    ];
+    let consecutiveUnchangedInterfaceRounds = 0;
     while (postGenerationBlockingIssues.length > 0) {
       const step = "review_gate";
       const { stepRound, previousAttempts } = reserveDebugRound(
@@ -1012,6 +1025,11 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         errorOutput,
         generatedPhases: generated.phases,
         changedFilePaths: reviewChangedFilePaths,
+        forceFullScope: consecutiveUnchangedInterfaceRounds > 0,
+        escalationReason:
+          consecutiveUnchangedInterfaceRounds > 0
+            ? "The prior repair left the interface-readiness findings unchanged. Inspect the complete rendered component path and avoid changing authentication conditions unless the finding is specifically about role reachability."
+            : undefined,
       });
       recordDebugRoundMetric(metrics, {
         step,
@@ -1152,8 +1170,56 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
           `Generated app review warnings: ${postGenerationWarnings.join(" ")}`,
         );
       }
-      postGenerationBlockingIssues =
+      const nextPostGenerationBlockingIssues =
         getPostGenerationBlockingIssues(postGenerationReviews);
+      const issueProgress = comparePostGenerationIssueSets(
+        previousPostGenerationBlockingIssues,
+        nextPostGenerationBlockingIssues,
+      );
+      const interfaceOnly = nextPostGenerationBlockingIssues.every((issue) =>
+        issue.startsWith("ui_affordance:"),
+      );
+      consecutiveUnchangedInterfaceRounds =
+        interfaceOnly && issueProgress.status === "unchanged"
+          ? consecutiveUnchangedInterfaceRounds + 1
+          : 0;
+      if (nextPostGenerationBlockingIssues.length > 0) {
+        await log(
+          buildRunId,
+          `Generated review repair progress: ${issueProgress.status}; ${previousPostGenerationBlockingIssues.length} -> ${nextPostGenerationBlockingIssues.length} blocking issue(s).`,
+        );
+      }
+      if (
+        shouldStopUnchangedInterfaceRepairs(
+          consecutiveUnchangedInterfaceRounds,
+        )
+      ) {
+        await recordBuildAgentArtifact({
+          appId: app.id,
+          buildRunId,
+          agentKey: "pipeline_observer",
+          phaseKey: "interface-readiness-stagnation",
+          artifactType: "review_gate",
+          status: "failed",
+          summary:
+            "Stopped generated-app rewrites because the interface-readiness findings were unchanged after two consecutive repair rounds.",
+          payload: {
+            stepRound,
+            outcome: "stopped_unchanged_interface_repairs",
+            unchangedRounds: consecutiveUnchangedInterfaceRounds,
+            blockingIssues: nextPostGenerationBlockingIssues,
+            filesWritten: fix.filesWritten,
+            filesDeleted: fix.deletedFiles,
+          },
+        });
+        throw new Error(
+          "Interface readiness findings were unchanged after two consecutive repair rounds; stopped rewriting the generated app.",
+        );
+      }
+      previousPostGenerationBlockingIssues = [
+        ...nextPostGenerationBlockingIssues,
+      ];
+      postGenerationBlockingIssues = nextPostGenerationBlockingIssues;
     }
     await log(buildRunId, "Generated app reviews passed.");
 

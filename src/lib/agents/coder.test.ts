@@ -76,4 +76,15 @@ describe("coder shared rules", () => {
     expect(source).toContain("valid save test must reach createPlatformRecord");
     expect(source).toContain("Do not patch only the test or mock");
   });
+
+  it("requires contracted workflows to be visibly discoverable", () => {
+    const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("UI AFFORDANCE CONTRACT");
+    expect(source).toContain("reachable from / through visible");
+    expect(source).toContain("exact contract route");
+    expect(source).toContain("contract accessibleName");
+    expect(source).toContain("action-specific aria-label");
+    expect(source).toContain("placeholder-only workflow pages");
+  });
 });

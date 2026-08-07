@@ -239,6 +239,32 @@ describe("phase-aware debug", () => {
     );
   });
 
+  it("routes interface-readiness failures to a focused route and control repair", () => {
+    const plan = createPhaseAwareDebugPlan({
+      spec,
+      files,
+      failedStep: "review_gate",
+      errorOutput:
+        'ui_affordance: Workflow "Track current ride" starts at /gps, but editor cannot reach it through visible navigation.',
+      generatedPhases: phases,
+    });
+
+    expect(plan.responsiblePhase.id).toBe("pages-workflows");
+    expect(plan.responsiblePhase.agentKey).toBe("frontend_builder");
+    expect(plan.context.instructions.join(" ")).toContain(
+      "repair the named route graph and contracted control exactly",
+    );
+    expect(plan.context.instructions.join(" ")).toContain(
+      "visible incoming Link/menu/tab/contextual button",
+    );
+    expect(plan.context.instructions.join(" ")).toContain(
+      "label/htmlFor/id associations",
+    );
+    expect(plan.context.instructions.join(" ")).toContain(
+      "Change authentication visibility only",
+    );
+  });
+
   it("routes review-gate test-only failures to the unit workflow test phase", () => {
     const plan = createPhaseAwareDebugPlan({
       spec,

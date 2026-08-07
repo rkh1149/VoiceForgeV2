@@ -6,17 +6,19 @@ import {
   type BuildAgentArtifactStatus,
 } from "./agent-artifact-utils";
 import type { FileMap } from "./template";
+import { analyzeUiAffordances } from "./ui-affordance-review";
 
 export type PostGenerationReviewAgentKey =
   | "code_reviewer"
   | "test_reviewer"
   | "security_reviewer"
-  | "ux_accessibility_reviewer";
+  | "ux_accessibility_reviewer"
+  | "ui_affordance_reviewer";
 
 export type PostGenerationReview = {
   agentKey: PostGenerationReviewAgentKey;
   phaseKey: string;
-  artifactType: "review_gate";
+  artifactType: "review_gate" | "ui_affordance_review";
   status: BuildAgentArtifactStatus;
   summary: string;
   warnings: string[];
@@ -189,16 +191,118 @@ export function runPostGenerationReviews(
 ): PostGenerationReview[] {
   return [
     reviewGeneratedCode(input),
+    reviewUiAffordances(input),
     reviewGeneratedTests(input),
     reviewSecurity(input),
     reviewUxAccessibility(input),
   ];
 }
 
+function reviewUiAffordances(
+  input: PostGenerationReviewInput,
+): PostGenerationReview {
+  if (input.architecture.workflowContracts.length === 0) {
+    return {
+      agentKey: "ui_affordance_reviewer",
+      phaseKey: "generated-ui-affordance-review",
+      artifactType: "ui_affordance_review",
+      status: "skipped",
+      summary: "Interface readiness skipped because no user-workflow contracts were planned.",
+      warnings: [],
+      blockingIssues: [],
+      payload: {
+        version: 1,
+        skipped: true,
+        reason: "No Stage 14A workflow contracts were available.",
+        summary: {
+          routesFound: 0,
+          reachableRoutes: 0,
+          workflowsPlanned: 0,
+          workflowsDiscoverable: 0,
+          controlsExpected: 0,
+          controlsMatched: 0,
+          entityPathsRequired: 0,
+          entityPathsAvailable: 0,
+          hiddenRoutes: 0,
+          placeholderPages: 0,
+          vagueControls: 0,
+          uncertainControls: 0,
+        },
+        routes: [],
+        workflows: [],
+        entities: [],
+        hiddenRoutes: [],
+        placeholderRoutes: [],
+        vagueControls: [],
+        uncertainControls: [],
+        warnings: [],
+        blockingIssues: [],
+      },
+    };
+  }
+
+  const report = analyzeUiAffordances({
+    spec: input.spec,
+    architecture: input.architecture,
+    files: input.allFiles,
+  });
+  return {
+    agentKey: "ui_affordance_reviewer",
+    phaseKey: "generated-ui-affordance-review",
+    artifactType: "ui_affordance_review",
+    status: artifactStatusFromIssues({
+      failed: report.blockingIssues.length > 0,
+      warnings: report.warnings,
+    }),
+    summary:
+      report.blockingIssues.length > 0
+        ? `Interface readiness found ${report.blockingIssues.length} blocking issue${report.blockingIssues.length === 1 ? "" : "s"}; ${report.summary.workflowsDiscoverable}/${report.summary.workflowsPlanned} workflows are discoverable.`
+        : report.warnings.length > 0
+          ? `Interface readiness passed with ${report.warnings.length} warning${report.warnings.length === 1 ? "" : "s"}; ${report.summary.workflowsDiscoverable}/${report.summary.workflowsPlanned} workflows are discoverable.`
+          : `Interface readiness passed: ${report.summary.workflowsDiscoverable}/${report.summary.workflowsPlanned} workflows and ${report.summary.reachableRoutes}/${report.summary.routesFound} routes are discoverable.`,
+    warnings: report.warnings,
+    blockingIssues: report.blockingIssues,
+    payload: { ...report },
+  };
+}
+
 export function getPostGenerationBlockingIssues(
   reviews: readonly PostGenerationReview[],
 ): string[] {
   return uniqueStrings(reviews.flatMap((review) => review.blockingIssues));
+}
+
+export function comparePostGenerationIssueSets(
+  previousIssues: readonly string[],
+  currentIssues: readonly string[],
+): {
+  status: "resolved" | "improved" | "unchanged" | "changed" | "regressed";
+  resolvedIssues: string[];
+  newIssues: string[];
+} {
+  const previous = uniqueStrings([...previousIssues]).sort();
+  const current = uniqueStrings([...currentIssues]).sort();
+  const previousSet = new Set(previous);
+  const currentSet = new Set(current);
+  const resolvedIssues = previous.filter((issue) => !currentSet.has(issue));
+  const newIssues = current.filter((issue) => !previousSet.has(issue));
+  const status =
+    current.length === 0
+      ? "resolved"
+      : newIssues.length === 0 && resolvedIssues.length === 0
+        ? "unchanged"
+        : newIssues.length === 0 && resolvedIssues.length > 0
+          ? "improved"
+          : newIssues.length > 0 && resolvedIssues.length === 0
+            ? "regressed"
+            : "changed";
+  return { status, resolvedIssues, newIssues };
+}
+
+export function shouldStopUnchangedInterfaceRepairs(
+  consecutiveUnchangedRounds: number,
+): boolean {
+  return consecutiveUnchangedRounds >= 2;
 }
 
 function reviewGeneratedCode(

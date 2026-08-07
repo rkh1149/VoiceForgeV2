@@ -451,7 +451,7 @@ function phaseHintForReviewGate(input: {
   let reason: string | null = null;
 
   if (
-    /architecture planned route files|advanced workflow coverage|planned workflows without visible action controls|visible create\/edit controls|app router page|sign-in|route-stable|google maps|interactive google map|platform-files|platform-notifications|platform-integrations|device gps|device-location|search\/report/.test(
+    /ui_affordance:|interface readiness|cannot reach it through visible navigation|matching reachable control|vague .* label|placeholder content|architecture planned route files|advanced workflow coverage|planned workflows without visible action controls|visible create\/edit controls|app router page|sign-in|route-stable|google maps|interactive google map|platform-files|platform-notifications|platform-integrations|device gps|device-location|search\/report/.test(
       lowerOutput,
     )
   ) {
@@ -806,6 +806,8 @@ function instructionsFor(
     if (responsiblePhase.id === "pages-workflows") {
       common.push(
         "When advanced workflow coverage fails, add compact but real route/control surfaces and wire save/update/delete or runtime integration calls for the named missing entities/workflows; do not satisfy the gate with placeholders or dead buttons.",
+        "For interface-readiness failures, repair the named route graph and contracted control exactly: add a visible incoming Link/menu/tab/contextual button, place the control on its contracted route, use its action-specific accessible name, and remove placeholder-only UI.",
+        "When the finding names a label or reusable form control, inspect label/htmlFor/id associations, component label props, rendered children, and the exact imported component before changing session or role conditions. Change authentication visibility only when the finding explicitly reports role reachability.",
       );
     }
     if (

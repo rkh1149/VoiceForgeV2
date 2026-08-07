@@ -6,8 +6,10 @@ import {
 } from "../architecture";
 import { computeSpecComplexity, normalizeAppSpec, type AppSpec } from "../spec";
 import {
+  comparePostGenerationIssueSets,
   getPostGenerationBlockingIssues,
   runPostGenerationReviews,
+  shouldStopUnchangedInterfaceRepairs,
 } from "./post-generation-reviews";
 import type { FileMap } from "./template";
 
@@ -72,9 +74,13 @@ function review(input: {
   allFiles: FileMap;
   changedFiles?: FileMap;
   changeMode?: boolean;
+  enableUiAffordanceReview?: boolean;
 }) {
   const spec = input.spec ?? normalizeAppSpec(sharedSpecInput);
-  const architecture = input.architecture ?? buildArchitecture(spec);
+  const plannedArchitecture = input.architecture ?? buildArchitecture(spec);
+  const architecture = input.enableUiAffordanceReview
+    ? plannedArchitecture
+    : { ...plannedArchitecture, workflowContracts: [] };
   const changedFiles = input.changedFiles ?? input.allFiles;
   return runPostGenerationReviews({
     spec,
@@ -335,6 +341,29 @@ function mixMatchImageSpec(): AppSpec {
 }
 
 describe("post-generation reviews", () => {
+  it("detects unchanged review findings before repeated repairs", () => {
+    expect(
+      comparePostGenerationIssueSets(
+        ["ui_affordance: Missing Save outing"],
+        ["ui_affordance: Missing Save outing"],
+      ),
+    ).toMatchObject({ status: "unchanged", newIssues: [], resolvedIssues: [] });
+    expect(
+      comparePostGenerationIssueSets(
+        [
+          "ui_affordance: Missing Save outing",
+          "ui_affordance: Missing Title",
+        ],
+        ["ui_affordance: Missing Save outing"],
+      ),
+    ).toMatchObject({
+      status: "improved",
+      resolvedIssues: ["ui_affordance: Missing Title"],
+    });
+    expect(shouldStopUnchangedInterfaceRepairs(1)).toBe(false);
+    expect(shouldStopUnchangedInterfaceRepairs(2)).toBe(true);
+  });
+
   it("records passing gates for a shared app with platform clients and generated tests", () => {
     const spec = normalizeAppSpec(sharedSpecInput);
     const files: FileMap = {
@@ -360,12 +389,75 @@ test("loads", async ({ page }) => { await page.goto("/"); await expect(page.getB
 
     expect(reviews.map((item) => item.agentKey)).toEqual([
       "code_reviewer",
+      "ui_affordance_reviewer",
       "test_reviewer",
       "security_reviewer",
       "ux_accessibility_reviewer",
     ]);
-    expect(reviews.every((item) => item.status === "passed")).toBe(true);
+    expect(
+      reviews.every((item) =>
+        item.agentKey === "ui_affordance_reviewer"
+          ? item.status === "skipped"
+          : item.status === "passed",
+      ),
+    ).toBe(true);
     expect(getPostGenerationBlockingIssues(reviews)).toEqual([]);
+  });
+
+  it("records a blocking interface-readiness artifact for a hidden workflow route", () => {
+    const spec = normalizeAppSpec(sharedSpecInput);
+    const planned = buildArchitecture(spec);
+    const baseContract = planned.workflowContracts[0];
+    expect(baseContract).toBeDefined();
+    if (!baseContract) return;
+
+    const hiddenContract = {
+      ...baseContract,
+      start: { ...baseContract.start, route: "/hidden-workflow" },
+      controls: baseContract.controls.map((control) => ({
+        ...control,
+        route: "/hidden-workflow",
+      })),
+      steps: baseContract.steps.map((step) => ({
+        ...step,
+        route: "/hidden-workflow",
+      })),
+      success: { ...baseContract.success, route: "/hidden-workflow" },
+    };
+    const architecture: ArchitecturePlan = {
+      ...planned,
+      pageMap: [
+        ...planned.pageMap,
+        {
+          route: "/hidden-workflow",
+          name: "Hidden workflow",
+          purpose: "Complete the promised workflow.",
+          primaryComponents: ["HiddenWorkflowPage"],
+          workflows: [hiddenContract.name],
+        },
+      ],
+      workflowContracts: [hiddenContract],
+    };
+    const reviews = review({
+      spec,
+      architecture,
+      enableUiAffordanceReview: true,
+      allFiles: {
+        "src/app/page.tsx":
+          "export default function Page() { return <main><h1>Family Follow Up Hub</h1></main>; }",
+        "src/app/hidden-workflow/page.tsx":
+          "export default function HiddenWorkflowPage() { return <main><h1>Follow up workflow</h1><button>Create follow up</button></main>; }",
+      },
+    });
+    const uiReview = findReview(reviews, "ui_affordance_reviewer");
+    const payload = uiReview.payload as { hiddenRoutes?: string[] };
+
+    expect(uiReview.artifactType).toBe("ui_affordance_review");
+    expect(uiReview.status).toBe("failed");
+    expect(payload.hiddenRoutes).toContain("/hidden-workflow");
+    expect(uiReview.blockingIssues.join(" ")).toContain(
+      "cannot reach it through visible navigation",
+    );
   });
 
   it("blocks direct credentials, external URLs, API routes, and unsafe HTML", () => {
