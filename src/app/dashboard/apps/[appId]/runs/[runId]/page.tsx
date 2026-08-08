@@ -14,6 +14,7 @@ import { getOrCreateCurrentUser } from "@/lib/users";
 import AgentArtifactsList from "@/components/AgentArtifactsList";
 import WorkflowContractList from "@/components/WorkflowContractList";
 import InterfaceReadinessReport from "@/components/InterfaceReadinessReport";
+import PersistenceHandoffReport from "@/components/PersistenceHandoffReport";
 
 export const dynamic = "force-dynamic";
 
@@ -98,8 +99,16 @@ export default async function BuildRunPage({
       .reverse()
       .find((artifact) => artifact.artifactType === "ui_affordance_review") ??
     null;
+  const persistenceHandoffArtifact =
+    [...agentArtifacts]
+      .reverse()
+      .find(
+        (artifact) => artifact.artifactType === "persistence_handoff_review",
+      ) ?? null;
   const otherAgentArtifacts = agentArtifacts.filter(
-    (artifact) => artifact.artifactType !== "ui_affordance_review",
+    (artifact) =>
+      artifact.artifactType !== "ui_affordance_review" &&
+      artifact.artifactType !== "persistence_handoff_review",
   );
 
   return (
@@ -176,6 +185,10 @@ export default async function BuildRunPage({
 
       <div className="mt-4">
         <InterfaceReadinessReport artifact={interfaceReadinessArtifact} />
+      </div>
+
+      <div className="mt-4">
+        <PersistenceHandoffReport artifact={persistenceHandoffArtifact} />
       </div>
 
       {otherAgentArtifacts.length > 0 && (

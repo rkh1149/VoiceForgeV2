@@ -75,6 +75,11 @@ describe("build metrics", () => {
     expect(categorizeBuildFailure("Generated app review failed")).toBe(
       "integration_review_gate",
     );
+    expect(
+      categorizeBuildFailure(
+        "VoiceForge could not produce a complete workflow plan yet: workflow_contract: missing save",
+      ),
+    ).toBe("workflow_contract");
     expect(categorizeBuildFailure("Vercel deployment failed")).toBe("vercel");
     expect(categorizeBuildFailure("GitHub returned HTTP 503")).toBe("github");
   });

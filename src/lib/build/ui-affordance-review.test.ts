@@ -753,4 +753,116 @@ export default function Packing() { void listPackingItems(); void updatePackingI
     );
     expect(result.blockingIssues).toEqual([]);
   });
+
+  it("passes data-driven book forms and viewer controls beside writer-only actions", () => {
+    const roles: WorkflowContractRole[] = ["owner", "editor"];
+    const control = (
+      id: string,
+      kind: WorkflowContract["controls"][number]["kind"],
+      accessibleName: string,
+      route: string,
+      controlRoles: WorkflowContractRole[],
+    ): WorkflowContract["controls"][number] => ({
+      id,
+      kind,
+      accessibleName,
+      route,
+      roles: controlRoles,
+      action: accessibleName,
+    });
+    const workflow = (
+      id: string,
+      name: string,
+      route: string,
+      workflowRoles: WorkflowContractRole[],
+      controls: WorkflowContract["controls"],
+    ): WorkflowContract => ({
+      ...rideContract(workflowRoles),
+      id,
+      name,
+      actor: { persona: "Family member", roles: workflowRoles },
+      start: { route, screen: name, preconditions: ["Signed in"] },
+      controls,
+      requiredData: [],
+      expectedSaves: [],
+      success: {
+        route,
+        message: `${name} complete.`,
+        visibleResult: `${name} is visible.`,
+      },
+    });
+    const contracts: WorkflowContract[] = [
+      workflow("add-a-book", "Add a book", "/books", roles, [
+        control("title", "textbox", "Title", "/books", roles),
+        control("author", "textbox", "Author", "/books", roles),
+        control("category", "textbox", "Category", "/books", roles),
+        control("save-book", "button", "Save book", "/books", roles),
+      ]),
+      workflow("edit-a-book", "Edit a book", "/books", roles, [
+        control("edit-title", "textbox", "Title", "/books", roles),
+        control("edit-author", "textbox", "Author", "/books", roles),
+        control("edit-category", "textbox", "Category", "/books", roles),
+        control(
+          "save-book-changes",
+          "button",
+          "Save book changes",
+          "/books",
+          roles,
+        ),
+      ]),
+      workflow("view-current-loans", "View current loans", "/loans", ["viewer"], [
+        control(
+          "status-filter",
+          "combobox",
+          "Filter loans by status",
+          "/loans",
+          ["viewer"],
+        ),
+        control(
+          "due-date-sort",
+          "combobox",
+          "Sort loans by due date",
+          "/loans",
+          ["viewer"],
+        ),
+      ]),
+    ];
+    const appArchitecture: ArchitecturePlan = {
+      ...architecture(),
+      dataModel: [],
+      workflowContracts: contracts,
+      pageMap: [
+        { route: "/", name: "Home", purpose: "Open lending tools", primaryComponents: [], workflows: [] },
+        { route: "/books", name: "Books", purpose: "Manage books", primaryComponents: [], workflows: [] },
+        { route: "/loans", name: "Loans", purpose: "View loans", primaryComponents: [], workflows: [] },
+      ],
+    };
+    const result = review(
+      {
+        "src/app/page.tsx": `import Link from "next/link"; export default function Home() { return <main><h1>Book Lending</h1><Link href="/books">Books</Link><Link href="/loans">Current Loans</Link></main>; }`,
+        "src/app/books/page.tsx": `import { BooksPage } from "@/components/books-page"; export default function Books() { return <BooksPage session={{ canWrite: true }} />; }`,
+        "src/app/loans/page.tsx": `import { LoansPage } from "@/components/loans-page"; export default function Loans() { return <LoansPage session={{ canWrite: true }} />; }`,
+        "src/components/books-page.tsx": `import { BookForm } from "@/components/book-form"; export function BooksPage({ session }: { session: { canWrite: boolean } }) { return <main><h1>Books</h1>{session.canWrite && <BookForm mode="add" />}{session.canWrite && <BookForm mode="edit" />}</main>; }`,
+        "src/components/book-form.tsx": `const fields = [{ key: "title", label: "Title" }, { key: "author", label: "Author" }, { key: "category", label: "Category" }] as const; export function BookForm({ mode }: { mode: "add" | "edit" }) { const saving = false; const submitLabel = mode === "edit" ? "Save book changes" : "Save book"; return <form>{fields.map(({ key, label }) => <label key={key}>{label}<input name={key} /></label>)}<button type="submit">{saving ? "Saving book..." : submitLabel}</button></form>; }`,
+        "src/components/loans-page.tsx": `import { LoanFilters } from "@/components/loan-filters"; export function LoansPage({ session }: { session: { canWrite: boolean } }) { return <main><h1>Current Loans</h1>{session.canWrite && <button>Mark loan returned</button>}<LoanFilters /></main>; }`,
+        "src/components/loan-filters.tsx": `export function LoanFilters() { return <div><label htmlFor="status">Filter loans by status</label><select id="status" /><label htmlFor="due-date">Sort loans by due date</label><select id="due-date" /></div>; }`,
+      },
+      appArchitecture,
+      { ...spec, dataEntities: [] },
+    );
+
+    expect(result.workflows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ contractId: "add-a-book", status: "discoverable" }),
+        expect.objectContaining({ contractId: "edit-a-book", status: "discoverable" }),
+        expect.objectContaining({ contractId: "view-current-loans", status: "discoverable" }),
+      ]),
+    );
+    expect(
+      result.routes
+        .find((route) => route.route === "/loans")
+        ?.controls.find((item) => item.label === "Filter loans by status")?.roles,
+    ).toContain("viewer");
+    expect(result.blockingIssues).toEqual([]);
+  });
 });

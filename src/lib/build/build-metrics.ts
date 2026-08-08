@@ -2,6 +2,7 @@ import type { BuildAgentArtifactStatus } from "./agent-artifact-utils";
 
 export type BuildFailureCategory =
   | "architecture_capability"
+  | "workflow_contract"
   | "dependency_security"
   | "typecheck"
   | "lint"
@@ -208,6 +209,13 @@ export function buildMetricsPayload(metrics: BuildMetrics): Record<string, unkno
 
 export function categorizeBuildFailure(message: string): BuildFailureCategory {
   const text = message.toLowerCase();
+  if (
+    text.includes("workflow_contract:") ||
+    text.includes("workflow contract") ||
+    text.includes("workflow plan")
+  ) {
+    return "workflow_contract";
+  }
   if (text.includes("platform capabilities")) return "architecture_capability";
   if (
     text.includes("dependencies") ||

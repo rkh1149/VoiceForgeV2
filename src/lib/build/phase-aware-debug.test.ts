@@ -239,6 +239,20 @@ describe("phase-aware debug", () => {
     );
   });
 
+  it("routes required platform search failures to pages and workflows", () => {
+    const plan = createPhaseAwareDebugPlan({
+      spec,
+      files,
+      failedStep: "review_gate",
+      errorOutput:
+        "code_review: Architecture requires platform search, but the generated app did not use searchPlatformRecords for server-side search/filter/sort.",
+      generatedPhases: phases,
+    });
+
+    expect(plan.responsiblePhase.id).toBe("pages-workflows");
+    expect(plan.responsiblePhase.agentKey).toBe("frontend_builder");
+  });
+
   it("routes interface-readiness failures to a focused route and control repair", () => {
     const plan = createPhaseAwareDebugPlan({
       spec,
@@ -277,5 +291,56 @@ describe("phase-aware debug", () => {
 
     expect(plan.responsiblePhase.id).toBe("unit-workflow-tests");
     expect(plan.responsiblePhase.agentKey).toBe("test_agent");
+  });
+
+  it("routes persistence schema failures to the foundation phase", () => {
+    const plan = createPhaseAwareDebugPlan({
+      spec,
+      files,
+      failedStep: "review_gate",
+      errorOutput:
+        'persistence_handoff:schema Workflow "Save task" does not use the exact entity key "task" on its save path.',
+      generatedPhases: phases,
+    });
+
+    expect(plan.responsiblePhase.id).toBe("foundation");
+    expect(plan.context.instructions.join(" ")).toContain(
+      "exact PLATFORM DATA SCHEMA KEYS",
+    );
+  });
+
+  it("routes persistence reload and handoff failures to the workflow owner", () => {
+    const plan = createPhaseAwareDebugPlan({
+      spec,
+      files,
+      failedStep: "review_gate",
+      errorOutput:
+        'persistence_handoff:handoff Workflow "Track task" does not load saved task records on /tasks.',
+      generatedPhases: phases,
+    });
+
+    expect(plan.responsiblePhase.id).toBe("pages-workflows");
+    expect(plan.context.instructions.join(" ")).toContain(
+      "named contract from its action handler",
+    );
+    expect(plan.context.instructions.join(" ")).toContain(
+      "do not rewrite unrelated pages",
+    );
+  });
+
+  it("routes persistence proof failures to focused workflow tests", () => {
+    const plan = createPhaseAwareDebugPlan({
+      spec,
+      files,
+      failedStep: "review_gate",
+      errorOutput:
+        'persistence_handoff:test Workflow "Save task" needs a fresh-mount test proving saved task data reappears.',
+      generatedPhases: phases,
+    });
+
+    expect(plan.responsiblePhase.id).toBe("unit-workflow-tests");
+    expect(plan.context.instructions.join(" ")).toContain(
+      "remount or reload before checking saved data",
+    );
   });
 });

@@ -428,6 +428,12 @@ async function recordPostGenerationReviewArtifacts(input: {
   if (interfaceReview) {
     await log(input.buildRunId, interfaceReview.summary);
   }
+  const persistenceReview = input.reviews.find(
+    (review) => review.agentKey === "persistence_handoff_reviewer",
+  );
+  if (persistenceReview) {
+    await log(input.buildRunId, persistenceReview.summary);
+  }
 }
 
 async function recordBuildMetricsArtifact(input: {
@@ -1010,7 +1016,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     let previousPostGenerationBlockingIssues = [
       ...postGenerationBlockingIssues,
     ];
-    let consecutiveUnchangedInterfaceRounds = 0;
+    let consecutiveUnchangedContractRounds = 0;
     while (postGenerationBlockingIssues.length > 0) {
       const step = "review_gate";
       const { stepRound, previousAttempts } = reserveDebugRound(
@@ -1025,10 +1031,10 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         errorOutput,
         generatedPhases: generated.phases,
         changedFilePaths: reviewChangedFilePaths,
-        forceFullScope: consecutiveUnchangedInterfaceRounds > 0,
+        forceFullScope: consecutiveUnchangedContractRounds > 0,
         escalationReason:
-          consecutiveUnchangedInterfaceRounds > 0
-            ? "The prior repair left the interface-readiness findings unchanged. Inspect the complete rendered component path and avoid changing authentication conditions unless the finding is specifically about role reachability."
+          consecutiveUnchangedContractRounds > 0
+            ? "The prior repair left the interface or persistence contract findings unchanged. Trace the complete contracted workflow, including its visible control, exact save payload, fresh-load path, and downstream consumer. Avoid changing authentication unless the finding is specifically about role reachability."
             : undefined,
       });
       recordDebugRoundMetric(metrics, {
@@ -1176,12 +1182,14 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         previousPostGenerationBlockingIssues,
         nextPostGenerationBlockingIssues,
       );
-      const interfaceOnly = nextPostGenerationBlockingIssues.every((issue) =>
-        issue.startsWith("ui_affordance:"),
+      const contractReviewOnly = nextPostGenerationBlockingIssues.every(
+        (issue) =>
+          issue.startsWith("ui_affordance:") ||
+          issue.startsWith("persistence_handoff:"),
       );
-      consecutiveUnchangedInterfaceRounds =
-        interfaceOnly && issueProgress.status === "unchanged"
-          ? consecutiveUnchangedInterfaceRounds + 1
+      consecutiveUnchangedContractRounds =
+        contractReviewOnly && issueProgress.status === "unchanged"
+          ? consecutiveUnchangedContractRounds + 1
           : 0;
       if (nextPostGenerationBlockingIssues.length > 0) {
         await log(
@@ -1191,29 +1199,29 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       }
       if (
         shouldStopUnchangedInterfaceRepairs(
-          consecutiveUnchangedInterfaceRounds,
+          consecutiveUnchangedContractRounds,
         )
       ) {
         await recordBuildAgentArtifact({
           appId: app.id,
           buildRunId,
           agentKey: "pipeline_observer",
-          phaseKey: "interface-readiness-stagnation",
+          phaseKey: "workflow-contract-review-stagnation",
           artifactType: "review_gate",
           status: "failed",
           summary:
-            "Stopped generated-app rewrites because the interface-readiness findings were unchanged after two consecutive repair rounds.",
+            "Stopped generated-app rewrites because the interface/persistence review findings were unchanged after two consecutive repair rounds.",
           payload: {
             stepRound,
-            outcome: "stopped_unchanged_interface_repairs",
-            unchangedRounds: consecutiveUnchangedInterfaceRounds,
+            outcome: "stopped_unchanged_contract_repairs",
+            unchangedRounds: consecutiveUnchangedContractRounds,
             blockingIssues: nextPostGenerationBlockingIssues,
             filesWritten: fix.filesWritten,
             filesDeleted: fix.deletedFiles,
           },
         });
         throw new Error(
-          "Interface readiness findings were unchanged after two consecutive repair rounds; stopped rewriting the generated app.",
+          "Interface/persistence review findings were unchanged after two consecutive repair rounds; stopped rewriting the generated app.",
         );
       }
       previousPostGenerationBlockingIssues = [

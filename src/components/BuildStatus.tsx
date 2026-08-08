@@ -6,6 +6,7 @@ import AgentArtifactsList, {
 } from "@/components/AgentArtifactsList";
 import WorkflowContractList from "@/components/WorkflowContractList";
 import InterfaceReadinessReport from "@/components/InterfaceReadinessReport";
+import PersistenceHandoffReport from "@/components/PersistenceHandoffReport";
 import type { WorkflowContract } from "@/lib/workflow-contract";
 
 type LogEntry = { ts: string; message: string };
@@ -188,8 +189,16 @@ export default function BuildStatus({ appId }: { appId: string }) {
       .reverse()
       .find((artifact) => artifact.artifactType === "ui_affordance_review") ??
     null;
+  const persistenceHandoffArtifact =
+    [...data.agentArtifacts]
+      .reverse()
+      .find(
+        (artifact) => artifact.artifactType === "persistence_handoff_review",
+      ) ?? null;
   const otherAgentArtifacts = data.agentArtifacts.filter(
-    (artifact) => artifact.artifactType !== "ui_affordance_review",
+    (artifact) =>
+      artifact.artifactType !== "ui_affordance_review" &&
+      artifact.artifactType !== "persistence_handoff_review",
   );
 
   return (
@@ -325,6 +334,8 @@ export default function BuildStatus({ appId }: { appId: string }) {
       )}
 
       <InterfaceReadinessReport artifact={interfaceReadinessArtifact} />
+
+      <PersistenceHandoffReport artifact={persistenceHandoffArtifact} />
 
       {otherAgentArtifacts.length > 0 && (
         <AgentArtifactsList artifacts={otherAgentArtifacts} />

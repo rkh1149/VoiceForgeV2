@@ -342,11 +342,21 @@ export function selectDebugFileScope(input: {
       );
       break;
     case "integration_review_gate":
-      addExisting(selected, input.files, input.changedFilePaths);
-      addByPattern(selected, input.files, (path) => isGeneratedAppSource(path));
-      addPreferredByPattern(preferred, input.files, (path) =>
-        input.changedFilePaths.includes(path) || mentionedPaths.includes(path),
-      );
+      if (/persistence_handoff:/.test(input.errorOutput.toLowerCase())) {
+        addPersistenceHandoffSurface(
+          selected,
+          preferred,
+          input.files,
+          input.errorOutput,
+          input.responsiblePhase.id,
+        );
+      } else {
+        addExisting(selected, input.files, input.changedFilePaths);
+        addByPattern(selected, input.files, (path) => isGeneratedAppSource(path));
+        addPreferredByPattern(preferred, input.files, (path) =>
+          input.changedFilePaths.includes(path) || mentionedPaths.includes(path),
+        );
+      }
       break;
   }
 
@@ -450,8 +460,22 @@ function phaseHintForReviewGate(input: {
   let phaseId: string | null = null;
   let reason: string | null = null;
 
-  if (
-    /ui_affordance:|interface readiness|cannot reach it through visible navigation|matching reachable control|vague .* label|placeholder content|architecture planned route files|advanced workflow coverage|planned workflows without visible action controls|visible create\/edit controls|app router page|sign-in|route-stable|google maps|interactive google map|platform-files|platform-notifications|platform-integrations|device gps|device-location|search\/report/.test(
+  if (/persistence_handoff:schema/.test(lowerOutput)) {
+    phaseId = "foundation";
+    reason =
+      "The persistence gate found an exact entity-key, field-key, payload, or file-reference problem, so the foundation phase owns the schema and persistence-helper repair.";
+  } else if (
+    /persistence_handoff:(?:save|reload|handoff)/.test(lowerOutput)
+  ) {
+    phaseId = "pages-workflows";
+    reason =
+      "The persistence gate found a broken save, fresh-load, or downstream consumer path, so the pages/workflows phase owns the end-to-end wiring repair.";
+  } else if (/persistence_handoff:test/.test(lowerOutput)) {
+    phaseId = "unit-workflow-tests";
+    reason =
+      "The persistence behavior is missing focused save, refresh, or handoff proof, so the unit/workflow test phase owns the repair.";
+  } else if (
+    /ui_affordance:|interface readiness|cannot reach it through visible navigation|matching reachable control|vague .* label|placeholder content|architecture planned route files|advanced workflow coverage|planned workflows without visible action controls|visible create\/edit controls|app router page|sign-in|route-stable|google maps|interactive google map|platform-files|platform-notifications|platform-integrations|device gps|device-location|platform search|searchplatformrecords|platform reports|runplatformrecordreport|exportplatformrecordscsv|search\/report/.test(
       lowerOutput,
     )
   ) {
@@ -642,6 +666,46 @@ function addDataSaveSurface(
   );
 }
 
+function addPersistenceHandoffSurface(
+  selected: Set<string>,
+  preferred: Set<string>,
+  files: FileMap,
+  errorOutput: string,
+  responsiblePhaseId: string,
+): void {
+  const terms = uniqueStrings(
+    [...errorOutput.matchAll(/["']([A-Za-z][A-Za-z0-9 _-]{2,80})["']/g)]
+      .map((match) => match[1].toLowerCase())
+      .flatMap((value) => [value, ...value.split(/[ _-]+/)])
+      .filter((value) => value.length > 3),
+  );
+  const related = (path: string, content: string) => {
+    const lower = `${path}\n${content}`.toLowerCase();
+    return terms.some((term) => lower.includes(term));
+  };
+
+  if (responsiblePhaseId === "unit-workflow-tests") {
+    addByPattern(selected, files, (path) => isGeneratedTest(path));
+    addPreferredByPattern(preferred, files, (path, content) =>
+      isGeneratedTest(path) && related(path, content),
+    );
+    addDataSaveSurface(selected, preferred, files);
+    return;
+  }
+
+  addByPattern(selected, files, (path, content) => {
+    if (!isGeneratedAppSource(path) || isGeneratedTest(path)) return false;
+    if (!related(path, content)) return false;
+    return /\b(createPlatformRecord|updatePlatformRecord|deletePlatformRecord|listPlatformRecords|searchPlatformRecords|getPlatformRecord|uploadPlatformFile|downloadPlatformFile|localStorage\.(?:getItem|setItem)|useEffect|onSubmit|handle[A-Za-z0-9_$]*(?:Save|Create|Update|Load)|<select|<option)\b/.test(
+      content,
+    );
+  });
+  addPreferredByPattern(preferred, files, (path, content) =>
+    selected.has(path) && related(path, content),
+  );
+  addDataSaveSurface(selected, preferred, files);
+}
+
 function addRelatedImportNeighbors(selected: Set<string>, files: FileMap): void {
   const before = new Set(selected);
   for (const path of before) {
@@ -808,6 +872,12 @@ function instructionsFor(
         "When advanced workflow coverage fails, add compact but real route/control surfaces and wire save/update/delete or runtime integration calls for the named missing entities/workflows; do not satisfy the gate with placeholders or dead buttons.",
         "For interface-readiness failures, repair the named route graph and contracted control exactly: add a visible incoming Link/menu/tab/contextual button, place the control on its contracted route, use its action-specific accessible name, and remove placeholder-only UI.",
         "When the finding names a label or reusable form control, inspect label/htmlFor/id associations, component label props, rendered children, and the exact imported component before changing session or role conditions. Change authentication visibility only when the finding explicitly reports role reachability.",
+        "For persistence save/reload/handoff findings, trace only the named contract from its action handler through the awaited write and fresh-load reader into the named consumer. Preserve the saved record id and wire that record into the consumer control; do not rewrite unrelated pages, map rendering, styling, or authentication.",
+      );
+    }
+    if (responsiblePhase.id === "foundation") {
+      common.push(
+        "For persistence schema findings, use the exact PLATFORM DATA SCHEMA KEYS, return the awaited saved record or file reference from the domain helper, include required relationship ids, and keep raw file/image bytes out of platform-data payloads.",
       );
     }
     if (
@@ -816,6 +886,7 @@ function instructionsFor(
     ) {
       common.push(
         "When generated test coverage fails, add tests that exercise the named missing entities/workflows rather than only asserting that labels exist.",
+        "For persistence tests, assert the exact storage call and payload keys, remount or reload before checking saved data, and prove the producer's saved record appears in the downstream consumer control.",
       );
     }
   }

@@ -6,6 +6,7 @@ import {
   type BuildAgentArtifactStatus,
 } from "./agent-artifact-utils";
 import type { FileMap } from "./template";
+import { analyzePersistenceHandoffs } from "./persistence-handoff-review";
 import { analyzeUiAffordances } from "./ui-affordance-review";
 
 export type PostGenerationReviewAgentKey =
@@ -13,12 +14,16 @@ export type PostGenerationReviewAgentKey =
   | "test_reviewer"
   | "security_reviewer"
   | "ux_accessibility_reviewer"
-  | "ui_affordance_reviewer";
+  | "ui_affordance_reviewer"
+  | "persistence_handoff_reviewer";
 
 export type PostGenerationReview = {
   agentKey: PostGenerationReviewAgentKey;
   phaseKey: string;
-  artifactType: "review_gate" | "ui_affordance_review";
+  artifactType:
+    | "review_gate"
+    | "ui_affordance_review"
+    | "persistence_handoff_review";
   status: BuildAgentArtifactStatus;
   summary: string;
   warnings: string[];
@@ -81,6 +86,8 @@ const PLATFORM_RECORD_WRITE_CALLS = [
 ] as const;
 const INTEGRATION_RUNTIME_CALL_PATTERN =
   /\b(listPlatformIntegrationProviders|invokePlatformIntegration|searchGoogleMapsPlaces|getGoogleMapsPlaceDetails|geocodeGoogleMapsAddress|computeGoogleMapsRoute|getGoogleMapsElevationProfile)\s*\(/;
+const PLATFORM_SEARCH_RUNTIME_CALL_PATTERN =
+  /\bsearchPlatformRecords(?:\s*<[\s\S]{0,250}?>)?\s*\(/;
 const PLATFORM_FILE_UPLOAD_PATTERN =
   /\b(uploadPlatformFile|uploadPlatformFileData|PlatformFileUploadInput)\b/;
 const PLATFORM_FILE_PERSISTENCE_PATTERN =
@@ -192,10 +199,82 @@ export function runPostGenerationReviews(
   return [
     reviewGeneratedCode(input),
     reviewUiAffordances(input),
+    reviewPersistenceHandoffs(input),
     reviewGeneratedTests(input),
     reviewSecurity(input),
     reviewUxAccessibility(input),
   ];
+}
+
+function reviewPersistenceHandoffs(
+  input: PostGenerationReviewInput,
+): PostGenerationReview {
+  const savesRequired = input.architecture.workflowContracts.reduce(
+    (total, contract) => total + contract.expectedSaves.length,
+    0,
+  );
+  const handoffsRequired = input.architecture.workflowContracts.reduce(
+    (total, contract) => total + contract.handoffs.length,
+    0,
+  );
+  if (savesRequired === 0 && handoffsRequired === 0) {
+    return {
+      agentKey: "persistence_handoff_reviewer",
+      phaseKey: "generated-persistence-handoff-review",
+      artifactType: "persistence_handoff_review",
+      status: "skipped",
+      summary:
+        "Persistence and handoff review skipped because no durable saves or downstream handoffs were planned.",
+      warnings: [],
+      blockingIssues: [],
+      payload: {
+        version: 1,
+        skipped: true,
+        reason: "No Stage 14A save transitions or handoffs were available.",
+        summary: {
+          savesRequired: 0,
+          savesVerified: 0,
+          exactSchemasRequired: 0,
+          exactSchemasVerified: 0,
+          reloadPathsRequired: 0,
+          reloadPathsVerified: 0,
+          handoffsRequired: 0,
+          handoffsVerified: 0,
+          persistenceTestsRequired: 0,
+          persistenceTestsVerified: 0,
+        },
+        saves: [],
+        reloads: [],
+        handoffs: [],
+        warnings: [],
+        blockingIssues: [],
+      },
+    };
+  }
+
+  const report = analyzePersistenceHandoffs({
+    spec: input.spec,
+    architecture: input.architecture,
+    files: input.allFiles,
+  });
+  return {
+    agentKey: "persistence_handoff_reviewer",
+    phaseKey: "generated-persistence-handoff-review",
+    artifactType: "persistence_handoff_review",
+    status: artifactStatusFromIssues({
+      failed: report.blockingIssues.length > 0,
+      warnings: report.warnings,
+    }),
+    summary:
+      report.blockingIssues.length > 0
+        ? `Persistence and handoff review found ${report.blockingIssues.length} blocking issue${report.blockingIssues.length === 1 ? "" : "s"}; ${report.summary.savesVerified}/${report.summary.savesRequired} saves and ${report.summary.handoffsVerified}/${report.summary.handoffsRequired} handoffs are verified.`
+        : report.warnings.length > 0
+          ? `Persistence and handoff review passed with ${report.warnings.length} warning${report.warnings.length === 1 ? "" : "s"}; ${report.summary.reloadPathsVerified}/${report.summary.reloadPathsRequired} refresh paths are verified.`
+          : `Persistence and handoff review passed: ${report.summary.savesVerified}/${report.summary.savesRequired} saves, ${report.summary.reloadPathsVerified}/${report.summary.reloadPathsRequired} refresh paths, and ${report.summary.handoffsVerified}/${report.summary.handoffsRequired} handoffs are verified.`,
+    warnings: report.warnings,
+    blockingIssues: report.blockingIssues,
+    payload: { ...report },
+  };
 }
 
 function reviewUiAffordances(
@@ -429,17 +508,22 @@ function reviewGeneratedCode(
   }
 
   if (
-    (requiresService(input.architecture, "search") ||
-      requiresService(input.architecture, "reports")) &&
+    requiresService(input.architecture, "search") &&
+    !PLATFORM_SEARCH_RUNTIME_CALL_PATTERN.test(combinedSource)
+  ) {
+    blockingIssues.push(
+      "code_review: Architecture requires platform search, but the generated app did not use searchPlatformRecords for server-side search/filter/sort.",
+    );
+  }
+  if (
+    requiresService(input.architecture, "reports") &&
     !usesAny(combinedSource, [
-      "searchPlatformRecords",
-      "listPlatformSavedFilters",
       "runPlatformRecordReport",
       "exportPlatformRecordsCsv",
     ])
   ) {
     warnings.push(
-      "code_review: Search/report app did not use the Stage 12B platform search/report helpers.",
+      "code_review: Architecture requires platform reports, but the generated app did not use the Stage 12B report/export helpers.",
     );
   }
 
@@ -651,9 +735,11 @@ function reviewUxAccessibility(
       (path.startsWith("src/app/") || path.startsWith("src/components/")),
   );
   const pageEntries = uiEntries.filter(([path]) => isAppRouterPage(path));
-  const pagesWithoutHeading = pageEntries
-    .filter(([, content]) => !H1_PATTERN.test(content))
-    .map(([path]) => path);
+  const headingReview = reviewRenderedPageHeadings(
+    pageEntries.map(([path]) => path),
+    input.allFiles,
+  );
+  const pagesWithoutHeading = headingReview.pagesWithoutHeading;
   const imagesWithoutAlt = uiEntries
     .filter(([, content]) => IMAGE_WITHOUT_ALT_PATTERN.test(content))
     .map(([path]) => path);
@@ -672,7 +758,13 @@ function reviewUxAccessibility(
 
   if (pagesWithoutHeading.length > 0) {
     warnings.push(
-      `ux_accessibility_review: App Router pages without an h1: ${pagesWithoutHeading.join(", ")}.`,
+      `ux_accessibility_review: Rendered App Router pages without an h1: ${pagesWithoutHeading.join(", ")}.`,
+    );
+  }
+
+  if (headingReview.sharedShellsWithHeading.length > 0) {
+    warnings.push(
+      `ux_accessibility_review: Shared shells render an h1 in addition to each screen heading: ${headingReview.sharedShellsWithHeading.join(", ")}. Use ordinary brand text in the shell and reserve one h1 for the active screen.`,
     );
   }
 
@@ -702,11 +794,138 @@ function reviewUxAccessibility(
       uiFileCount: uiEntries.length,
       pageFiles: pageEntries.map(([path]) => path),
       pagesWithoutHeading,
+      redirectOnlyPages: headingReview.redirectOnlyPages,
+      sharedShellsWithHeading: headingReview.sharedShellsWithHeading,
       imagesWithoutAlt,
       formControlsWithoutNames,
       uxPlan: input.architecture.uxPlan,
     },
   });
+}
+
+function reviewRenderedPageHeadings(
+  pagePaths: readonly string[],
+  files: FileMap,
+): {
+  pagesWithoutHeading: string[];
+  redirectOnlyPages: string[];
+  sharedShellsWithHeading: string[];
+} {
+  const pagesWithoutHeading: string[] = [];
+  const redirectOnlyPages: string[] = [];
+  const renderedPaths = new Set<string>();
+
+  for (const pagePath of pagePaths) {
+    const pageSource = files[pagePath] ?? "";
+    if (isRedirectOnlyPage(pageSource)) {
+      redirectOnlyPages.push(pagePath);
+      continue;
+    }
+    const closure = collectImportedSourceClosure(pagePath, files);
+    closure.forEach((path) => renderedPaths.add(path));
+    if (
+      ![...closure].some((path) => {
+        const source = files[path] ?? "";
+        return (
+          !PROTECTED_TEMPLATE_FILES.has(path) &&
+          !isSharedShellWithHeading(path, source) &&
+          H1_PATTERN.test(source)
+        );
+      })
+    ) {
+      pagesWithoutHeading.push(pagePath);
+    }
+  }
+
+  const sharedShellsWithHeading = [...renderedPaths]
+    .filter((path) => {
+      return isSharedShellWithHeading(path, files[path] ?? "");
+    })
+    .sort();
+
+  return {
+    pagesWithoutHeading: pagesWithoutHeading.sort(),
+    redirectOnlyPages: redirectOnlyPages.sort(),
+    sharedShellsWithHeading,
+  };
+}
+
+function isSharedShellWithHeading(path: string, source: string): boolean {
+  return (
+    path.startsWith("src/components/") &&
+    path.endsWith(".tsx") &&
+    H1_PATTERN.test(source) &&
+    /\{\s*children\s*\}/.test(source) &&
+    /[^/]*(?:shell|layout)[^/]*\.tsx$/i.test(path)
+  );
+}
+
+function isRedirectOnlyPage(source: string): boolean {
+  return (
+    /\bredirect\s*\(/.test(source) &&
+    !/<(?:[A-Za-z][A-Za-z0-9_.:-]*)\b/.test(source)
+  );
+}
+
+function collectImportedSourceClosure(
+  startPath: string,
+  files: FileMap,
+): Set<string> {
+  const visited = new Set<string>();
+  const queue = [startPath];
+  while (queue.length > 0) {
+    const path = queue.shift();
+    if (!path || visited.has(path) || files[path] === undefined) continue;
+    visited.add(path);
+    for (const dependency of internalSourceImports(path, files[path], files)) {
+      if (!visited.has(dependency)) queue.push(dependency);
+    }
+  }
+  return visited;
+}
+
+function internalSourceImports(
+  sourcePath: string,
+  source: string,
+  files: FileMap,
+): string[] {
+  const imports: string[] = [];
+  for (const match of source.matchAll(
+    /(?:from\s+|import\s*\(\s*)["']([^"']+)["']/g,
+  )) {
+    const resolved = resolveGeneratedSourceImport(sourcePath, match[1], files);
+    if (resolved) imports.push(resolved);
+  }
+  return uniqueStrings(imports);
+}
+
+function resolveGeneratedSourceImport(
+  sourcePath: string,
+  specifier: string,
+  files: FileMap,
+): string | null {
+  let base: string | null = null;
+  if (specifier.startsWith("@/")) {
+    base = `src/${specifier.slice(2)}`;
+  } else if (specifier.startsWith(".")) {
+    const sourceDirectory = sourcePath.split("/").slice(0, -1).join("/");
+    base = normalizeGeneratedSourcePath(`${sourceDirectory}/${specifier}`);
+  }
+  if (!base) return null;
+  return (
+    [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`]
+      .find((candidate) => files[candidate] !== undefined) ?? null
+  );
+}
+
+function normalizeGeneratedSourcePath(value: string): string {
+  const parts: string[] = [];
+  for (const part of value.replaceAll("\\", "/").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  return parts.join("/");
 }
 
 function reviewResult(input: {

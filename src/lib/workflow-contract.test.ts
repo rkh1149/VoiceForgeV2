@@ -336,6 +336,87 @@ describe("workflow contract layer", () => {
     );
   });
 
+  it("keeps read-only workflows read-only and removes impossible producer handoffs", () => {
+    const spec = bikeSpec();
+    spec.dataEntities = [spec.dataEntities[0]];
+    spec.workflows = [
+      {
+        name: "View route options",
+        actor: "Any signed-in member",
+        trigger: "The member opens saved routes.",
+        steps: [
+          "Load and display saved route options.",
+          "Owners and editors can choose to mark a route complete.",
+        ],
+        successOutcome: "All saved routes remain visible after refresh.",
+        failureStates: ["No routes have been saved"],
+      },
+      {
+        name: "Mark route complete",
+        actor: "Owner or Editor",
+        trigger: "The member selects a saved route.",
+        steps: ["Mark the selected route complete", "Update the saved route"],
+        successOutcome: "The route remains complete after refresh.",
+        failureStates: ["The update fails"],
+      },
+    ];
+    spec.acceptanceCriteria = [];
+    spec.testScenarios = [];
+
+    const supplied = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const viewWorkflow = supplied.workflowContracts.find(
+      (contract) => contract.name === "View route options",
+    );
+    const markWorkflow = supplied.workflowContracts.find(
+      (contract) => contract.name === "Mark route complete",
+    );
+    if (!viewWorkflow || !markWorkflow) {
+      throw new Error("Missing read/update workflow fixtures");
+    }
+    viewWorkflow.expectedSaves = [];
+    viewWorkflow.requiredData = viewWorkflow.requiredData.map((data) => ({
+      ...data,
+      operations: ["read"],
+    }));
+    viewWorkflow.steps = viewWorkflow.steps.map((step, index) => ({
+      ...step,
+      kind: index === 0 ? "automatic" : "result",
+      writes: [],
+    }));
+    viewWorkflow.handoffs = [
+      {
+        id: "loaded-route-to-mark-complete",
+        fromStepId: viewWorkflow.steps[0].id,
+        produces: "route_option.id",
+        storage: "platformData",
+        consumerWorkflowId: markWorkflow.id,
+        consumerRoute: markWorkflow.start.route,
+        consumerControlId: markWorkflow.controls[0]?.id ?? "",
+        loadRule: "Use the already loaded route row for the mark action.",
+      },
+    ];
+    markWorkflow.dependencies.workflowIds.push(viewWorkflow.id);
+
+    const normalized = ensureWorkflowContracts(spec, supplied);
+    const normalizedView = normalized.workflowContracts.find(
+      (contract) => contract.name === "View route options",
+    );
+    const normalizedMark = normalized.workflowContracts.find(
+      (contract) => contract.name === "Mark route complete",
+    );
+    const validation = validateWorkflowContracts(spec, normalized);
+
+    expect(normalizedView?.expectedSaves).toEqual([]);
+    expect(normalizedView?.handoffs).toEqual([]);
+    expect(normalizedMark?.dependencies.workflowIds).toContain(
+      normalizedView?.id,
+    );
+    expect(validation.blockingIssues).toEqual([]);
+  });
+
   it("blocks unknown routes, fields, and downstream workflows", () => {
     const spec = bikeSpec();
     const architecture = createFallbackArchitecturePlan(

@@ -138,6 +138,7 @@ export type UiAffordanceReview = {
 type ModuleControl = Omit<UiAffordanceControlEvidence, "route"> & {
   ownerComponent: string | null;
   dynamicLabelKey: string | null;
+  sourcePosition: number;
 };
 
 type NavigationEvidence = {
@@ -672,6 +673,7 @@ function analyzeModule(
           label,
           labelConfidence: "resolved",
           dynamicLabelKey: null,
+          sourcePosition: node.getStart(sourceFile),
           targetRoute: href,
           filePath: path,
           line: lineOf(sourceFile, node),
@@ -726,6 +728,7 @@ function controlsForElement(input: {
       label: labelResult.label,
       labelConfidence: labelResult.confidence,
       dynamicLabelKey: labelResult.dynamicKey,
+      sourcePosition: input.opening.getStart(input.sourceFile),
       filePath: input.path,
       line: lineOf(input.sourceFile, input.opening),
       roles: rolesForNode(input.node, input.sourceFile),
@@ -755,6 +758,7 @@ function compositeControls(
     label,
     labelConfidence: "resolved" as const,
     dynamicLabelKey: null,
+    sourcePosition: input.opening.getStart(input.sourceFile),
     filePath: input.path,
     line: lineOf(input.sourceFile, input.opening),
     roles: rolesForNode(input.node, input.sourceFile),
@@ -835,12 +839,16 @@ function controlLabel(
     };
   }
   const ownText = jsxElementText(node, sourceFile);
-  if (ownText) {
-    return { label: ownText, confidence: "resolved", dynamicKey: null };
-  }
   const ownDynamic = jsxElementDynamicKey(node, sourceFile);
   if (ownDynamic) {
-    return { label: "", confidence: "dynamic", dynamicKey: ownDynamic };
+    return {
+      label: ownText,
+      confidence: "dynamic",
+      dynamicKey: ownDynamic,
+    };
+  }
+  if (ownText) {
+    return { label: ownText, confidence: "resolved", dynamicKey: null };
   }
   let parent: ts.Node | undefined = node.parent;
   while (parent && parent !== sourceFile) {
@@ -848,6 +856,14 @@ function controlLabel(
       const tag = parent.openingElement.tagName.getText(sourceFile).toLowerCase();
       if (tag === "label") {
         const parentText = jsxElementText(parent, sourceFile);
+        const parentDynamic = jsxElementDynamicKey(parent, sourceFile);
+        if (parentDynamic) {
+          return {
+            label: parentText,
+            confidence: "dynamic",
+            dynamicKey: parentDynamic,
+          };
+        }
         if (parentText) {
           return {
             label: parentText,
@@ -882,6 +898,7 @@ function dynamicExpressionKey(
 ): string | null {
   if (ts.isIdentifier(node)) return node.text;
   if (ts.isPropertyAccessExpression(node)) return node.getText(sourceFile);
+  if (ts.isElementAccessExpression(node)) return node.getText(sourceFile);
   if (ts.isParenthesizedExpression(node)) {
     return dynamicExpressionKey(node.expression, sourceFile);
   }
@@ -1487,30 +1504,87 @@ function rolesForNode(
   node: ts.Node,
   sourceFile: ts.SourceFile,
 ): WorkflowContractRole[] {
-  const context: string[] = [];
+  let roles = [...ALL_ROLES];
+  let current: ts.Node = node;
   let parent: ts.Node | undefined = node.parent;
-  for (let depth = 0; parent && depth < 7; depth++, parent = parent.parent) {
-    if (
-      ts.isConditionalExpression(parent) ||
-      ts.isBinaryExpression(parent) ||
-      ts.isJsxExpression(parent) ||
-      ts.isIfStatement(parent)
-    ) {
-      const text = parent.getText(sourceFile);
-      if (text.length <= 2500) context.push(text);
+  for (let depth = 0; parent && depth < 14; depth++, parent = parent.parent) {
+    const constraint = roleConstraintForBranch(current, parent, sourceFile);
+    if (constraint) roles = intersectRoles(roles, constraint);
+    current = parent;
+  }
+  return roles;
+}
+
+function roleConstraintForBranch(
+  child: ts.Node,
+  parent: ts.Node,
+  sourceFile: ts.SourceFile,
+): WorkflowContractRole[] | null {
+  if (ts.isConditionalExpression(parent)) {
+    if (nodeContains(parent.whenTrue, child)) {
+      return rolesFromCondition(parent.condition, true, sourceFile);
+    }
+    if (nodeContains(parent.whenFalse, child)) {
+      return rolesFromCondition(parent.condition, false, sourceFile);
     }
   }
-  const text = context.join(" ");
-  if (/\bcanManage\b|\brole\s*={2,3}\s*["']owner["']/i.test(text)) {
-    return ["owner"];
+  if (ts.isBinaryExpression(parent)) {
+    const operator = parent.operatorToken.kind;
+    if (
+      operator === ts.SyntaxKind.AmpersandAmpersandToken &&
+      nodeContains(parent.right, child)
+    ) {
+      return rolesFromCondition(parent.left, true, sourceFile);
+    }
+    if (
+      operator === ts.SyntaxKind.BarBarToken &&
+      nodeContains(parent.right, child)
+    ) {
+      return rolesFromCondition(parent.left, false, sourceFile);
+    }
   }
-  if (/\bcanWrite\b|\brole\s*!={1,2}\s*["']viewer["']/i.test(text)) {
-    return ["owner", "editor"];
+  if (ts.isIfStatement(parent)) {
+    if (nodeContains(parent.thenStatement, child)) {
+      return rolesFromCondition(parent.expression, true, sourceFile);
+    }
+    if (parent.elseStatement && nodeContains(parent.elseStatement, child)) {
+      return rolesFromCondition(parent.expression, false, sourceFile);
+    }
   }
-  const explicitRoles = ALL_ROLES.filter((role) =>
-    new RegExp(`\\brole\\s*={2,3}\\s*["']${role}["']`, "i").test(text),
+  return null;
+}
+
+function nodeContains(container: ts.Node, node: ts.Node): boolean {
+  return node.pos >= container.pos && node.end <= container.end;
+}
+
+function rolesFromCondition(
+  condition: ts.Expression,
+  truthy: boolean,
+  sourceFile: ts.SourceFile,
+): WorkflowContractRole[] | null {
+  const text = condition.getText(sourceFile);
+  const effectiveTruthy = /^\s*!/.test(text) ? !truthy : truthy;
+  const normalized = text.replace(/^\s*!+\s*/, "");
+
+  if (/\bcanManage\b/i.test(normalized)) {
+    return effectiveTruthy ? ["owner"] : ["editor", "viewer", "public"];
+  }
+  if (/\bcanWrite\b/i.test(normalized)) {
+    return effectiveTruthy
+      ? ["owner", "editor"]
+      : ["viewer", "public"];
+  }
+
+  const equality = normalized.match(
+    /\brole\s*(===|==|!==|!=)\s*["'](owner|editor|viewer|public)["']/i,
   );
-  return explicitRoles.length > 0 ? explicitRoles : [...ALL_ROLES];
+  if (!equality) return null;
+  const role = equality[2].toLowerCase() as WorkflowContractRole;
+  const isEqual = equality[1] === "===" || equality[1] === "==";
+  return effectiveTruthy === isEqual
+    ? [role]
+    : ALL_ROLES.filter((candidate) => candidate !== role);
 }
 
 function routeFromHandler(
@@ -1774,7 +1848,7 @@ function lineOf(sourceFile: ts.SourceFile, node: ts.Node): number {
 function uniqueModuleControls(controls: ModuleControl[]): ModuleControl[] {
   const seen = new Set<string>();
   return controls.filter((control) => {
-    const key = `${control.ownerComponent ?? ""}:${control.filePath}:${control.line}:${control.kind}:${control.label}:${control.dynamicLabelKey ?? ""}:${control.targetRoute ?? ""}`;
+    const key = `${control.ownerComponent ?? ""}:${control.filePath}:${control.sourcePosition}:${control.kind}:${control.label}:${control.dynamicLabelKey ?? ""}:${control.targetRoute ?? ""}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -1786,7 +1860,10 @@ function uniqueControls(
 ): UiAffordanceControlEvidence[] {
   const seen = new Set<string>();
   return controls.filter((control) => {
-    const key = `${control.route}:${control.filePath}:${control.line}:${control.kind}:${control.label}:${control.targetRoute ?? ""}`;
+    const sourcePosition = (
+      control as UiAffordanceControlEvidence & { sourcePosition?: number }
+    ).sourcePosition ?? control.line;
+    const key = `${control.route}:${control.filePath}:${sourcePosition}:${control.kind}:${control.label}:${control.targetRoute ?? ""}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

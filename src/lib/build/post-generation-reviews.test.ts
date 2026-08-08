@@ -376,8 +376,7 @@ export default function Page() {
   void PlatformSignInGate;
   void createPlatformRecord;
   void listPlatformRecords;
-  void searchPlatformRecords;
-  return <main><h1>Family Follow Up Hub</h1><label htmlFor="title">Title</label><input id="title" /></main>;
+  return <main><h1>Family Follow Up Hub</h1><label htmlFor="title">Title</label><input id="title" /><button onClick={() => void searchPlatformRecords("follow_up", { query: "family" })}>Search follow ups</button></main>;
 }`,
       "src/lib/follow-ups.test.ts": `import { describe, expect, it } from "vitest";
 describe("follow ups", () => { it("works", () => expect(1).toBe(1)); });`,
@@ -390,13 +389,15 @@ test("loads", async ({ page }) => { await page.goto("/"); await expect(page.getB
     expect(reviews.map((item) => item.agentKey)).toEqual([
       "code_reviewer",
       "ui_affordance_reviewer",
+      "persistence_handoff_reviewer",
       "test_reviewer",
       "security_reviewer",
       "ux_accessibility_reviewer",
     ]);
     expect(
       reviews.every((item) =>
-        item.agentKey === "ui_affordance_reviewer"
+        item.agentKey === "ui_affordance_reviewer" ||
+        item.agentKey === "persistence_handoff_reviewer"
           ? item.status === "skipped"
           : item.status === "passed",
       ),
@@ -520,6 +521,38 @@ it("works", () => expect(true).toBe(true));`,
     );
   });
 
+  it("blocks required platform search that is implemented only in React", () => {
+    const spec = normalizeAppSpec(sharedSpecInput);
+    const architecture = buildArchitecture(spec);
+    expect(
+      architecture.platformServices.some(
+        (service) => service.service === "search" && service.required,
+      ),
+    ).toBe(true);
+    const files: FileMap = {
+      "src/app/page.tsx": `"use client";
+import { PlatformSignInGate, usePlatformSessionState } from "@/components/voiceforge-reusable";
+import { createPlatformRecord, listPlatformRecords, searchPlatformRecords } from "@/lib/platform-data";
+export default function Page() {
+  usePlatformSessionState(); void PlatformSignInGate; void createPlatformRecord; void searchPlatformRecords;
+  const records = []; const query = "family";
+  void listPlatformRecords("follow_up");
+  const visible = records.filter((record) => String(record).includes(query));
+  return <main><h1>Family Follow Up Hub</h1><p>{visible.length}</p></main>;
+}`,
+      "src/lib/follow-ups.test.ts": `import { expect, it } from "vitest"; it("works", () => expect(true).toBe(true));`,
+    };
+
+    const codeReview = findReview(
+      review({ spec, architecture, allFiles: files }),
+      "code_reviewer",
+    );
+
+    expect(codeReview.blockingIssues).toContain(
+      "code_review: Architecture requires platform search, but the generated app did not use searchPlatformRecords for server-side search/filter/sort.",
+    );
+  });
+
   it("warns about missing generated tests and basic accessibility gaps", () => {
     const spec = normalizeAppSpec(personalSpecInput);
     const files: FileMap = {
@@ -542,6 +575,31 @@ export default function Page() { return <main><input id="item" /><img src="/miss
     expect(uxReview.warnings.join(" ")).toContain("without an h1");
     expect(uxReview.warnings.join(" ")).toContain("Images without alt text");
     expect(uxReview.warnings.join(" ")).toContain("Form controls need labels");
+  });
+
+  it("follows imported screen headings, exempts redirects, and flags shell headings", () => {
+    const spec = normalizeAppSpec(personalSpecInput);
+    const files: FileMap = {
+      "src/app/page.tsx": `import { redirect } from "next/navigation"; export default function Page() { redirect("/items"); }`,
+      "src/app/items/page.tsx": `import { ItemsRoute } from "@/components/items-route"; export default function Page() { return <ItemsRoute />; }`,
+      "src/components/items-route.tsx": `import { AppShell } from "@/components/app-shell"; import { ItemsScreen } from "@/components/items-screen"; export function ItemsRoute() { return <AppShell><ItemsScreen /></AppShell>; }`,
+      "src/components/app-shell.tsx": `import type { ReactNode } from "react"; export function AppShell({ children }: { children: ReactNode }) { return <main><header><h1>Packing Helper</h1></header>{children}</main>; }`,
+      "src/components/items-screen.tsx": `export function ItemsScreen() { return <section><h1>Packing items</h1></section>; }`,
+      "src/lib/items.test.ts": `import { expect, it } from "vitest"; it("works", () => expect(true).toBe(true));`,
+    };
+
+    const uxReview = findReview(
+      review({ spec, architecture: buildArchitecture(spec), allFiles: files }),
+      "ux_accessibility_reviewer",
+    );
+
+    expect(uxReview.payload.pagesWithoutHeading).toEqual([]);
+    expect(uxReview.payload.redirectOnlyPages).toEqual(["src/app/page.tsx"]);
+    expect(uxReview.payload.sharedShellsWithHeading).toEqual([
+      "src/components/app-shell.tsx",
+    ]);
+    expect(uxReview.warnings.join(" ")).not.toContain("without an h1");
+    expect(uxReview.warnings.join(" ")).toContain("Shared shells render an h1");
   });
 
   it("blocks relation validation that confuses a selected id with its error", () => {
@@ -845,7 +903,7 @@ export default function Page() {
   it("accepts typed platform wrapper helpers as advanced save wiring", () => {
     const spec = advancedBikeSpec();
     const files: FileMap = {
-      "src/lib/bike-journey.ts": `import { createPlatformRecord, updatePlatformRecord, deletePlatformRecord, exportPlatformRecordsCsv } from "@/lib/platform-data";
+      "src/lib/bike-journey.ts": `import { createPlatformRecord, updatePlatformRecord, deletePlatformRecord, searchPlatformRecords, exportPlatformRecordsCsv } from "@/lib/platform-data";
 export const ENTITY_KEYS = { trip: "trip", tripDay: "trip_day", tripStop: "trip_stop", routeOption: "route_option", savedPlace: "saved_place" } as const;
 type TripData = { name: string };
 type TripDayData = { date: string };
@@ -867,6 +925,7 @@ export function deleteRouteOption(recordId: string) { return deletePlatformRecor
 export function createSavedPlace(data: SavedPlaceData) { return createPlatformRecord<SavedPlaceData>(ENTITY_KEYS.savedPlace, data); }
 export function updateSavedPlace(recordId: string, data: Partial<SavedPlaceData>) { return updatePlatformRecord<Partial<SavedPlaceData>>(recordId, data); }
 export function deleteSavedPlace(recordId: string) { return deletePlatformRecord(recordId); }
+export function searchTrips(query: string) { return searchPlatformRecords(ENTITY_KEYS.trip, { query }); }
 export function exportTripPlanningCsv() { return exportPlatformRecordsCsv(ENTITY_KEYS.trip); }`,
       "src/app/page.tsx": `"use client";
 import { PlatformSignInGate, usePlatformSessionState } from "@/components/voiceforge-reusable";
@@ -965,7 +1024,7 @@ test("advanced bike planner controls are reachable", async ({ page }) => { await
       ],
     };
     const files: FileMap = {
-      "src/lib/bike-journey.ts": `import { createPlatformRecord, updatePlatformRecord, deletePlatformRecord, exportPlatformRecordsCsv } from "@/lib/platform-data";
+      "src/lib/bike-journey.ts": `import { createPlatformRecord, updatePlatformRecord, deletePlatformRecord, searchPlatformRecords, exportPlatformRecordsCsv } from "@/lib/platform-data";
 export const ENTITY_KEYS = { trip: "trip", tripDay: "trip_day", tripStop: "trip_stop", routeOption: "route_option", savedPlace: "saved_place", photo: "photo", gpsTrackSession: "gps_track_session" } as const;
 export function createTrip(data: { name: string }) { return createPlatformRecord(ENTITY_KEYS.trip, data); }
 export function updateTrip(id: string, data: { name?: string }) { return updatePlatformRecord(id, data); }
@@ -988,6 +1047,7 @@ export function deletePhoto(id: string) { return deletePlatformRecord(id); }
 export function createGpsTrackSession(data: { started_at: string }) { return createPlatformRecord(ENTITY_KEYS.gpsTrackSession, data); }
 export function updateGpsTrackSession(id: string, data: { started_at?: string }) { return updatePlatformRecord(id, data); }
 export function deleteGpsTrackSession(id: string) { return deletePlatformRecord(id); }
+export function searchTrips(query: string) { return searchPlatformRecords(ENTITY_KEYS.trip, { query }); }
 export function exportTripPlanningCsv() { return exportPlatformRecordsCsv(ENTITY_KEYS.trip); }`,
       "src/app/page.tsx": `"use client";
 import { PlatformSignInGate, usePlatformSessionState } from "@/components/voiceforge-reusable";
@@ -1083,11 +1143,12 @@ test("advanced bike planner controls are reachable", async ({ page }) => { await
       ],
     };
     const files: FileMap = {
-      "src/lib/bike-journey.ts": `import { createPlatformRecord, updatePlatformRecord, deletePlatformRecord, exportPlatformRecordsCsv } from "@/lib/platform-data";
+      "src/lib/bike-journey.ts": `import { createPlatformRecord, updatePlatformRecord, deletePlatformRecord, searchPlatformRecords, exportPlatformRecordsCsv } from "@/lib/platform-data";
 export const BIKE_ENTITY_KEYS = { trip: "trip", tripDay: "trip_day", stop: "stop", routeOption: "route_option", savedPlace: "saved_place", routePlaceLink: "route_place_link", gpsRideTrack: "gpsride_track", photoJournalEntry: "photo_journal_entry" } as const;
 export function createBikeRecord(entityKey: string, data: object) { return createPlatformRecord(entityKey, data); }
 export function updateBikeRecord(entityKey: string, recordId: string, data: object) { void entityKey; return updatePlatformRecord(recordId, data); }
 export function deleteBikeRecord(entityKey: string, recordId: string) { void entityKey; return deletePlatformRecord(recordId); }
+export function searchBikeRecords(entityKey: string, query: string) { return searchPlatformRecords(entityKey, { query }); }
 export function exportTripPlanningCsv() { return exportPlatformRecordsCsv(BIKE_ENTITY_KEYS.trip); }`,
       "src/app/page.tsx": `"use client";
 import { PlatformSignInGate, usePlatformSessionState } from "@/components/voiceforge-reusable";
@@ -1151,14 +1212,12 @@ export default function Page() {
   usePlatformSessionState();
   void PlatformSignInGate;
   void listPlatformRecords;
-  void searchPlatformRecords;
-  void exportPlatformRecordsCsv;
   async function createTrip() { await createPlatformRecord("trip", { name: "Tour" }); }
   async function saveTripDay() { await createPlatformRecord("trip_day", { date: "2026-08-01" }); }
   async function addStop() { await createPlatformRecord("trip_stop", { place_name: "Start" }); }
   async function calculateRoute() { const route = await computeGoogleMapsRoute({ origin: { address: "A" }, destination: { address: "B" }, travelMode: "BICYCLE", computeAlternativeRoutes: true, polylineQuality: "HIGH_QUALITY" }); await getGoogleMapsElevationProfile({ encodedPolyline: "abc", samples: 64 }); await createPlatformRecord("route_option", { name: "Comfort route", route_data: route.routes[0] }); }
   async function savePlace() { await searchGoogleMapsPlaces({ query: "cafe" }); await createPlatformRecord("saved_place", { name: "Cafe" }); }
-  return <main><h1>Bike Journey Planner</h1><form><label>Trip name<input /></label><button onClick={() => void createTrip()}>Create trip</button></form><button onClick={() => void saveTripDay()}>Add trip day</button><button onClick={() => void addStop()}>Add stop</button><button onClick={() => void calculateRoute()}>Calculate bicycle route</button><button>Compare route alternatives</button><button onClick={() => void savePlace()}>Save place</button><button>Search places</button><button>Export CSV</button><GooglePlaceAutocomplete label="Origin" onPlaceSelect={() => undefined} /><GoogleMapsTripMap places={[]} /></main>;
+  return <main><h1>Bike Journey Planner</h1><form><label>Trip name<input /></label><button onClick={() => void createTrip()}>Create trip</button></form><button onClick={() => void saveTripDay()}>Add trip day</button><button onClick={() => void addStop()}>Add stop</button><button onClick={() => void calculateRoute()}>Calculate bicycle route</button><button>Compare route alternatives</button><button onClick={() => void savePlace()}>Save place</button><button onClick={() => void searchPlatformRecords("trip", { query: "tour" })}>Search trips</button><button onClick={() => void exportPlatformRecordsCsv("trip")}>Export CSV</button><GooglePlaceAutocomplete label="Origin" onPlaceSelect={() => undefined} /><GoogleMapsTripMap places={[]} /></main>;
 }`,
       "src/lib/bike-workflows.test.ts": `import { expect, it } from "vitest";
 it("creates trip and trip day records", () => expect("create trip trip_day").toContain("trip"));

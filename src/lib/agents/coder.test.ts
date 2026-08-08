@@ -87,4 +87,24 @@ describe("coder shared rules", () => {
     expect(source).toContain("action-specific aria-label");
     expect(source).toContain("placeholder-only workflow pages");
   });
+
+  it("requires durable saves, refresh loads, and downstream handoffs", () => {
+    const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("PERSISTENCE AND HANDOFF CONTRACT");
+    expect(source).toContain("exact entity key and exact field keys");
+    expect(source).toContain("React state alone is never proof of persistence");
+    expect(source).toContain("saved record id and required relationship ids");
+    expect(source).toContain("remount or refresh");
+    expect(source).toContain("persist only the returned file id/reference");
+  });
+
+  it("requires Stage 12B helpers when architecture requires search or reports", () => {
+    const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("searchPlatformRecords is mandatory");
+    expect(source).toContain("filtering it only in React does not satisfy");
+    expect(source).toContain("runPlatformRecordReport");
+    expect(source).toContain("exportPlatformRecordsCsv");
+  });
 });

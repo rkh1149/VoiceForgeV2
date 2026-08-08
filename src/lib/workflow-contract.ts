@@ -527,8 +527,7 @@ export function validateWorkflowContracts(
 
     const sourceWorkflow = sourceWorkflows.get(normalizeText(contract.name));
     if (
-      sourceWorkflow &&
-      workflowPromisesPersistence(sourceWorkflow) &&
+      contractPromisesPersistence(contract, sourceWorkflow) &&
       spec.dataEntities.length > 0 &&
       contract.expectedSaves.length === 0
     ) {
@@ -800,7 +799,11 @@ function assignSourcesAndHandoffs(
 ): WorkflowContract[] {
   const contracts = input.map((contract) => ({
     ...contract,
-    handoffs: [...contract.handoffs],
+    handoffs: contract.handoffs.filter((handoff) =>
+      contract.expectedSaves.some(
+        (save) => save.producedReference === handoff.produces,
+      ),
+    ),
     dependencies: {
       ...contract.dependencies,
       workflowIds: [...contract.dependencies.workflowIds],
@@ -1154,10 +1157,21 @@ function workflowText(workflow: AppSpec["workflows"][number]): string {
   ].join(" ");
 }
 
-function workflowPromisesPersistence(
-  workflow: AppSpec["workflows"][number],
+function contractPromisesPersistence(
+  contract: WorkflowContract,
+  workflow: AppSpec["workflows"][number] | undefined,
 ): boolean {
-  return /\b(add|archive|assign|complete|create|delete|edit|finish|mark|move|record|remove|save|schedule|start|update|upload)\b/i.test(
+  const declaresWrite =
+    contract.steps.some(
+      (step) => step.kind === "save" || step.writes.length > 0,
+    ) ||
+    contract.requiredData.some((data) =>
+      data.operations.some((operation) => WRITE_OPERATIONS.has(operation)),
+    );
+  if (declaresWrite) return true;
+  if (!workflow) return false;
+
+  return /\b(add|archive|create|delete|edit|record|remove|save|schedule|update|upload)\b/i.test(
     workflowText(workflow),
   );
 }
