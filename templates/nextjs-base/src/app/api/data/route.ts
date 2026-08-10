@@ -124,7 +124,10 @@ export async function POST(req: Request) {
   }
 
   if (process.env.VOICEFORGE_DATA_LOCAL_FALLBACK === "1") {
-    return handleLocalData(body as DataBody & { action: DataAction });
+    return handleLocalData(
+      body as DataBody & { action: DataAction },
+      req.headers.get("x-voiceforge-test-role"),
+    );
   }
 
   const base = process.env.VOICEFORGE_PUBLIC_URL?.replace(/\/$/, "");
@@ -213,27 +216,35 @@ export async function POST(req: Request) {
   });
 }
 
-function handleLocalData(body: DataBody & { action: DataAction }) {
+function handleLocalData(
+  body: DataBody & { action: DataAction },
+  requestedRole: string | null,
+) {
   const records = getLocalRecords();
   const now = new Date().toISOString();
 
   switch (body.action) {
-    case "session":
+    case "session": {
+      const role = localAcceptanceRole(requestedRole);
       return NextResponse.json({
         session: {
-          status: "signed_in",
-          user: {
-            id: "local-user",
-            email: "local@voiceforge.dev",
-            displayName: "Local tester",
-          },
-          role: "owner",
-          canWrite: true,
-          canManage: true,
+          status: role === "public" ? "anonymous" : "signed_in",
+          user:
+            role === "public"
+              ? null
+              : {
+                  id: `local-${role}`,
+                  email: `${role}@voiceforge.dev`,
+                  displayName: `Local ${role} tester`,
+                },
+          role: role === "public" ? null : role,
+          canWrite: role === "owner" || role === "editor",
+          canManage: role === "owner",
           requireSignIn: false,
           loginUrl: "#",
         },
       });
+    }
     case "listSchemas":
       return NextResponse.json({
         entities: getLocalSchemas().map((schema) => ({
@@ -489,6 +500,14 @@ function handleLocalData(body: DataBody & { action: DataAction }) {
       });
     }
   }
+}
+
+function localAcceptanceRole(
+  value: string | null,
+): "owner" | "editor" | "viewer" | "public" {
+  return value === "editor" || value === "viewer" || value === "public"
+    ? value
+    : "owner";
 }
 
 function getLocalRecords(): Map<string, LocalRecord> {

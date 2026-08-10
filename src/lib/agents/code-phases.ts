@@ -16,6 +16,8 @@ export type GenerationPhase = {
   allowMutations?: boolean;
 };
 
+export const GENERATION_PHASE_CONTINUATION_TURNS = 12;
+
 export const CODE_GENERATION_PHASES: GenerationPhase[] = [
   {
     id: "foundation",
@@ -34,8 +36,8 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Frontend builder: own reusable React components, hooks, accessible controls, responsive layout primitives, and state handoff from the backend/platform foundation.",
     objective:
-      "Create reusable components, hooks, and focused UI building blocks. Prefer small components with clear props. Read existing foundation files before importing from them.",
-    maxTurns: 22,
+      "Create every reusable component and hook assigned to this phase by the architecture file plan, including workflow forms, lists, dialogs, session/role helpers, and responsive navigation. Prefer compact shared components with clear props, group related file reads and writes, and read existing foundation files before importing from them. Do not stop after only the shell or document remaining planned components as later work.",
+    maxTurns: 30,
   },
   {
     id: "pages-workflows",
@@ -62,10 +64,10 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     label: "Browser acceptance tests",
     agentKey: "test_agent",
     specialistRole:
-      "Test agent: own Playwright acceptance coverage for high-value browser workflows. Keep tests stable, same-origin, and complementary to the locked smoke/accessibility test.",
+      "Test agent: translate every synthesized Stage 14D workflow journey into Playwright acceptance coverage. Keep tests stable, same-origin, and complementary to the locked smoke/accessibility test.",
     objective:
-      "Add Playwright acceptance tests under e2e/generated/ for core user-visible workflows that can be tested reliably. For advanced apps, cover representative controls across the planned routes instead of only the dashboard or first workflow. Keep tests robust and avoid duplicating the locked smoke test.",
-    maxTurns: 20,
+      "Add contract-driven Playwright acceptance tests under e2e/generated/ for every synthesized user-action journey. Keep bounded journeys as focused tests; place dependent journeys in the same test.describe.serial suite and preserve UI-created state in contract order. Exercise the ordered workflow steps through visible controls, then prove expected saves after page.reload(), downstream handoffs on their consumer routes, role behavior, downloads, uploads, drag/drop, integration fallbacks, and browser geolocation when required. Use the locked e2e/voiceforge-acceptance.ts trace helpers and never replace a promised journey with a generic page-render test.",
+    maxTurns: 28,
   },
   {
     id: "final-integration-review",

@@ -1,4 +1,4 @@
-import { Agent, run, user } from "@openai/agents";
+import { Agent, MaxTurnsExceededError, run, user } from "@openai/agents";
 import type { AppSpec } from "@/lib/spec";
 import type { ArchitecturePlan } from "@/lib/architecture";
 import type { FileMap } from "@/lib/build/template";
@@ -16,11 +16,13 @@ import {
   CHANGE_GENERATION_PHASES,
   CODE_GENERATION_PHASES,
   DEEP_DIAGNOSTIC_CHANGE_PHASES,
+  GENERATION_PHASE_CONTINUATION_TURNS,
   type GenerationPhase,
 } from "@/lib/agents/code-phases";
 import { platformEntityFromSpec } from "@/lib/platform/spec-seeding";
 import { APPROVED_DEPENDENCY_GUIDANCE } from "../build/dependencies";
 import type { PhaseAwareDebugContext } from "../build/phase-aware-debug";
+import { synthesizeWorkflowAcceptancePlan } from "../build/workflow-acceptance-plan";
 
 /**
  * Code Agent + Debug Agent.
@@ -40,7 +42,7 @@ export const SHARED_RULES = `Rules for all files you mutate:
 - For platform data, import from src/lib/platform-data.ts. Call listPlatformRecords, createPlatformRecord, updatePlatformRecord, and deletePlatformRecord from client components. For apps that require sign-in or roles, also call getPlatformSession, signInToPlatform, and signOutPlatformSession; show signed-out, no-access, current-user, and read-only viewer states, and hide/disable write controls when session.canWrite is false. Prefer usePlatformSessionState from src/components/voiceforge-reusable.tsx for route-stable session state. In sign-in-required apps, ALWAYS call getPlatformSession first and store the returned session before calling listPlatformRecords/listPlatformFiles; if session.status is "signed_out" or "no_access", do not fetch records/files yet. During initial auth loading, render a neutral loading state and DO NOT render the sign-in screen while session is null/unknown; this prevents a login flash on every route change. Render a visible sign-in action on every route only after getPlatformSession resolves to signed_out, preferably PlatformSignInGate from src/components/voiceforge-reusable.tsx. If the root route is a sign-in page, redirect or render the main app/dashboard once session.status is "signed_in"; never continue rendering a sign-in button to an already signed-in user. Never fetch session and records/files in the same Promise.all for sign-in-required apps because the data call can fail before the app preserves session.loginUrl. Use the exact platform entity keys and field keys from PLATFORM DATA SCHEMA KEYS, not display labels, plural guesses, PascalCase names, or camelCase aliases. Platform data records are small JSON records (64 KB max): NEVER put raw base64, data URLs, imageBase64, generatedImage, PDF/file bytes, or uploaded file contents in createPlatformRecord/updatePlatformRecord payloads. For generated images and uploads in shared/platform apps, use uploadPlatformFile or uploadPlatformFileData from src/lib/platform-files.ts, then store only the returned file id/reference plus small metadata in platform data. Always show loading and error states. NEVER reference VOICEFORGE_APP_TOKEN, VOICEFORGE_PUBLIC_URL, or the VoiceForge platform URL in browser code.
 - Validation helpers must distinguish a field's value from its validation error. Name required-field errors with an Error suffix (for example, recipeIdError = required(draft.recipeId, "Choose a saved recipe.")); never name that error recipeId or use it as though it were the selected id. For related-record validation, only check membership after the required check passes: const recipeError = !recipeIdError && !recipeIds.has(draft.recipeId) ? "Choose an existing saved recipe." : undefined. Add regression tests proving a valid saved relation id is accepted and an unknown relation id is rejected; the valid save test must reach createPlatformRecord.
 - Advanced apps must implement the planned workflows as usable UI, not placeholder explanation pages. Every editable planned entity needs role-aware visible create/edit controls, real save/update/delete wiring where the role allows it, and generated unit/workflow or browser tests that exercise that entity. Every planned workflow needs a reachable action path and a generated test that proves the core workflow.
-- UI AFFORDANCE CONTRACT: Every user_action workflow start route must be reachable from / through visible, role-appropriate navigation or a clearly labeled contextual control. A generated page file or hidden URL does not make a workflow discoverable. Render every workflow contract control on its exact contract route with the contract accessibleName (minor punctuation differences are fine). Every user-managed entity needs a reachable view/list path plus the create/update/delete paths promised by its contract. Do not generate placeholder-only workflow pages. Never use vague standalone action labels such as Submit, Save, Go, Open, Continue, or OK; name the object and action, such as "Save recipe" or "Open GPS tracking". Icon-only controls need an action-specific aria-label. Keep navigation available in both desktop and mobile layouts. Data-driven repeated fields must keep each input inside a real label or give it an explicit aria-label. Loading-state buttons must preserve the contracted accessible name, for example aria-label="Save book" while their visible text changes to "Saving book...".
+- UI AFFORDANCE CONTRACT: Every user_action workflow start route must be reachable from / through visible, role-appropriate navigation or a clearly labeled contextual control. A generated page file or hidden URL does not make a workflow discoverable. Render every workflow contract control on its exact contract route with the contract accessibleName (minor punctuation differences are fine). Every user-managed entity needs a reachable view/list path plus the create/update/delete paths promised by its contract. Do not generate placeholder-only workflow pages. Never use vague standalone action labels such as Submit, Save, Go, Open, Continue, or OK; name the object and action, such as "Save recipe" or "Open GPS tracking". Icon-only controls need an action-specific aria-label. Keep navigation available in both desktop and mobile layouts. When rendering shared navigation with .map(), define its entries as static objects with literal href and label fields, for example { href: "/equipment", label: "Equipment" }; do not hide destinations behind computed functions or opaque runtime-only structures. Data-driven repeated fields must keep each input inside a real label or give it an explicit aria-label. Loading-state buttons must preserve the contracted accessible name, for example aria-label="Save book" while their visible text changes to "Saving book...".
 - PERSISTENCE AND HANDOFF CONTRACT: Every expectedSaves transition must call the architecture-selected durable storage with the exact entity key and exact field keys, await the write, retain the returned stable record/file reference, and show success only after the write succeeds. The workflow success route must reload its durable records on fresh mount or screen entry; React state alone is never proof of persistence. Every handoff consumer must load the producer's saved entity from durable storage, use the saved record id and required relationship ids, and expose the loaded record through the contracted downstream control. Calculated, generated, mapped, uploaded, or integration results that a later workflow needs must have an explicit save action or automatic save before navigation. Add focused tests that assert the exact write payload, preserve entered values after a failed save, remount or refresh and see the record again, and save in the producer then select/display that same record in the consumer. For platform files, upload bytes first and persist only the returned file id/reference in platform data.
 - For platform search/reports over shared platform records, use the Stage 12B helpers from src/lib/platform-data.ts: searchPlatformRecords, listPlatformRecordSearchConfigs, listPlatformSavedFilters, savePlatformRecordFilter, deletePlatformSavedFilter, runPlatformRecordReport, and exportPlatformRecordsCsv. When the architecture marks the search service required, searchPlatformRecords is mandatory for the promised server-side search/filter/sort workflow; fetching a limited record list and filtering it only in React does not satisfy that requirement. When reports are required, use runPlatformRecordReport or exportPlatformRecordsCsv for the report/export workflow. Saved-filter write controls must be hidden when session.canWrite is false; delete saved filters only when session.canManage is true.
 - Generated apps can enforce the current user's VoiceForge owner/editor/viewer role, but they cannot currently invite new VoiceForge users, resend real access invitations, or revoke actual app access from inside the generated app. Do not create fake Invite/Remove-access workflows that imply access changes. If the spec asks for member access management, show an owner-only note that access is managed from the VoiceForge app dashboard, or build clearly labeled app-local contact/member records that do not claim to grant/revoke sign-in access.
@@ -61,6 +63,7 @@ ${APPROVED_DEPENDENCY_GUIDANCE}
 - Accessibility: semantic HTML, labels on inputs, alt text, keyboard operability.
 - Write unit/workflow tests under src/ using vitest + @testing-library/react (both installed; jest-dom matchers like toBeInTheDocument are set up). Tests must not rely on localStorage persisting between tests.
 - Write browser acceptance tests only under e2e/generated/*.spec.ts. Never edit e2e/smoke.spec.ts.
+- STAGE 14D BROWSER ACCEPTANCE CONTRACT: For every supplied workflow acceptance journey, write a real Playwright journey under e2e/generated/. Import workflowJourneyTitle, workflowStepTitle, workflowSaveTitle, workflowHandoffTitle, voiceForgeRoleHeaders, acceptanceRunSuffix, expectPersistedAfterReload, expectDownloadedFile, and tinyPngUpload as needed from ../voiceforge-acceptance. Use workflowJourneyTitle in the test title and wrap every ordered contract step in test.step(workflowStepTitle(workflowId, contractStepId, description), ...). Exercise the visible route/control path with getByRole/getByLabel, not direct platform API calls, localStorage writes, hidden URLs, or placeholder assertions. Keep each synthesized journey as its own focused test. When a journey declares dependsOnJourneyIds, place it and those prerequisite journeys in the same test.describe.serial suite and preserve their UI-created records between the ordered tests. Build record fixture names and emails with acceptanceRunSuffix() so a Playwright retry cannot create duplicate rows with the same accessible name. For every save, add test.step(workflowSaveTitle(saveId), ...) with page.reload() or expectPersistedAfterReload and assert the unique saved fixture remains visible. For every handoff, add test.step(workflowHandoffTitle(handoffId), ...), navigate through visible UI to the consumer route, and assert the producer's saved value is present in the named consumer control/result. After clicking a navigation link, wait for the destination URL or a destination-specific heading before calling page.reload(); never click a Next.js link and immediately reload because the reload can win the client-side navigation race and refresh the old route. Native select option elements are hidden unless the select is open: prove an option is loaded with expect(combobox).toContainText(label) or expect(combobox.getByRole("option", {name:label})).toHaveCount(1), never toBeVisible(). Use page.waitForEvent("download") for exports, setInputFiles(tinyPngUpload()) for uploads, browser contexts with voiceForgeRoleHeaders(role) for role checks, and granted geolocation with fixed coordinates for GPS. Helper functions may reduce repeated locator setup, but each trace block must call the helper that performs its specific action and assertion; never add a marker around an empty or unrelated block. Do not use request/API fixtures to manufacture the record whose UI workflow is being tested. Do not use test.skip, test.fixme, waitForTimeout, or assertions that only prove a page/heading exists.
 - Tests must be deterministic: NEVER use vi.useFakeTimers, real delays, or arbitrary waits. Never use setTimeout/setInterval in components for game or app logic — apply state updates synchronously (skip artificial "thinking" pauses; they break tests and add nothing). In tests use fireEvent from @testing-library/react (@testing-library/user-event is NOT installed) then findBy*/waitFor.
 - Write robust test assertions: query by role or aria-label on unique interactive elements, never by text that appears in more than one place or is split across elements (e.g. "0:13 / 0:37" rendered from multiple spans). Prefer getByRole(..., {name}) over getByLabelText when labels may be duplicated by helper text. If a Vitest vi.mock factory references mock functions, define them with vi.hoisted. Fewer, stronger assertions beat many brittle ones. Don't assert on intermediate states that depend on effect timing. For controlled form component tests, pass a complete valid draft or rerender with the changed draft before expecting onSubmit; do not expect a child component to mutate parent props synchronously. For drag/drop tests using fireEvent.dragStart/drop, mock DataTransfer as a MIME-keyed store, e.g. const transferStore = new Map<string, string>(); const dataTransfer = { setData: vi.fn((type, value) => transferStore.set(type, value)), getData: vi.fn((type) => transferStore.get(type) ?? "") }; Real DataTransfer stores values separately by MIME type, so never use one shared string that lets a text/plain fallback overwrite application-specific JSON.
 - For TypeScript literal unions in record data, explicitly type payload helper return values and use typed constants or "as const" for literal fields such as status, role, priority, invitation_status, channel, and templateKey. Never let required select/literal fields widen to plain string before passing them to createPlatformRecord, updatePlatformRecord, or React state setters.
@@ -75,6 +78,8 @@ export type GenerationPhaseResult = {
   filesWritten: string[];
   filesDeleted: string[];
   notes: string;
+  turnContinuations: number;
+  turnLimit: number;
 };
 
 export type CodegenResult = {
@@ -135,6 +140,21 @@ ${JSON.stringify(architecture, null, 2)}
 Use the architecture plan as the source of implementation structure: routes, components, data model, file plan, workflow coverage, and tests. Do not implement services marked unavailable or future-platform. If a detail conflicts with the shared rules, the shared rules win.
 
 WORKFLOW CONTRACTS ARE MANDATORY. Implement every contract's starting route, visible controls, ordered steps, exact data operations, persistent saves, visible result, and downstream handoffs. Use each control's accessibleName as the visible label or accessible name so later acceptance tests can find it. A workflow is not complete when it only calculates or displays transient data if its contract requires a save or a downstream screen to reload that record. In phase notes, name the workflow contract ids completed and call out any contract that remains incomplete.`;
+}
+
+export function workflowAcceptancePlanNote(
+  spec: AppSpec,
+  architecture: ArchitecturePlan | undefined,
+  phaseId: string,
+): string {
+  if (!architecture || !phaseId.includes("browser")) return "";
+  const plan = synthesizeWorkflowAcceptancePlan(spec, architecture);
+  return `
+
+STAGE 14D WORKFLOW ACCEPTANCE PLAN (MANDATORY):
+${JSON.stringify(plan, null, 2)}
+
+Generate executable Playwright coverage for every journey and every ordered step above. Exact journey, workflow, step, save, and handoff ids are traceability keys: pass them to the locked e2e/voiceforge-acceptance.ts title helpers exactly. Keep bounded journeys as separate focused tests. A journey with dependsOnJourneyIds must share a test.describe.serial suite with its prerequisite journeys and run after them, reusing only records created through the visible UI. A generated spec is incomplete if it only mentions an id without performing the associated UI action and assertion.`;
 }
 
 export function platformDataSchemaNote(spec: AppSpec): string {
@@ -282,7 +302,7 @@ ${platformDataSchemaNote(input.spec)}
 ERROR OUTPUT TAIL:
 ${input.errorOutput}
 
-Current files are available through list_files/read_file/search_code. Fix the problem.${aiUsageNote(input.spec)}`;
+Current files are available through list_files/read_file/search_code. Fix the problem. If you identify an actionable source or generated-test repair, you MUST apply it with patch_file or write_file before replying; do not stop after merely describing the edit. Keep inspection focused on the failing file and its directly responsible source path.${aiUsageNote(input.spec)}`;
 
   const result = await run(agent, [user(message)], { maxTurns: 25 });
   const notes = extractText(result.output);
@@ -466,6 +486,7 @@ ${change}${previous}
 APP SPECIFICATION:
 ${JSON.stringify(input.spec, null, 2)}
 ${architectureNote(input.architecture)}
+${workflowAcceptancePlanNote(input.spec, input.architecture, input.phase.id)}
 ${platformDataSchemaNote(input.spec)}
 
 Use the file tools instead of assuming file contents. ${
@@ -477,9 +498,31 @@ Use the file tools instead of assuming file contents. ${
   }
 ${aiUsageNote(input.spec)}`;
 
-  const result = await run(agent, [user(message)], {
-    maxTurns: input.phase.maxTurns,
-  });
+  let result: { output: unknown[] };
+  let turnContinuations = 0;
+  let turnLimit = input.phase.maxTurns;
+  try {
+    result = await run(agent, [user(message)], {
+      maxTurns: turnLimit,
+    });
+  } catch (error) {
+    if (!(error instanceof MaxTurnsExceededError) || !error.state) {
+      throw error;
+    }
+    turnContinuations = 1;
+    turnLimit += GENERATION_PHASE_CONTINUATION_TURNS;
+    try {
+      result = await run(agent, error.state, { maxTurns: turnLimit });
+    } catch (continuationError) {
+      if (continuationError instanceof MaxTurnsExceededError) {
+        throw new Error(
+          `Generation phase "${input.phase.label}" exceeded ${turnLimit} turns after one automatic continuation.`,
+          { cause: continuationError },
+        );
+      }
+      throw continuationError;
+    }
+  }
 
   return makePhaseResult({
     phase: input.phase,
@@ -487,6 +530,8 @@ ${aiUsageNote(input.spec)}`;
     operationStart,
     workspaceFiles: input.workspaceFiles,
     notes: extractText(result.output),
+    turnContinuations,
+    turnLimit,
   });
 }
 
@@ -521,6 +566,8 @@ function makePhaseResult(input: {
   operationStart: number;
   workspaceFiles: FileMap;
   notes: string;
+  turnContinuations?: number;
+  turnLimit?: number;
 }): GenerationPhaseResult {
   const phaseOperations = input.operations.slice(input.operationStart);
   const filesWritten = pathsWithContent(input.workspaceFiles, phaseOperations);
@@ -532,6 +579,8 @@ function makePhaseResult(input: {
     filesWritten,
     filesDeleted,
     notes: input.notes,
+    turnContinuations: input.turnContinuations ?? 0,
+    turnLimit: input.turnLimit ?? input.phase.maxTurns,
   };
 }
 

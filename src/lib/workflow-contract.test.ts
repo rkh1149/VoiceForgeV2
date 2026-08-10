@@ -9,6 +9,7 @@ import {
   validateWorkflowContracts,
   WORKFLOW_CONTRACT_VERSION,
   workflowContractStats,
+  type WorkflowContract,
 } from "./workflow-contract";
 
 const personalInput = {
@@ -336,6 +337,81 @@ describe("workflow contract layer", () => {
     );
   });
 
+  it("does not add generic handoffs after an architect maps a saved reference", () => {
+    const spec = bikeSpec();
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const supplied: ArchitecturePlan = structuredClone(architecture);
+    const routeWorkflow = supplied.workflowContracts.find((contract) =>
+      contract.name.startsWith("Plan and save"),
+    )!;
+    const gpsWorkflow = supplied.workflowContracts.find((contract) =>
+      contract.name.startsWith("Track a saved"),
+    )!;
+    const overviewWorkflow: WorkflowContract = {
+      ...structuredClone(gpsWorkflow),
+      id: "review-overview",
+      name: "Review overview",
+      start: { route: "/", screen: "Overview", preconditions: [] },
+      controls: [
+        {
+          id: "overview-link",
+          kind: "link",
+          accessibleName: "Overview",
+          route: "/",
+          roles: ["owner", "editor", "viewer"],
+          action: "Open aggregate route counts",
+        },
+      ],
+      steps: [
+        {
+          id: "show-route-count",
+          description: "Calculate the number of saved routes",
+          kind: "automatic",
+          route: "/",
+          controlId: "",
+          reads: ["route_option"],
+          writes: [],
+          visibleResult: "Saved route count is visible.",
+        },
+      ],
+      expectedSaves: [],
+      handoffs: [],
+      dependencies: { workflowIds: [], platformServices: ["data"] },
+    };
+    supplied.workflowContracts.push(overviewWorkflow);
+    routeWorkflow.handoffs[0] = {
+      ...routeWorkflow.handoffs[0],
+      id: "saved-route-for-gps-tracking",
+    };
+    routeWorkflow.handoffs.push({
+      ...routeWorkflow.handoffs[0],
+      id: `${routeWorkflow.id}-to-${overviewWorkflow.id}-route_option`,
+      consumerWorkflowId: overviewWorkflow.id,
+      consumerRoute: "/",
+      consumerControlId: "overview-link",
+      loadRule: "Load the saved Route Option record and make it available on Overview.",
+    });
+
+    const normalized = ensureWorkflowContracts(spec, supplied);
+    const normalizedRoute = normalized.workflowContracts.find(
+      (contract) => contract.id === routeWorkflow.id,
+    )!;
+    const normalizedOverview = normalized.workflowContracts.find(
+      (contract) => contract.id === overviewWorkflow.id,
+    )!;
+
+    expect(normalizedRoute.handoffs).toHaveLength(1);
+    expect(normalizedRoute.handoffs).not.toContainEqual(
+      expect.objectContaining({ consumerWorkflowId: overviewWorkflow.id }),
+    );
+    expect(normalizedOverview.dependencies.workflowIds).not.toContain(
+      routeWorkflow.id,
+    );
+  });
+
   it("keeps read-only workflows read-only and removes impossible producer handoffs", () => {
     const spec = bikeSpec();
     spec.dataEntities = [spec.dataEntities[0]];
@@ -377,6 +453,7 @@ describe("workflow contract layer", () => {
       throw new Error("Missing read/update workflow fixtures");
     }
     viewWorkflow.expectedSaves = [];
+    viewWorkflow.controls = [];
     viewWorkflow.requiredData = viewWorkflow.requiredData.map((data) => ({
       ...data,
       operations: ["read"],
@@ -410,6 +487,16 @@ describe("workflow contract layer", () => {
     const validation = validateWorkflowContracts(spec, normalized);
 
     expect(normalizedView?.expectedSaves).toEqual([]);
+    expect(normalizedView?.controls).toEqual([
+      expect.objectContaining({
+        kind: "link",
+        accessibleName: "View route options",
+        route: normalizedView?.start.route,
+      }),
+    ]);
+    expect(
+      normalizedView?.steps.every((step) => step.controlId === ""),
+    ).toBe(true);
     expect(normalizedView?.handoffs).toEqual([]);
     expect(normalizedMark?.dependencies.workflowIds).toContain(
       normalizedView?.id,

@@ -30,6 +30,16 @@ describe("code generation specialist phases", () => {
     expect(foundation?.objective).toContain("large advanced apps");
   });
 
+  it("budgets reusable components for complete advanced workflow surfaces", () => {
+    const components = CODE_GENERATION_PHASES.find(
+      (phase) => phase.id === "components",
+    );
+
+    expect(components?.maxTurns).toBeGreaterThanOrEqual(30);
+    expect(components?.objective).toContain("every reusable component and hook");
+    expect(components?.objective).toContain("Do not stop after only the shell");
+  });
+
   it("keeps drag/drop DataTransfer guidance in test-writing phases", () => {
     const unitTests = CODE_GENERATION_PHASES.find(
       (phase) => phase.id === "unit-workflow-tests",
@@ -41,6 +51,18 @@ describe("code generation specialist phases", () => {
     expect(unitTests?.objective).toContain("MIME-keyed");
     expect(unitTests?.objective).toContain("DataTransfer");
     expect(reproductionTests?.objective).toContain("MIME-keyed DataTransfer");
+  });
+
+  it("requires browser tests for every synthesized workflow journey", () => {
+    const browserTests = CODE_GENERATION_PHASES.find(
+      (phase) => phase.id === "browser-acceptance-tests",
+    );
+
+    expect(browserTests?.objective).toContain("every synthesized user-action journey");
+    expect(browserTests?.objective).toContain("page.reload()");
+    expect(browserTests?.objective).toContain("downstream handoffs");
+    expect(browserTests?.objective).toContain("voiceforge-acceptance.ts");
+    expect(browserTests?.objective).toContain("test.describe.serial");
   });
 
   it("keeps change mode diagnostic, implementation, test, and final review phases separate", () => {

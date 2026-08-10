@@ -2,10 +2,20 @@ import { NextResponse } from "next/server";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { apps, approvals, buildRuns, requirements } from "@/db/schema";
+import {
+  apps,
+  approvals,
+  buildRuns,
+  changeRequests,
+  requirements,
+} from "@/db/schema";
 import { getOrCreateCurrentUser } from "@/lib/users";
 import { audit } from "@/lib/audit";
-import { startBuildPipeline } from "@/lib/build/pipeline";
+import {
+  resumeBuildPipelineContinuation,
+  startBuildPipeline,
+} from "@/lib/build/pipeline";
+import { getLatestBuildCheckpointStage } from "@/lib/build/checkpoints";
 import { checkBuildQuota } from "@/lib/quota";
 import { runInBackground } from "@/lib/background";
 
@@ -91,6 +101,71 @@ export async function POST(
       { error: "A build is already running for this app." },
       { status: 409 },
     );
+  }
+
+  const [failedRun] = await db
+    .select()
+    .from(buildRuns)
+    .where(
+      and(
+        eq(buildRuns.appId, appId),
+        eq(buildRuns.requirementId, latestRequirement.id),
+        eq(buildRuns.status, "failed"),
+      ),
+    )
+    .orderBy(desc(buildRuns.createdAt))
+    .limit(1);
+  const failedCheckpointStage = failedRun
+    ? await getLatestBuildCheckpointStage(failedRun.id)
+    : null;
+  if (
+    failedRun &&
+    (failedCheckpointStage === "reviewing" ||
+      failedCheckpointStage === "testing")
+  ) {
+    await db
+      .update(buildRuns)
+      .set({
+        status: failedCheckpointStage === "reviewing" ? "debugging" : "testing",
+        errorMessage: null,
+        finishedAt: null,
+        startedAt: new Date(),
+      })
+      .where(eq(buildRuns.id, failedRun.id));
+    await db
+      .update(apps)
+      .set({ status: "building", updatedAt: new Date() })
+      .where(eq(apps.id, appId));
+    await db
+      .update(changeRequests)
+      .set({ status: "building", updatedAt: new Date() })
+      .where(eq(changeRequests.requirementId, latestRequirement.id));
+
+    await audit({
+      userId: user.id,
+      appId,
+      buildRunId: failedRun.id,
+      action: "build.resumed",
+      payload: {
+        requirementVersion: latestRequirement.version,
+        checkpointStage: failedCheckpointStage,
+      },
+    });
+    runInBackground(
+      () =>
+        resumeBuildPipelineContinuation(appId, {
+          buildRunId: failedRun.id,
+          force: true,
+          resetDebugBudget: true,
+        }),
+      `resume build ${failedRun.id}`,
+    );
+    return NextResponse.json({
+      ok: true,
+      buildRunId: failedRun.id,
+      resumed: true,
+      checkpointStage: failedCheckpointStage,
+    });
   }
 
   const quota = await checkBuildQuota(user);

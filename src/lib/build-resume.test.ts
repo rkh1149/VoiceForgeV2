@@ -20,4 +20,33 @@ describe("build resume status filter", () => {
     expect(statusesMatch?.[1]).not.toContain('"awaiting_user_test"');
     expect(statusesMatch?.[1]).not.toContain('"failed"');
   });
+
+  it("resumes failed review builds from their durable checkpoint", () => {
+    const pipeline = readFileSync(
+      new URL("./build/pipeline.ts", import.meta.url),
+      "utf8",
+    );
+    const checkpoints = readFileSync(
+      new URL("./build/checkpoints.ts", import.meta.url),
+      "utf8",
+    );
+    const rebuildRoute = readFileSync(
+      new URL(
+        "../app/api/apps/[appId]/rebuild/route.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(checkpoints).toContain('"reviewing"');
+    expect(pipeline).toContain("runCheckpointReviewGate");
+    expect(pipeline).toContain("best saved source checkpoint");
+    expect(pipeline).toContain("refreshResumedTemplateFiles");
+    expect(pipeline).toContain("options?.resetDebugBudget");
+    expect(pipeline).toContain("preserved the checkpoint and will retry");
+    expect(pipeline).not.toContain("Debug agent could not produce a fix");
+    expect(rebuildRoute).toContain("getLatestBuildCheckpointStage");
+    expect(rebuildRoute).toContain("resetDebugBudget");
+    expect(rebuildRoute).toContain("resumed: true");
+  });
 });

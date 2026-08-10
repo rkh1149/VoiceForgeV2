@@ -53,6 +53,30 @@ describe("generated app local platform fallback", () => {
     delete globalStore.__voiceforgeLocalSavedFilters;
   });
 
+  it("simulates owner, editor, viewer, and public sessions for browser acceptance tests", async () => {
+    process.env.VOICEFORGE_DATA_LOCAL_FALLBACK = "1";
+
+    for (const [role, expected] of [
+      ["owner", { role: "owner", canWrite: true, canManage: true }],
+      ["editor", { role: "editor", canWrite: true, canManage: false }],
+      ["viewer", { role: "viewer", canWrite: false, canManage: false }],
+      ["public", { role: null, canWrite: false, canManage: false }],
+    ] as const) {
+      const response = await dataPOST(
+        new Request("http://local.test/api/data", {
+          method: "POST",
+          headers: { "x-voiceforge-test-role": role },
+          body: JSON.stringify({ action: "session", returnTo: "/" }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        session: expected,
+      });
+    }
+  });
+
   it("validates local records against seeded platform schema keys", async () => {
     process.env.VOICEFORGE_DATA_LOCAL_FALLBACK = "1";
     process.env.VOICEFORGE_PLATFORM_SCHEMA_JSON = JSON.stringify(schema);

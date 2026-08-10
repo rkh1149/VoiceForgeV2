@@ -6,6 +6,7 @@ import {
   type BuildAgentArtifactStatus,
 } from "./agent-artifact-utils";
 import type { FileMap } from "./template";
+import { analyzeGeneratedAcceptanceTests } from "./acceptance-test-review";
 import { analyzePersistenceHandoffs } from "./persistence-handoff-review";
 import { analyzeUiAffordances } from "./ui-affordance-review";
 
@@ -15,7 +16,8 @@ export type PostGenerationReviewAgentKey =
   | "security_reviewer"
   | "ux_accessibility_reviewer"
   | "ui_affordance_reviewer"
-  | "persistence_handoff_reviewer";
+  | "persistence_handoff_reviewer"
+  | "acceptance_test_reviewer";
 
 export type PostGenerationReview = {
   agentKey: PostGenerationReviewAgentKey;
@@ -23,7 +25,8 @@ export type PostGenerationReview = {
   artifactType:
     | "review_gate"
     | "ui_affordance_review"
-    | "persistence_handoff_review";
+    | "persistence_handoff_review"
+    | "acceptance_test_review";
   status: BuildAgentArtifactStatus;
   summary: string;
   warnings: string[];
@@ -58,6 +61,7 @@ const PROTECTED_TEMPLATE_FILES = new Set([
   "src/app/api/notifications/route.ts",
   "src/app/api/integrations/route.ts",
   "e2e/smoke.spec.ts",
+  "e2e/voiceforge-acceptance.ts",
 ]);
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx"] as const;
@@ -200,10 +204,86 @@ export function runPostGenerationReviews(
     reviewGeneratedCode(input),
     reviewUiAffordances(input),
     reviewPersistenceHandoffs(input),
+    reviewGeneratedAcceptanceJourneys(input),
     reviewGeneratedTests(input),
     reviewSecurity(input),
     reviewUxAccessibility(input),
   ];
+}
+
+function reviewGeneratedAcceptanceJourneys(
+  input: PostGenerationReviewInput,
+): PostGenerationReview {
+  const userActionContracts = input.architecture.workflowContracts.filter(
+    (contract) => contract.trigger === "user_action",
+  );
+  if (userActionContracts.length === 0) {
+    return {
+      agentKey: "acceptance_test_reviewer",
+      phaseKey: "generated-acceptance-test-review",
+      artifactType: "acceptance_test_review",
+      status: "skipped",
+      summary:
+        "Generated acceptance test review skipped because no user-action workflow contracts were planned.",
+      warnings: [],
+      blockingIssues: [],
+      payload: {
+        version: 1,
+        skipped: true,
+        reason: "No Stage 14A user-action workflow contracts were available.",
+        summary: {
+          journeysPlanned: 0,
+          journeysGenerated: 0,
+          journeysVerified: 0,
+          workflowsRequired: 0,
+          workflowsVerified: 0,
+          stepsRequired: 0,
+          stepsVerified: 0,
+          savesRequired: 0,
+          savesVerified: 0,
+          refreshChecksRequired: 0,
+          refreshChecksVerified: 0,
+          handoffsRequired: 0,
+          handoffsVerified: 0,
+          roleScenariosRequired: 0,
+          roleScenariosVerified: 0,
+          downloadsRequired: 0,
+          downloadsVerified: 0,
+          geolocationJourneysRequired: 0,
+          geolocationJourneysVerified: 0,
+          nonBrowserWorkflows: 0,
+        },
+        generatedTestFiles: [],
+        journeys: [],
+        warnings: [],
+        blockingIssues: [],
+      },
+    };
+  }
+
+  const report = analyzeGeneratedAcceptanceTests({
+    spec: input.spec,
+    architecture: input.architecture,
+    files: input.allFiles,
+  });
+  return {
+    agentKey: "acceptance_test_reviewer",
+    phaseKey: "generated-acceptance-test-review",
+    artifactType: "acceptance_test_review",
+    status: artifactStatusFromIssues({
+      failed: report.blockingIssues.length > 0,
+      warnings: report.warnings,
+    }),
+    summary:
+      report.blockingIssues.length > 0
+        ? `Acceptance journey review found ${report.blockingIssues.length} blocking issue${report.blockingIssues.length === 1 ? "" : "s"}; ${report.summary.journeysVerified}/${report.summary.journeysPlanned} journeys and ${report.summary.handoffsVerified}/${report.summary.handoffsRequired} handoffs are verified.`
+        : report.warnings.length > 0
+          ? `Acceptance journey review passed with ${report.warnings.length} warning${report.warnings.length === 1 ? "" : "s"}; ${report.summary.stepsVerified}/${report.summary.stepsRequired} contract steps are verified.`
+          : `Acceptance journey review passed: ${report.summary.journeysVerified}/${report.summary.journeysPlanned} journeys, ${report.summary.stepsVerified}/${report.summary.stepsRequired} steps, and ${report.summary.refreshChecksVerified}/${report.summary.refreshChecksRequired} refresh checks are verified.`,
+    warnings: report.warnings,
+    blockingIssues: report.blockingIssues,
+    payload: { ...report },
+  };
 }
 
 function reviewPersistenceHandoffs(
@@ -351,6 +431,157 @@ export function getPostGenerationBlockingIssues(
   return uniqueStrings(reviews.flatMap((review) => review.blockingIssues));
 }
 
+export type PostGenerationRepairDomain =
+  | "implementation"
+  | "interface"
+  | "persistence"
+  | "acceptance";
+
+export type PostGenerationRepairBatch = {
+  domain: PostGenerationRepairDomain;
+  issues: string[];
+};
+
+export type PostGenerationIssueCounts = Record<
+  PostGenerationRepairDomain,
+  number
+>;
+
+export type PostGenerationRepairAssessment = {
+  accepted: boolean;
+  targetProgress: ReturnType<typeof comparePostGenerationIssueSets>;
+  previousCounts: PostGenerationIssueCounts;
+  currentCounts: PostGenerationIssueCounts;
+  regressedDomains: PostGenerationRepairDomain[];
+  reason: string;
+};
+
+const POST_GENERATION_REPAIR_PRIORITY: PostGenerationRepairDomain[] = [
+  "implementation",
+  "interface",
+  "persistence",
+  "acceptance",
+];
+
+export function postGenerationRepairDomain(
+  issue: string,
+): PostGenerationRepairDomain {
+  if (issue.startsWith("ui_affordance:")) return "interface";
+  if (issue.startsWith("persistence_handoff:")) return "persistence";
+  if (issue.startsWith("acceptance_test:")) return "acceptance";
+  return "implementation";
+}
+
+export function selectPostGenerationRepairBatch(
+  issues: readonly string[],
+): PostGenerationRepairBatch | null {
+  const uniqueIssues = uniqueStrings([...issues]);
+  for (const domain of POST_GENERATION_REPAIR_PRIORITY) {
+    const domainIssues = uniqueIssues.filter(
+      (issue) => postGenerationRepairDomain(issue) === domain,
+    );
+    if (domainIssues.length > 0) return { domain, issues: domainIssues };
+  }
+  return null;
+}
+
+export function postGenerationIssuesForDomain(
+  issues: readonly string[],
+  domain: PostGenerationRepairDomain,
+): string[] {
+  return uniqueStrings(
+    issues.filter((issue) => postGenerationRepairDomain(issue) === domain),
+  );
+}
+
+export function countPostGenerationIssues(
+  issues: readonly string[],
+): PostGenerationIssueCounts {
+  return {
+    implementation: postGenerationIssuesForDomain(issues, "implementation").length,
+    interface: postGenerationIssuesForDomain(issues, "interface").length,
+    persistence: postGenerationIssuesForDomain(issues, "persistence").length,
+    acceptance: postGenerationIssuesForDomain(issues, "acceptance").length,
+  };
+}
+
+export function assessPostGenerationRepair(input: {
+  domain: PostGenerationRepairDomain;
+  previousIssues: readonly string[];
+  currentIssues: readonly string[];
+}): PostGenerationRepairAssessment {
+  const previousDomainIssues = postGenerationIssuesForDomain(
+    input.previousIssues,
+    input.domain,
+  );
+  const currentDomainIssues = postGenerationIssuesForDomain(
+    input.currentIssues,
+    input.domain,
+  );
+  const targetProgress = comparePostGenerationIssueSets(
+    previousDomainIssues,
+    currentDomainIssues,
+  );
+  const previousCounts = countPostGenerationIssues(input.previousIssues);
+  const currentCounts = countPostGenerationIssues(input.currentIssues);
+  const domains: PostGenerationRepairDomain[] = [
+    "implementation",
+    "interface",
+    "persistence",
+    "acceptance",
+  ];
+  const regressedDomains = domains.filter(
+    (domain) => currentCounts[domain] > previousCounts[domain],
+  );
+  const targetImproved =
+    currentCounts[input.domain] < previousCounts[input.domain];
+  const accepted = targetImproved && regressedDomains.length === 0;
+  const reason = accepted
+    ? `${input.domain} findings improved from ${previousCounts[input.domain]} to ${currentCounts[input.domain]} without regressing another review domain.`
+    : regressedDomains.length > 0
+      ? `The candidate repair increased findings in ${regressedDomains.join(", ")}.`
+      : `The candidate repair did not reduce ${input.domain} findings (${previousCounts[input.domain]} -> ${currentCounts[input.domain]}).`;
+  return {
+    accepted,
+    targetProgress,
+    previousCounts,
+    currentCounts,
+    regressedDomains,
+    reason,
+  };
+}
+
+export function createPostGenerationRepairEvidence(input: {
+  domain: PostGenerationRepairDomain;
+  issues: readonly string[];
+  reviews: readonly PostGenerationReview[];
+}): Record<string, unknown> {
+  const relevantAgent =
+    input.domain === "interface"
+      ? "ui_affordance_reviewer"
+      : input.domain === "persistence"
+        ? "persistence_handoff_reviewer"
+        : input.domain === "acceptance"
+          ? "acceptance_test_reviewer"
+          : null;
+  const reviews = input.reviews
+    .filter((review) => relevantAgent === null || review.agentKey === relevantAgent)
+    .map((review) => ({
+      agentKey: review.agentKey,
+      summary: review.summary,
+      blockingIssues: review.blockingIssues,
+      evidence: compactReviewPayload(review),
+    }));
+  return {
+    repairDomain: input.domain,
+    issueCounts: countPostGenerationIssues(
+      input.reviews.flatMap((review) => review.blockingIssues),
+    ),
+    blockingIssues: [...input.issues],
+    reviews,
+  };
+}
+
 export function comparePostGenerationIssueSets(
   previousIssues: readonly string[],
   currentIssues: readonly string[],
@@ -382,6 +613,57 @@ export function shouldStopUnchangedInterfaceRepairs(
   consecutiveUnchangedRounds: number,
 ): boolean {
   return consecutiveUnchangedRounds >= 2;
+}
+
+function compactReviewPayload(
+  review: PostGenerationReview,
+): Record<string, unknown> {
+  const payload = review.payload;
+  if (review.agentKey === "ui_affordance_reviewer") {
+    return pickPayload(payload, [
+      "summary",
+      "workflows",
+      "entities",
+      "hiddenRoutes",
+      "placeholderRoutes",
+      "vagueControls",
+      "uncertainControls",
+    ]);
+  }
+  if (review.agentKey === "persistence_handoff_reviewer") {
+    return pickPayload(payload, [
+      "summary",
+      "saves",
+      "reloads",
+      "handoffs",
+    ]);
+  }
+  if (review.agentKey === "acceptance_test_reviewer") {
+    return pickPayload(payload, [
+      "summary",
+      "generatedTestFiles",
+      "journeys",
+    ]);
+  }
+  return pickPayload(payload, [
+    "changedFileCount",
+    "pageFiles",
+    "missingPageFiles",
+    "requiredServices",
+    "unitTestFiles",
+    "browserTestFiles",
+  ]);
+}
+
+function pickPayload(
+  payload: Record<string, unknown>,
+  keys: readonly string[],
+): Record<string, unknown> {
+  return Object.fromEntries(
+    keys
+      .filter((key) => key in payload)
+      .map((key) => [key, payload[key]]),
+  );
 }
 
 function reviewGeneratedCode(

@@ -422,6 +422,103 @@ export function listRides() { return listPlatformRecords("ride"); }`,
     expect(result.blockingIssues).toEqual([]);
   });
 
+  it("resolves mapped navigation aliases used by generated app shells", () => {
+    const result = review(
+      {
+        "src/app/page.tsx": `import { AppShell } from "@/components/app-shell";
+export default function Home() { return <AppShell><h1>Overview</h1></AppShell>; }`,
+        "src/app/gps/page.tsx": `import { AppShell } from "@/components/app-shell";
+export default function GpsPage() { return <AppShell><h1>GPS</h1><button>Start tracking</button></AppShell>; }`,
+        "src/components/app-shell.tsx": `import Link from "next/link";
+const navigationLinks = [{ path: "/", text: "Overview" }, { path: "/gps", text: "GPS tracking" }];
+export function AppShell({ children }: { children: React.ReactNode }) { return <><nav>{navigationLinks.map((item) => <Link key={item.path} href={item.path}>{item.text}</Link>)}</nav><main>{children}</main></>; }`,
+      },
+      architecture(rideContract()),
+    );
+
+    expect(result.routes.find((route) => route.route === "/gps")).toMatchObject({
+      reachableByRoles: ["owner", "editor", "viewer", "public"],
+      incomingFrom: expect.arrayContaining([
+        expect.objectContaining({ route: "/", label: "GPS tracking" }),
+      ]),
+    });
+    expect(result.workflows[0].status).toBe("discoverable");
+    expect(result.blockingIssues).not.toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("cannot reach it through visible navigation"),
+      ]),
+    );
+  });
+
+  it("resolves tuple and route-keyed navigation collections", () => {
+    const tupleResult = review(
+      {
+        "src/app/page.tsx": `import { AppShell } from "@/components/app-shell";
+export default function Home() { return <AppShell><h1>Overview</h1></AppShell>; }`,
+        "src/app/gps/page.tsx": `import { AppShell } from "@/components/app-shell";
+export default function GpsPage() { return <AppShell><h1>GPS</h1><button>Start tracking</button></AppShell>; }`,
+        "src/components/app-shell.tsx": `import Link from "next/link";
+const routeLinks = [["Overview", "/"], ["GPS tracking", "/gps"]] as const;
+export function AppShell({ children }: { children: React.ReactNode }) { return <><nav>{routeLinks.map(([label, path]) => <Link key={path} href={path}>{label}</Link>)}</nav><main>{children}</main></>; }`,
+      },
+      architecture(rideContract()),
+    );
+    const keyedResult = review(
+      {
+        "src/app/page.tsx": `import { AppShell } from "@/components/app-shell";
+export default function Home() { return <AppShell><h1>Overview</h1></AppShell>; }`,
+        "src/app/gps/page.tsx": `import { AppShell } from "@/components/app-shell";
+export default function GpsPage() { return <AppShell><h1>GPS</h1><button>Start tracking</button></AppShell>; }`,
+        "src/components/app-shell.tsx": `import Link from "next/link";
+const navigationRoutes = { "/": "Overview", "/gps": "GPS tracking" };
+export function AppShell({ children }: { children: React.ReactNode }) { return <><nav>{Object.entries(navigationRoutes).map(([path, label]) => <Link key={path} href={path}>{label}</Link>)}</nav><main>{children}</main></>; }`,
+      },
+      architecture(rideContract()),
+    );
+
+    expect(tupleResult.workflows[0].status).toBe("discoverable");
+    expect(keyedResult.workflows[0].status).toBe("discoverable");
+  });
+
+  it("uses a textbox label instead of treating its controlled value as its name", () => {
+    const contract: WorkflowContract = {
+      ...rideContract(),
+      controls: [
+        {
+          id: "ride-search",
+          kind: "textbox",
+          accessibleName: "Search rides by name or destination",
+          route: "/gps",
+          roles: ["owner", "editor"],
+          action: "Search saved rides",
+        },
+      ],
+    };
+    const result = review(
+      {
+        "src/app/page.tsx": `import Link from "next/link";
+export default function Home() { return <Link href="/gps">GPS tracking</Link>; }`,
+        "src/app/gps/page.tsx": `import { RideSearch } from "@/components/ride-search";
+export default function GpsPage() { return <main><h1>GPS</h1><RideSearch query="" onQueryChange={() => {}} /></main>; }`,
+        "src/components/ride-search.tsx": `export function RideSearch({ query, onQueryChange }: { query: string; onQueryChange: (value: string) => void }) { return <label>Search rides by name or destination<input value={query} onChange={(event) => onQueryChange(event.target.value)} /></label>; }`,
+      },
+      architecture(contract),
+    );
+
+    expect(result.workflows[0]).toMatchObject({
+      status: "discoverable",
+      missingControls: [],
+    });
+    expect(
+      result.routes
+        .find((route) => route.route === "/gps")
+        ?.controls.find((control) => control.kind === "textbox"),
+    ).toMatchObject({
+      label: "Search rides by name or destination",
+      labelConfidence: "resolved",
+    });
+  });
+
   it("warns about unresolved runtime labels instead of claiming they are absent", () => {
     const result = review({
       "src/app/page.tsx": `import Link from "next/link";
@@ -754,7 +851,7 @@ export default function Packing() { void listPackingItems(); void updatePackingI
     expect(result.blockingIssues).toEqual([]);
   });
 
-  it("passes data-driven book forms and viewer controls beside writer-only actions", () => {
+  it("passes reusable-field book forms and viewer controls beside writer-only actions", () => {
     const roles: WorkflowContractRole[] = ["owner", "editor"];
     const control = (
       id: string,
@@ -843,7 +940,7 @@ export default function Packing() { void listPackingItems(); void updatePackingI
         "src/app/books/page.tsx": `import { BooksPage } from "@/components/books-page"; export default function Books() { return <BooksPage session={{ canWrite: true }} />; }`,
         "src/app/loans/page.tsx": `import { LoansPage } from "@/components/loans-page"; export default function Loans() { return <LoansPage session={{ canWrite: true }} />; }`,
         "src/components/books-page.tsx": `import { BookForm } from "@/components/book-form"; export function BooksPage({ session }: { session: { canWrite: boolean } }) { return <main><h1>Books</h1>{session.canWrite && <BookForm mode="add" />}{session.canWrite && <BookForm mode="edit" />}</main>; }`,
-        "src/components/book-form.tsx": `const fields = [{ key: "title", label: "Title" }, { key: "author", label: "Author" }, { key: "category", label: "Category" }] as const; export function BookForm({ mode }: { mode: "add" | "edit" }) { const saving = false; const submitLabel = mode === "edit" ? "Save book changes" : "Save book"; return <form>{fields.map(({ key, label }) => <label key={key}>{label}<input name={key} /></label>)}<button type="submit">{saving ? "Saving book..." : submitLabel}</button></form>; }`,
+        "src/components/book-form.tsx": `function Field({ id, label }: { id: string; label: string }) { return <div><label htmlFor={id}>{label}</label><input id={id} name={id} /></div>; } export function BookForm({ mode }: { mode: "add" | "edit" }) { const saving = false; const submitLabel = mode === "edit" ? "Save book changes" : "Save book"; return <form><Field id="title" label="Title" /><Field id="author" label="Author" /><Field id="category" label="Category" /><button type="submit">{saving ? "Saving book..." : submitLabel}</button></form>; }`,
         "src/components/loans-page.tsx": `import { LoanFilters } from "@/components/loan-filters"; export function LoansPage({ session }: { session: { canWrite: boolean } }) { return <main><h1>Current Loans</h1>{session.canWrite && <button>Mark loan returned</button>}<LoanFilters /></main>; }`,
         "src/components/loan-filters.tsx": `export function LoanFilters() { return <div><label htmlFor="status">Filter loans by status</label><select id="status" /><label htmlFor="due-date">Sort loans by due date</label><select id="due-date" /></div>; }`,
       },
@@ -863,6 +960,18 @@ export default function Packing() { void listPackingItems(); void updatePackingI
         .find((route) => route.route === "/loans")
         ?.controls.find((item) => item.label === "Filter loans by status")?.roles,
     ).toContain("viewer");
+    expect(
+      result.routes
+        .find((route) => route.route === "/books")
+        ?.controls.filter((control) => control.kind === "textbox")
+        .map((control) => [control.label, control.labelConfidence]),
+    ).toEqual(
+      expect.arrayContaining([
+        ["Title", "resolved"],
+        ["Author", "resolved"],
+        ["Category", "resolved"],
+      ]),
+    );
     expect(result.blockingIssues).toEqual([]);
   });
 });

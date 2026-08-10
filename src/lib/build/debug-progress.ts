@@ -171,10 +171,27 @@ function findFailureSignature(lines: string[], start: number): string {
         line,
       )
     ) {
-      return line.slice(0, MAX_SIGNATURE_LENGTH);
+      const locator = /^Error: (?:expect\(locator\)|locator\.)/i.test(line)
+        ? findPlaywrightLocator(lines, index + 1)
+        : "";
+      return [line, locator]
+        .filter(Boolean)
+        .join(" | ")
+        .slice(0, MAX_SIGNATURE_LENGTH);
     }
   }
   return "unspecified failure";
+}
+
+function findPlaywrightLocator(lines: string[], start: number): string {
+  for (let index = start; index < Math.min(lines.length, start + 30); index++) {
+    const line = normalizeDiagnosticLine(lines[index]);
+    if (/^(?:Locator:\s+|-?\s*waiting for\s+)/i.test(line)) return line;
+    if (VITEST_FAILURE_PATTERN.test(line) || PLAYWRIGHT_FAILURE_PATTERN.test(line)) {
+      break;
+    }
+  }
+  return "";
 }
 
 function fallbackDiagnosticLines(lines: string[]): string[] {
@@ -196,13 +213,21 @@ function normalizeDiagnosticLine(line: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/\b\d{4}-\d{2}-\d{2}T\S+/g, "<timestamp>")
+    .replace(/\b\d{2,}-[a-z0-9]{4,}\b/gi, "<run-suffix>")
     .replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/gi, "<id>");
 }
 
 function normalizeFailureId(value: string): string {
-  return normalizeDiagnosticLine(value)
+  const normalized = normalizeDiagnosticLine(value)
     .replace(/\s+\(\d+\s+tests?.*\)$/i, "")
+    .replace(/\s+\(retry #\d+\)$/i, "")
     .replace(/\s+[>›]\s+/g, " > ");
+  const generatedStep = normalized.search(
+    /\s>\s\[voiceforge-(?:workflow|step|save|handoff):/i,
+  );
+  return generatedStep >= 0
+    ? normalized.slice(0, generatedStep).trim()
+    : normalized;
 }
 
 function deduplicateCases(cases: FailureCase[]): FailureCase[] {

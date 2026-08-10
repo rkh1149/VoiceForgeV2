@@ -80,9 +80,10 @@ import {
 } from "./agent-artifact-utils";
 import { runPlanningSpecialistReviews } from "./planning-specialists";
 import {
-  comparePostGenerationIssueSets,
+  assessPostGenerationRepair,
+  createPostGenerationRepairEvidence,
   getPostGenerationBlockingIssues,
-  shouldStopUnchangedInterfaceRepairs,
+  selectPostGenerationRepairBatch,
   type PostGenerationReview,
   runPostGenerationReviews,
 } from "./post-generation-reviews";
@@ -100,7 +101,11 @@ import {
   loadLatestBuildCheckpoint,
   saveBuildCheckpoint,
 } from "./checkpoints";
-import { loadTemplate, type FileMap } from "./template";
+import {
+  loadTemplate,
+  refreshResumedTemplateFiles,
+  type FileMap,
+} from "./template";
 import { createRunner, type Runner, type StepName } from "./runner";
 import {
   ensureWorkflowContracts,
@@ -138,8 +143,16 @@ type DurableBuildMetadata = {
   generated: StoredCodegenResult;
   debugBudget: SerializedDebugBudget;
   debugProgress?: SerializedDebugProgress;
+  reviewProgress?: SerializedReviewProgress;
   metrics: BuildMetrics;
   seededPlatformEntities: unknown[];
+};
+
+type SerializedReviewProgress = {
+  changedFilePaths: string[];
+  deletedFilePaths: string[];
+  unchangedRoundsByDomain: Record<string, number>;
+  changeMode: boolean;
 };
 
 type SerializedDebugProgress = {
@@ -192,10 +205,19 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+function serializeReviewEvidence(evidence: Record<string, unknown>): string {
+  const serialized = JSON.stringify(evidence, null, 2);
+  const limit = 24_000;
+  return serialized.length <= limit
+    ? serialized
+    : `${serialized.slice(0, limit)}\n... structured evidence truncated at ${limit} characters`;
+}
+
 function durableMetadata(input: {
   generated: CodegenResult;
   debugBudget: DebugBudget;
   debugProgress?: SerializedDebugProgress;
+  reviewProgress?: SerializedReviewProgress;
   metrics: BuildMetrics;
   seededPlatformEntities: unknown[];
 }): Record<string, unknown> {
@@ -208,6 +230,7 @@ function durableMetadata(input: {
     },
     debugBudget: serializeDebugBudget(input.debugBudget),
     debugProgress: input.debugProgress,
+    reviewProgress: input.reviewProgress,
     metrics: input.metrics,
     seededPlatformEntities: input.seededPlatformEntities,
   };
@@ -247,6 +270,9 @@ function restoreBuildMetrics(value: unknown): BuildMetrics {
     debugRoundsByStep: isRecord(value.debugRoundsByStep)
       ? (value.debugRoundsByStep as BuildMetrics["debugRoundsByStep"])
       : base.debugRoundsByStep,
+    acceptanceJourneyCoverage: isRecord(value.acceptanceJourneyCoverage)
+      ? (value.acceptanceJourneyCoverage as BuildMetrics["acceptanceJourneyCoverage"])
+      : base.acceptanceJourneyCoverage,
     failureCategory:
       typeof value.failureCategory === "string"
         ? (value.failureCategory as BuildMetrics["failureCategory"])
@@ -280,6 +306,36 @@ function restoreDebugProgress(value: unknown): SerializedDebugProgress {
     ? (value.lastProgressByStep as Record<string, FailureProgress>)
     : {};
   return { ineffectiveRoundsByStep, lastProgressByStep };
+}
+
+function restoreReviewProgress(
+  value: unknown,
+  generated: CodegenResult,
+  changeMode: boolean,
+): SerializedReviewProgress {
+  if (!isRecord(value)) {
+    return {
+      changedFilePaths: [...generated.filesWritten],
+      deletedFilePaths: [...generated.deletedFiles],
+      unchangedRoundsByDomain: {},
+      changeMode,
+    };
+  }
+  const unchangedRoundsByDomain = isRecord(value.unchangedRoundsByDomain)
+    ? Object.fromEntries(
+        Object.entries(value.unchangedRoundsByDomain).filter(
+          (entry): entry is [string, number] =>
+            typeof entry[1] === "number" && Number.isFinite(entry[1]),
+        ),
+      )
+    : {};
+  return {
+    changedFilePaths: stringArray(value.changedFilePaths),
+    deletedFilePaths: stringArray(value.deletedFilePaths),
+    unchangedRoundsByDomain,
+    changeMode:
+      typeof value.changeMode === "boolean" ? value.changeMode : changeMode,
+  };
 }
 
 function restoreSeededPlatformEntities(value: unknown): unknown[] {
@@ -943,7 +999,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     for (const phase of generated.phases) {
       await log(
         buildRunId,
-        `Generation phase complete: ${phase.label} [${phase.agentKey}] (${phase.filesWritten.length} changed, ${phase.filesDeleted.length} deleted). ${phase.notes}`,
+        `Generation phase complete: ${phase.label} [${phase.agentKey}] (${phase.filesWritten.length} changed, ${phase.filesDeleted.length} deleted)${phase.turnContinuations > 0 ? ` after ${phase.turnContinuations} automatic turn continuation (${phase.turnLimit} total-turn limit)` : ""}. ${phase.notes}`,
       );
       await recordBuildAgentArtifact({
         appId: app.id,
@@ -963,6 +1019,8 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
           notes: phase.notes,
           filesWritten: phase.filesWritten,
           filesDeleted: phase.filesDeleted,
+          turnContinuations: phase.turnContinuations,
+          turnLimit: phase.turnLimit,
         },
       });
     }
@@ -984,252 +1042,41 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       maxRoundsPerStep: MAX_DEBUG_ROUNDS_PER_STEP,
       maxTotalRounds: MAX_TOTAL_DEBUG_ROUNDS,
     });
-    const reviewChangedFiles: FileMap = { ...generated.files };
-    let reviewChangedFilePaths = [...generated.filesWritten];
-    let reviewDeletedFilePaths = [...generated.deletedFiles];
-    let postGenerationReviews = runPostGenerationReviews({
-      spec,
-      architecture: architectureForStorage,
-      allFiles: agentVisibleFiles(files),
-      changedFiles: reviewChangedFiles,
-      changedFilePaths: reviewChangedFilePaths,
-      deletedFilePaths: reviewDeletedFilePaths,
+    const reviewProgress: SerializedReviewProgress = {
+      changedFilePaths: [...generated.filesWritten],
+      deletedFilePaths: [...generated.deletedFiles],
+      unchangedRoundsByDomain: {},
       changeMode,
-    });
-    await recordPostGenerationReviewArtifacts({
+    };
+    await saveBuildCheckpoint({
       appId: app.id,
       buildRunId,
-      reviews: postGenerationReviews,
+      stage: "reviewing",
+      files,
+      metadata: durableMetadata({
+        generated,
+        debugBudget,
+        reviewProgress,
+        metrics,
+        seededPlatformEntities,
+      }),
     });
-    recordReviewMetrics(metrics, postGenerationReviews);
-    let postGenerationWarnings = uniqueStrings(
-      postGenerationReviews.flatMap((review) => review.warnings),
+    await log(
+      buildRunId,
+      `Durable checkpoint saved before workflow reviews (${Object.keys(files).length} files).`,
     );
-    if (postGenerationWarnings.length > 0) {
-      await log(
-        buildRunId,
-        `Generated app review warnings: ${postGenerationWarnings.join(" ")}`,
-      );
-    }
-    let postGenerationBlockingIssues =
-      getPostGenerationBlockingIssues(postGenerationReviews);
-    let previousPostGenerationBlockingIssues = [
-      ...postGenerationBlockingIssues,
-    ];
-    let consecutiveUnchangedContractRounds = 0;
-    while (postGenerationBlockingIssues.length > 0) {
-      const step = "review_gate";
-      const { stepRound, previousAttempts } = reserveDebugRound(
-        debugBudget,
-        step,
-      );
-      const errorOutput = postGenerationBlockingIssues.join("\n");
-      const debugPlan = createPhaseAwareDebugPlan({
-        spec,
-        files: agentVisibleFiles(files),
-        failedStep: step,
-        errorOutput,
-        generatedPhases: generated.phases,
-        changedFilePaths: reviewChangedFilePaths,
-        forceFullScope: consecutiveUnchangedContractRounds > 0,
-        escalationReason:
-          consecutiveUnchangedContractRounds > 0
-            ? "The prior repair left the interface or persistence contract findings unchanged. Trace the complete contracted workflow, including its visible control, exact save payload, fresh-load path, and downstream consumer. Avoid changing authentication unless the finding is specifically about role reachability."
-            : undefined,
-      });
-      recordDebugRoundMetric(metrics, {
-        step,
-        domain: debugPlan.classification.domain,
-        focus: debugPlan.classification.focus,
-        responsiblePhaseId: debugPlan.responsiblePhase.id,
-        responsibleAgentKey: debugPlan.responsiblePhase.agentKey,
-      });
-
-      await setStatus(buildRunId, "debugging");
-      await log(
-        buildRunId,
-        `Generated app review failed — phase-aware debug round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP} for ${debugPlan.classification.domainLabel} (${debugBudget.totalRounds}/${MAX_TOTAL_DEBUG_ROUNDS} total). Responsible phase: ${debugPlan.responsiblePhase.label}. Scope: ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} files.`,
-      );
-      const fix = await runDebugAgent({
-        spec,
-        currentFiles: debugPlan.scope.scopedFiles,
-        failedStep: step,
-        errorOutput,
-        previousAttempts,
-        debugContext: debugPlan.context,
-      });
-      if (fix.filesWritten.length === 0) {
-        await recordBuildAgentArtifact({
-          appId: app.id,
-          buildRunId,
-          agentKey: "debug_agent",
-          phaseKey: `debug-${step}`,
-          artifactType: "debug_fix",
-          status: "failed",
-          summary: `Phase-aware debug ${step} produced no file changes.`,
-          payload: {
-            failedStep: step,
-            failedDomain: debugPlan.classification.domain,
-            domainLabel: debugPlan.classification.domainLabel,
-            focus: debugPlan.classification.focus,
-            responsiblePhase: debugPlan.responsiblePhase,
-            stepRound,
-            totalRounds: debugBudget.totalRounds,
-            previousAttempts,
-            suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
-            filesInspected: fix.debugDiagnostics.filesInspected,
-            preferredInspectionPaths:
-              fix.debugDiagnostics.preferredInspectionPaths,
-            visibleFileCount: fix.debugDiagnostics.visibleFileCount,
-            fullFileCount: fix.debugDiagnostics.fullFileCount,
-            strategyChangedFromPriorAttempts:
-              fix.debugDiagnostics.strategyChangedFromPriorAttempts,
-            notes: fix.notes,
-          },
-        });
-        throw new Error(`Debug agent could not produce a fix for ${step}`);
-      }
-      recordDebugAttempt(
-        debugBudget,
-        step,
-        fix.debugDiagnostics.suspectedRootCause ||
-          fix.notes ||
-          `(rewrote ${fix.filesWritten.join(", ")})`,
-      );
-      applyCodegenResult(files, fix);
-      Object.assign(reviewChangedFiles, fix.files);
-      for (const deleted of fix.deletedFiles) {
-        delete reviewChangedFiles[deleted];
-      }
-      reviewChangedFilePaths = uniqueStrings([
-        ...reviewChangedFilePaths,
-        ...fix.filesWritten,
-      ]);
-      reviewDeletedFilePaths = uniqueStrings([
-        ...reviewDeletedFilePaths,
-        ...fix.deletedFiles,
-      ]);
-      await log(
-        buildRunId,
-        `Debug agent changed: ${fix.filesWritten.join(", ")}${fix.deletedFiles.length > 0 ? `; deleted: ${fix.deletedFiles.join(", ")}` : ""}. ${fix.notes}`,
-      );
-      await recordBuildAgentArtifact({
-        appId: app.id,
-        buildRunId,
-        agentKey: "debug_agent",
-        phaseKey: `debug-${step}`,
-        artifactType: "debug_fix",
-        status: "warning",
-        summary: summarizeArtifactFiles({
-          label: `Phase-aware debug ${step}`,
-          filesWritten: fix.filesWritten,
-          filesDeleted: fix.deletedFiles,
-        }),
-        payload: {
-          failedStep: step,
-          failedDomain: debugPlan.classification.domain,
-          domainLabel: debugPlan.classification.domainLabel,
-          focus: debugPlan.classification.focus,
-          responsiblePhase: debugPlan.responsiblePhase,
-          stepRound,
-          totalRounds: debugBudget.totalRounds,
-          previousAttempts,
-          suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
-          filesInspected: fix.debugDiagnostics.filesInspected,
-          inspectionOperations: fix.debugDiagnostics.inspectionOperations,
-          preferredInspectionPaths: fix.debugDiagnostics.preferredInspectionPaths,
-          visibleFilePaths: fix.debugDiagnostics.visibleFilePaths,
-          visibleFileCount: fix.debugDiagnostics.visibleFileCount,
-          fullFileCount: fix.debugDiagnostics.fullFileCount,
-          limitedScope: fix.debugDiagnostics.limitedScope,
-          scopeReason: fix.debugDiagnostics.scopeReason,
-          strategyChangedFromPriorAttempts:
-            fix.debugDiagnostics.strategyChangedFromPriorAttempts,
-          notes: fix.notes,
-          filesWritten: fix.filesWritten,
-          filesDeleted: fix.deletedFiles,
-        },
-      });
-
-      postGenerationReviews = runPostGenerationReviews({
-        spec,
-        architecture: architectureForStorage,
-        allFiles: agentVisibleFiles(files),
-        changedFiles: reviewChangedFiles,
-        changedFilePaths: reviewChangedFilePaths,
-        deletedFilePaths: reviewDeletedFilePaths,
-        changeMode,
-      });
-      await recordPostGenerationReviewArtifacts({
-        appId: app.id,
-        buildRunId,
-        reviews: postGenerationReviews,
-        rerunRound: stepRound,
-      });
-      recordReviewMetrics(metrics, postGenerationReviews);
-      postGenerationWarnings = uniqueStrings(
-        postGenerationReviews.flatMap((review) => review.warnings),
-      );
-      if (postGenerationWarnings.length > 0) {
-        await log(
-          buildRunId,
-          `Generated app review warnings: ${postGenerationWarnings.join(" ")}`,
-        );
-      }
-      const nextPostGenerationBlockingIssues =
-        getPostGenerationBlockingIssues(postGenerationReviews);
-      const issueProgress = comparePostGenerationIssueSets(
-        previousPostGenerationBlockingIssues,
-        nextPostGenerationBlockingIssues,
-      );
-      const contractReviewOnly = nextPostGenerationBlockingIssues.every(
-        (issue) =>
-          issue.startsWith("ui_affordance:") ||
-          issue.startsWith("persistence_handoff:"),
-      );
-      consecutiveUnchangedContractRounds =
-        contractReviewOnly && issueProgress.status === "unchanged"
-          ? consecutiveUnchangedContractRounds + 1
-          : 0;
-      if (nextPostGenerationBlockingIssues.length > 0) {
-        await log(
-          buildRunId,
-          `Generated review repair progress: ${issueProgress.status}; ${previousPostGenerationBlockingIssues.length} -> ${nextPostGenerationBlockingIssues.length} blocking issue(s).`,
-        );
-      }
-      if (
-        shouldStopUnchangedInterfaceRepairs(
-          consecutiveUnchangedContractRounds,
-        )
-      ) {
-        await recordBuildAgentArtifact({
-          appId: app.id,
-          buildRunId,
-          agentKey: "pipeline_observer",
-          phaseKey: "workflow-contract-review-stagnation",
-          artifactType: "review_gate",
-          status: "failed",
-          summary:
-            "Stopped generated-app rewrites because the interface/persistence review findings were unchanged after two consecutive repair rounds.",
-          payload: {
-            stepRound,
-            outcome: "stopped_unchanged_contract_repairs",
-            unchangedRounds: consecutiveUnchangedContractRounds,
-            blockingIssues: nextPostGenerationBlockingIssues,
-            filesWritten: fix.filesWritten,
-            filesDeleted: fix.deletedFiles,
-          },
-        });
-        throw new Error(
-          "Interface/persistence review findings were unchanged after two consecutive repair rounds; stopped rewriting the generated app.",
-        );
-      }
-      previousPostGenerationBlockingIssues = [
-        ...nextPostGenerationBlockingIssues,
-      ];
-      postGenerationBlockingIssues = nextPostGenerationBlockingIssues;
-    }
-    await log(buildRunId, "Generated app reviews passed.");
+    await runCheckpointReviewGate({
+      app,
+      buildRunId,
+      spec,
+      architecture: architectureForStorage,
+      files,
+      generated,
+      debugBudget,
+      metrics,
+      seededPlatformEntities,
+      reviewProgress,
+    });
 
     await saveBuildCheckpoint({
       appId: app.id,
@@ -1476,20 +1323,6 @@ async function runTestGauntlet(input: {
     while (stepIdx < STEP_ORDER.length) {
       const step = STEP_ORDER[stepIdx];
 
-      // Browser tests need Chromium, which isn't available in the cloud
-      // sandbox image yet — record as skipped there rather than failing.
-      if (step === "e2e" && runner.kind === "sandbox") {
-        await db.insert(testResults).values({
-          buildRunId: input.buildRunId,
-          suite: "e2e",
-          status: "skipped",
-          summary: "browser tests (skipped on cloud builds)",
-        });
-        await log(input.buildRunId, "Skipping browser tests on cloud build.");
-        stepIdx++;
-        continue;
-      }
-
       await log(input.buildRunId, `Running ${step}…`);
       const result =
         step === "dependencies"
@@ -1506,6 +1339,19 @@ async function runTestGauntlet(input: {
           failureFingerprint: result.failureFingerprint,
         },
       });
+
+      if (
+        !result.ok &&
+        result.output.includes("Hosted browser setup failed while installing")
+      ) {
+        await log(
+          input.buildRunId,
+          "Hosted browser infrastructure could not be prepared after two attempts; generated app code was left unchanged.",
+        );
+        throw new Error(
+          "Hosted browser infrastructure could not be prepared. Try building again.",
+        );
+      }
 
       if (result.ok) {
         const successfulPendingFix = getPendingFix();
@@ -1671,15 +1517,30 @@ async function runTestGauntlet(input: {
         previousAttempts,
         debugContext: debugPlan.context,
       });
+      recordDebugAttempt(
+        input.debugBudget,
+        step,
+        fix.debugDiagnostics.suspectedRootCause ||
+          fix.notes ||
+          `(rewrote ${fix.filesWritten.join(", ")})`,
+      );
       if (fix.filesWritten.length === 0) {
+        const progress = compareFailureFingerprints(
+          failureFingerprint,
+          failureFingerprint,
+        );
+        const ineffectiveRounds =
+          (ineffectiveRoundsByStep.get(step) ?? 0) + 1;
+        ineffectiveRoundsByStep.set(step, ineffectiveRounds);
+        lastProgressByStep.set(step, progress);
         await recordBuildAgentArtifact({
           appId: input.app.id,
           buildRunId: input.buildRunId,
           agentKey: "debug_agent",
           phaseKey: `debug-${step}`,
           artifactType: "debug_fix",
-          status: "failed",
-          summary: `Debug ${step} produced no file changes.`,
+          status: "warning",
+          summary: `Debug ${step} diagnosed the failure but produced no file changes; the diagnosis will be supplied to the next round.`,
           payload: {
             failedStep: step,
             failedDomain: debugPlan.classification.domain,
@@ -1701,18 +1562,19 @@ async function runTestGauntlet(input: {
             fullFileCount: fix.debugDiagnostics.fullFileCount,
             strategyChangedFromPriorAttempts:
               fix.debugDiagnostics.strategyChangedFromPriorAttempts,
+            ineffectiveRounds,
+            progress,
             notes: fix.notes,
           },
         });
-        throw new Error(`Debug agent could not produce a fix for ${step}`);
+        await log(
+          input.buildRunId,
+          `Debug ${step} round ${stepRound} produced a diagnosis but no patch; preserved the checkpoint and will retry with that diagnosis (${ineffectiveRounds} ineffective round(s)).`,
+        );
+        await saveTestingCheckpoint();
+        await setStatus(input.buildRunId, "testing");
+        continue;
       }
-      recordDebugAttempt(
-        input.debugBudget,
-        step,
-        fix.debugDiagnostics.suspectedRootCause ||
-          fix.notes ||
-          `(rewrote ${fix.filesWritten.join(", ")})`,
-      );
       await saveTestingCheckpoint();
       applyCodegenResult(input.files, fix);
       await runner.deleteFiles(fix.deletedFiles);
@@ -1955,20 +1817,299 @@ async function publishCheckedBuild(input: {
   );
 }
 
+async function runCheckpointReviewGate(input: {
+  app: App;
+  buildRunId: string;
+  spec: AppSpec;
+  architecture: ArchitecturePlan;
+  files: FileMap;
+  generated: CodegenResult;
+  debugBudget: DebugBudget;
+  metrics: BuildMetrics;
+  seededPlatformEntities: unknown[];
+  reviewProgress: SerializedReviewProgress;
+}): Promise<void> {
+  let changedFilePaths = [...input.reviewProgress.changedFilePaths];
+  let deletedFilePaths = [...input.reviewProgress.deletedFilePaths];
+  const changedFiles: FileMap = Object.fromEntries(
+    changedFilePaths.flatMap((path) =>
+      path in input.files ? [[path, input.files[path]]] : [],
+    ),
+  );
+  const unchangedRounds = new Map(
+    Object.entries(input.reviewProgress.unchangedRoundsByDomain),
+  );
+  const reviewProgress = (): SerializedReviewProgress => ({
+    changedFilePaths: [...changedFilePaths],
+    deletedFilePaths: [...deletedFilePaths],
+    unchangedRoundsByDomain: Object.fromEntries(unchangedRounds),
+    changeMode: input.reviewProgress.changeMode,
+  });
+  const saveReviewCheckpoint = async () => {
+    await saveBuildCheckpoint({
+      appId: input.app.id,
+      buildRunId: input.buildRunId,
+      stage: "reviewing",
+      files: input.files,
+      metadata: durableMetadata({
+        generated: input.generated,
+        debugBudget: input.debugBudget,
+        reviewProgress: reviewProgress(),
+        metrics: input.metrics,
+        seededPlatformEntities: input.seededPlatformEntities,
+      }),
+    });
+  };
+
+  let reviews = runPostGenerationReviews({
+    spec: input.spec,
+    architecture: input.architecture,
+    allFiles: agentVisibleFiles(input.files),
+    changedFiles,
+    changedFilePaths,
+    deletedFilePaths,
+    changeMode: input.reviewProgress.changeMode,
+  });
+  await recordPostGenerationReviewArtifacts({
+    appId: input.app.id,
+    buildRunId: input.buildRunId,
+    reviews,
+  });
+  recordReviewMetrics(input.metrics, reviews);
+  const initialWarnings = uniqueStrings(
+    reviews.flatMap((review) => review.warnings),
+  );
+  if (initialWarnings.length > 0) {
+    await log(
+      input.buildRunId,
+      `Generated app review warnings: ${initialWarnings.join(" ")}`,
+    );
+  }
+  let blockingIssues = getPostGenerationBlockingIssues(reviews);
+
+  while (blockingIssues.length > 0) {
+    const repairBatch = selectPostGenerationRepairBatch(blockingIssues);
+    if (!repairBatch) break;
+    const budgetStep = `review_gate:${repairBatch.domain}`;
+    const priorUnchanged = unchangedRounds.get(repairBatch.domain) ?? 0;
+    const { stepRound, previousAttempts } = reserveDebugRound(
+      input.debugBudget,
+      budgetStep,
+    );
+    const evidence = createPostGenerationRepairEvidence({
+      domain: repairBatch.domain,
+      issues: repairBatch.issues,
+      reviews,
+    });
+    const errorOutput = `${repairBatch.issues.join("\n")}\n\nSTRUCTURED REVIEW EVIDENCE:\n${serializeReviewEvidence(evidence)}`;
+    const debugPlan = createPhaseAwareDebugPlan({
+      spec: input.spec,
+      files: agentVisibleFiles(input.files),
+      failedStep: "review_gate",
+      errorOutput,
+      generatedPhases: input.generated.phases,
+      changedFilePaths,
+      forceFullScope: priorUnchanged > 0,
+      escalationReason:
+        priorUnchanged > 0
+          ? "A prior candidate did not improve the static review. Inspect the exact evidence and source construct; do not repeat the same rewrite or change unrelated workflow code."
+          : undefined,
+    });
+    recordDebugRoundMetric(input.metrics, {
+      step: "review_gate",
+      domain: debugPlan.classification.domain,
+      focus: debugPlan.classification.focus,
+      responsiblePhaseId: debugPlan.responsiblePhase.id,
+      responsibleAgentKey: debugPlan.responsiblePhase.agentKey,
+    });
+    await setStatus(input.buildRunId, "debugging");
+    await log(
+      input.buildRunId,
+      `Resumed ${repairBatch.domain} review repair round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP}; using ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} relevant files.`,
+    );
+    const fix = await runDebugAgent({
+      spec: input.spec,
+      currentFiles: debugPlan.scope.scopedFiles,
+      failedStep: "review_gate",
+      errorOutput,
+      previousAttempts,
+      debugContext: debugPlan.context,
+    });
+    recordDebugAttempt(
+      input.debugBudget,
+      budgetStep,
+      fix.debugDiagnostics.suspectedRootCause ||
+        fix.notes ||
+        "The resumed review repair produced no useful source change.",
+    );
+
+    if (fix.filesWritten.length === 0 && fix.deletedFiles.length === 0) {
+      const rounds = priorUnchanged + 1;
+      unchangedRounds.set(repairBatch.domain, rounds);
+      await saveReviewCheckpoint();
+      await recordBuildAgentArtifact({
+        appId: input.app.id,
+        buildRunId: input.buildRunId,
+        agentKey: "pipeline_observer",
+        phaseKey: `review-repair-${repairBatch.domain}`,
+        artifactType: "review_gate",
+        status: rounds >= 2 ? "failed" : "warning",
+        summary: `Resumed ${repairBatch.domain} repair produced no source changes; the best checkpoint remains active.`,
+        payload: {
+          outcome: "possible_reviewer_limitation",
+          stepRound,
+          unchangedRounds: rounds,
+          evidence,
+          suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+          filesInspected: fix.debugDiagnostics.filesInspected,
+        },
+      });
+      if (rounds >= 2) {
+        throw new Error(
+          `${repairBatch.domain} static review still could not identify an actionable repair. VoiceForge preserved the best checkpoint; this likely needs a reviewer-rule improvement.`,
+        );
+      }
+      continue;
+    }
+
+    const beforeFiles: FileMap = { ...input.files };
+    const beforeChangedFiles: FileMap = { ...changedFiles };
+    const beforeChangedPaths = [...changedFilePaths];
+    const beforeDeletedPaths = [...deletedFilePaths];
+    applyCodegenResult(input.files, fix);
+    Object.assign(changedFiles, fix.files);
+    fix.deletedFiles.forEach((path) => delete changedFiles[path]);
+    changedFilePaths = uniqueStrings([
+      ...changedFilePaths,
+      ...fix.filesWritten,
+    ]);
+    deletedFilePaths = uniqueStrings([
+      ...deletedFilePaths,
+      ...fix.deletedFiles,
+    ]);
+    const candidateReviews = runPostGenerationReviews({
+      spec: input.spec,
+      architecture: input.architecture,
+      allFiles: agentVisibleFiles(input.files),
+      changedFiles,
+      changedFilePaths,
+      deletedFilePaths,
+      changeMode: input.reviewProgress.changeMode,
+    });
+    const candidateIssues = getPostGenerationBlockingIssues(candidateReviews);
+    const assessment = assessPostGenerationRepair({
+      domain: repairBatch.domain,
+      previousIssues: blockingIssues,
+      currentIssues: candidateIssues,
+    });
+    const rounds = assessment.accepted ? 0 : priorUnchanged + 1;
+    unchangedRounds.set(repairBatch.domain, rounds);
+
+    if (assessment.accepted) {
+      reviews = candidateReviews;
+      blockingIssues = candidateIssues;
+      await recordPostGenerationReviewArtifacts({
+        appId: input.app.id,
+        buildRunId: input.buildRunId,
+        reviews,
+        rerunRound: stepRound,
+      });
+      recordReviewMetrics(input.metrics, reviews);
+      const acceptedWarnings = uniqueStrings(
+        reviews.flatMap((review) => review.warnings),
+      );
+      if (acceptedWarnings.length > 0) {
+        await log(
+          input.buildRunId,
+          `Generated app review warnings: ${acceptedWarnings.join(" ")}`,
+        );
+      }
+    } else {
+      restoreFileMap(input.files, beforeFiles);
+      restoreFileMap(changedFiles, beforeChangedFiles);
+      changedFilePaths = beforeChangedPaths;
+      deletedFilePaths = beforeDeletedPaths;
+    }
+    await saveReviewCheckpoint();
+    await recordBuildAgentArtifact({
+      appId: input.app.id,
+      buildRunId: input.buildRunId,
+      agentKey: "pipeline_observer",
+      phaseKey: `review-repair-${repairBatch.domain}`,
+      artifactType: "review_gate",
+      status: assessment.accepted ? "passed" : rounds >= 2 ? "failed" : "warning",
+      summary: assessment.accepted
+        ? `Accepted resumed ${repairBatch.domain} repair: ${assessment.reason}`
+        : `Rolled back resumed ${repairBatch.domain} repair: ${assessment.reason}`,
+      payload: {
+        outcome: assessment.accepted ? "accepted" : "rolled_back",
+        stepRound,
+        assessment,
+        evidence,
+        suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+        filesInspected: fix.debugDiagnostics.filesInspected,
+        filesWritten: fix.filesWritten,
+        filesDeleted: fix.deletedFiles,
+      },
+    });
+    await log(
+      input.buildRunId,
+      assessment.accepted
+        ? `Accepted and checkpointed resumed ${repairBatch.domain} repair: ${assessment.reason}`
+        : `Rolled back resumed ${repairBatch.domain} repair: ${assessment.reason}`,
+    );
+    if (!assessment.accepted && rounds >= 2) {
+      throw new Error(
+        `${repairBatch.domain} static review could not validate an improving repair after two resumed attempts. VoiceForge preserved the best generated source; this may be a reviewer limitation.`,
+      );
+    }
+  }
+  if (
+    reviews
+      .flatMap((review) => review.warnings)
+      .some((warning) =>
+        warning.startsWith("acceptance_test:browser_arbitration"),
+      )
+  ) {
+    await log(
+      input.buildRunId,
+      "Static acceptance review deferred helper-based evidence to the generated Playwright journeys; the e2e result will arbitrate it.",
+    );
+  }
+  await log(input.buildRunId, "Generated app workflow reviews passed.");
+}
+
 export async function resumeBuildPipelineContinuation(
   appId: string,
+  options?: {
+    buildRunId?: string;
+    force?: boolean;
+    resetDebugBudget?: boolean;
+  },
 ): Promise<void> {
   const db = getDb();
-  const [run] = await db
-    .select()
-    .from(buildRuns)
-    .where(eq(buildRuns.appId, appId))
-    .orderBy(desc(buildRuns.createdAt))
-    .limit(1);
+  const [run] = options?.buildRunId
+    ? await db
+        .select()
+        .from(buildRuns)
+        .where(
+          and(
+            eq(buildRuns.id, options.buildRunId),
+            eq(buildRuns.appId, appId),
+          ),
+        )
+        .limit(1)
+    : await db
+        .select()
+        .from(buildRuns)
+        .where(eq(buildRuns.appId, appId))
+        .orderBy(desc(buildRuns.createdAt))
+        .limit(1);
   if (
     !run ||
-    !["testing", "debugging", "deploying"].includes(run.status) ||
-    !shouldResumeAbandonedWorker(run)
+    (!options?.force &&
+      (!["testing", "debugging", "deploying"].includes(run.status) ||
+        !shouldResumeAbandonedWorker(run)))
   ) {
     return;
   }
@@ -2037,15 +2178,78 @@ export async function resumeBuildPipelineContinuation(
       return;
     }
 
-    await log(run.id, "Resuming checks from the saved source checkpoint…");
+    const refreshedTemplateFiles = await refreshResumedTemplateFiles(
+      checkpoint.files,
+      {
+        slug: app.slug,
+        name: app.name,
+        purpose: spec.purpose,
+      },
+    );
+    if (refreshedTemplateFiles.length > 0) {
+      await log(
+        run.id,
+        `Refreshed locked testing helpers in the durable checkpoint: ${refreshedTemplateFiles.join(", ")}.`,
+      );
+    }
+
+    await log(
+      run.id,
+      checkpoint.stage === "reviewing"
+        ? "Resuming workflow reviews from the best saved source checkpoint…"
+        : "Resuming checks from the saved source checkpoint…",
+    );
     const metadata = checkpoint.metadata;
     const generated = restoreGeneratedResult(metadata.generated);
     const metrics = restoreBuildMetrics(metadata.metrics);
-    const debugBudget = restoreDebugBudget(metadata.debugBudget);
-    const debugProgress = restoreDebugProgress(metadata.debugProgress);
+    const debugBudget = options?.resetDebugBudget
+      ? createDebugBudget({
+          maxRoundsPerStep: MAX_DEBUG_ROUNDS_PER_STEP,
+          maxTotalRounds: MAX_TOTAL_DEBUG_ROUNDS,
+        })
+      : restoreDebugBudget(metadata.debugBudget);
+    const debugProgress = options?.resetDebugBudget
+      ? undefined
+      : restoreDebugProgress(metadata.debugProgress);
     const seededPlatformEntities = restoreSeededPlatformEntities(
       metadata.seededPlatformEntities,
     );
+    if (checkpoint.stage === "reviewing") {
+      const changeMode = Boolean(app.githubRepoUrl && requirement.version > 1);
+      const reviewProgress = restoreReviewProgress(
+        metadata.reviewProgress,
+        generated,
+        changeMode,
+      );
+      await runCheckpointReviewGate({
+        app,
+        buildRunId: run.id,
+        spec,
+        architecture,
+        files: checkpoint.files,
+        generated,
+        debugBudget,
+        metrics,
+        seededPlatformEntities,
+        reviewProgress,
+      });
+      await saveBuildCheckpoint({
+        appId: app.id,
+        buildRunId: run.id,
+        stage: "testing",
+        files: checkpoint.files,
+        metadata: durableMetadata({
+          generated,
+          debugBudget,
+          metrics,
+          seededPlatformEntities,
+        }),
+      });
+      await log(
+        run.id,
+        `Workflow reviews passed; durable testing checkpoint saved (${Object.keys(checkpoint.files).length} files).`,
+      );
+    }
 
     await runTestGauntlet({
       app,

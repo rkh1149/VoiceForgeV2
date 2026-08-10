@@ -78,6 +78,97 @@ describe("debug progress", () => {
     expect(compareFailureFingerprints(before, changed).status).toBe("changed");
   });
 
+  it("distinguishes Playwright failures in the same test by their locator", () => {
+    const before = createFailureFingerprint(
+      "e2e",
+      [
+        "1) e2e/generated/lending.spec.ts:20:3 › lending journey",
+        "Error: expect(locator).toBeVisible() failed",
+        "Locator: getByRole('option', { name: 'Family member' })",
+      ].join("\n"),
+    );
+    const changed = createFailureFingerprint(
+      "e2e",
+      [
+        "1) e2e/generated/lending.spec.ts:20:3 › lending journey",
+        "Error: expect(locator).toBeVisible() failed",
+        "Locator: getByRole('cell', { name: 'Equipment' })",
+      ].join("\n"),
+    );
+
+    expect(before.cases[0].signature).toContain("getByRole('option'");
+    expect(compareFailureFingerprints(before, changed).status).toBe("changed");
+  });
+
+  it("distinguishes timed-out Playwright actions by the locator being awaited", () => {
+    const before = createFailureFingerprint(
+      "e2e",
+      [
+        "1) e2e/generated/lending.spec.ts:20:3 › lending journey",
+        "Error: locator.click: Test timeout of 120000ms exceeded.",
+        "Call log:",
+        "  - waiting for getByRole('button', { name: 'Add equipment' })",
+      ].join("\n"),
+    );
+    const changed = createFailureFingerprint(
+      "e2e",
+      [
+        "1) e2e/generated/lending.spec.ts:20:3 › lending journey",
+        "Error: locator.click: Test timeout of 120000ms exceeded.",
+        "Call log:",
+        "  - waiting for getByRole('button', { name: 'Lend equipment' })",
+      ].join("\n"),
+    );
+
+    expect(before.cases[0].signature).toContain("Add equipment");
+    expect(compareFailureFingerprints(before, changed).status).toBe("changed");
+  });
+
+  it("tracks progress within one generated journey instead of treating its next step as a regression", () => {
+    const before = createFailureFingerprint(
+      "e2e",
+      [
+        "1) e2e/generated/lending.spec.ts:20:3 › lending suite › [voiceforge-journey:lending] Lend equipment",
+        "Error: expect(locator).toBeVisible() failed",
+        "Locator: getByRole('option', { name: 'Borrower' })",
+      ].join("\n"),
+    );
+    const advanced = createFailureFingerprint(
+      "e2e",
+      [
+        "1) e2e/generated/lending.spec.ts:20:3 › lending suite › [voiceforge-journey:lending] Lend equipment › [voiceforge-save:equipment] persists after reload",
+        "Error: expect(locator).toBeVisible() failed",
+        "Locator: getByRole('cell', { name: 'Equipment' })",
+      ].join("\n"),
+    );
+
+    expect(advanced.failedTests).toEqual(before.failedTests);
+    expect(compareFailureFingerprints(before, advanced).status).toBe("changed");
+  });
+
+  it("ignores dynamic acceptance-run suffixes when the actual failure is unchanged", () => {
+    const before = createFailureFingerprint(
+      "e2e",
+      [
+        "1) e2e/generated/lending.spec.ts:20:3 › lending journey",
+        "Error: expect(locator).toBeVisible() failed",
+        "Locator: getByRole('cell', { name: 'Equipment 12345-m1abcde' })",
+      ].join("\n"),
+    );
+    const unchanged = createFailureFingerprint(
+      "e2e",
+      [
+        "1) e2e/generated/lending.spec.ts:20:3 › lending journey",
+        "Error: expect(locator).toBeVisible() failed",
+        "Locator: getByRole('cell', { name: 'Equipment 98765-m9vwxyz' })",
+      ].join("\n"),
+    );
+
+    expect(compareFailureFingerprints(before, unchanged).status).toBe(
+      "unchanged",
+    );
+  });
+
   it("escalates after two ineffective rounds", () => {
     expect(shouldEscalateDebugScope(1)).toBe(false);
     expect(shouldEscalateDebugScope(2)).toBe(true);

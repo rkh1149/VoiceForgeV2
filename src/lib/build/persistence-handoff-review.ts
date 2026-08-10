@@ -433,11 +433,16 @@ function reviewHandoff(input: {
   const consumerFreshLoadFound =
     consumerReadFound &&
     hasFreshLoadLifecycle(input.consumerSource, input.handoff.storage);
+  const aggregateConsumer = isAggregateCollectionConsumer(
+    input.consumer,
+    entityKey,
+  );
   const stableReferenceFound =
     consumerReadFound &&
-    /(?:\.id\b|\["id"\]|\['id'\]|recordId|selected[A-Za-z0-9_$]*Id)/.test(
-      input.consumerSource,
-    );
+    (aggregateConsumer ||
+      /(?:\.id\b|\["id"\]|\['id'\]|recordId|selected[A-Za-z0-9_$]*Id)/.test(
+        input.consumerSource,
+      ));
   const control = input.consumer?.controls.find(
     (candidate) => candidate.id === input.handoff.consumerControlId,
   );
@@ -503,6 +508,34 @@ function reviewHandoff(input: {
   };
 }
 
+function isAggregateCollectionConsumer(
+  consumer: WorkflowContract | undefined,
+  entityKey: string,
+): boolean {
+  if (!consumer || consumer.expectedSaves.length > 0) return false;
+  const relevantSteps = consumer.steps.filter((step) =>
+    step.reads.includes(entityKey),
+  );
+  if (relevantSteps.length === 0) return false;
+  const text = [
+    consumer.name,
+    consumer.start.screen,
+    consumer.success.visibleResult,
+    ...relevantSteps.flatMap((step) => [
+      step.description,
+      step.visibleResult,
+    ]),
+  ].join(" ");
+  return (
+    relevantSteps.every(
+      (step) => step.kind === "automatic" || step.kind === "result",
+    ) &&
+    /\b(aggregate|calculate|count|dashboard|metric|overview|summary|total)\b/i.test(
+      text,
+    )
+  );
+}
+
 function hasWriteOperation(source: string, save: SaveContract): boolean {
   const entity = entityPattern(save.entityName, save.entityKey);
   if (save.storage === "platformData") {
@@ -549,7 +582,7 @@ function platformWriteIncludesRawBinary(source: string): boolean {
 function hasReadOperation(source: string, save: SaveContract): boolean {
   if (save.storage === "platformData") {
     const directRead =
-      /\b(listPlatformRecords|searchPlatformRecords|getPlatformRecord)\s*\(/.test(
+      /\b(?:listPlatformRecords|searchPlatformRecords|getPlatformRecord)(?:\s*<[^;()]+>)?\s*\(/.test(
         source,
       );
     const namedRead = new RegExp(

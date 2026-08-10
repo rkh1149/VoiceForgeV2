@@ -15,6 +15,7 @@ import AgentArtifactsList from "@/components/AgentArtifactsList";
 import WorkflowContractList from "@/components/WorkflowContractList";
 import InterfaceReadinessReport from "@/components/InterfaceReadinessReport";
 import PersistenceHandoffReport from "@/components/PersistenceHandoffReport";
+import AcceptanceJourneysReport from "@/components/AcceptanceJourneysReport";
 
 export const dynamic = "force-dynamic";
 
@@ -105,10 +106,18 @@ export default async function BuildRunPage({
       .find(
         (artifact) => artifact.artifactType === "persistence_handoff_review",
       ) ?? null;
+  const acceptanceJourneysArtifact =
+    [...agentArtifacts]
+      .reverse()
+      .find((artifact) => artifact.artifactType === "acceptance_test_review") ??
+    null;
+  const browserResult =
+    [...results].reverse().find((result) => result.suite === "e2e") ?? null;
   const otherAgentArtifacts = agentArtifacts.filter(
     (artifact) =>
       artifact.artifactType !== "ui_affordance_review" &&
-      artifact.artifactType !== "persistence_handoff_review",
+      artifact.artifactType !== "persistence_handoff_review" &&
+      artifact.artifactType !== "acceptance_test_review",
   );
 
   return (
@@ -189,6 +198,13 @@ export default async function BuildRunPage({
 
       <div className="mt-4">
         <PersistenceHandoffReport artifact={persistenceHandoffArtifact} />
+      </div>
+
+      <div className="mt-4">
+        <AcceptanceJourneysReport
+          artifact={acceptanceJourneysArtifact}
+          browserResult={browserResult}
+        />
       </div>
 
       {otherAgentArtifacts.length > 0 && (

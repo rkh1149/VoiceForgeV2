@@ -354,6 +354,48 @@ describe("persistence and handoff review", () => {
     expect(result.blockingIssues).toEqual([]);
   });
 
+  it("recognizes direct typed platform reads on reload and handoff routes", () => {
+    const directTypedRecipesPage = `"use client";
+import { useEffect, useState } from "react";
+import { createRecipe } from "@/lib/recipe-data";
+import { listPlatformRecords } from "@/lib/platform-data";
+type RecipeRecord = { id: string; data: { recipe_title: string; ingredients: string } };
+export default function RecipesPage() {
+  const [recipes, setRecipes] = useState<RecipeRecord[]>([]);
+  useEffect(() => { void listPlatformRecords<RecipeRecord>("recipe").then(setRecipes); }, []);
+  async function handleSaveRecipe() { const savedRecipe = await createRecipe({ recipe_title: "Soup", ingredients: "Stock" }); setRecipes((current) => [...current, savedRecipe]); }
+  return <main><button onClick={() => void handleSaveRecipe()}>Save recipe</button>{recipes.map((recipe) => <p key={recipe.id}>{recipe.data.recipe_title}</p>)}</main>;
+}`;
+    const directTypedWeeklyPlanPage = `"use client";
+import { useEffect, useState } from "react";
+import { listPlatformRecords } from "@/lib/platform-data";
+type RecipeRecord = { id: string; data: { recipe_title: string } };
+export default function WeeklyPlanPage() {
+  const [recipes, setRecipes] = useState<RecipeRecord[]>([]);
+  useEffect(() => { void listPlatformRecords<RecipeRecord>("recipe").then(setRecipes); }, []);
+  return <label>Choose saved recipe<select aria-label="Choose saved recipe">{recipes.map((recipe) => <option key={recipe.id} value={recipe.id}>{recipe.data.recipe_title}</option>)}</select></label>;
+}`;
+    const result = review(
+      files({
+        "src/app/recipes/page.tsx": directTypedRecipesPage,
+        "src/app/weekly-plan/page.tsx": directTypedWeeklyPlanPage,
+      }),
+    );
+
+    expect(result.reloads[0]).toMatchObject({
+      readFound: true,
+      freshLoadFound: true,
+      status: "verified",
+    });
+    expect(result.handoffs[0]).toMatchObject({
+      consumerReadFound: true,
+      consumerFreshLoadFound: true,
+      stableReferenceFound: true,
+      status: "verified",
+    });
+    expect(result.blockingIssues).toEqual([]);
+  });
+
   it("accepts a reloaded entity record used by its stable platform id", () => {
     const result = review(
       files({
@@ -374,6 +416,85 @@ export default function RecipesPage() {
       status: "verified",
     });
     expect(result.blockingIssues).toEqual([]);
+  });
+
+  it("does not require an individual record id for aggregate overview counts", () => {
+    const aggregateArchitecture = structuredClone(architecture());
+    const consumer = aggregateArchitecture.workflowContracts[1];
+    consumer.id = "review-overview";
+    consumer.name = "Review overview";
+    consumer.start = { route: "/", screen: "Overview", preconditions: [] };
+    consumer.controls = [
+      {
+        id: "overview-link",
+        kind: "link",
+        accessibleName: "Overview",
+        route: "/",
+        roles: ["owner", "editor", "viewer"],
+        action: "Open overview counts",
+      },
+    ];
+    consumer.steps = [
+      {
+        id: "calculate-recipe-count",
+        description: "Calculate the saved recipe count",
+        kind: "automatic",
+        route: "/",
+        controlId: "",
+        reads: ["recipe"],
+        writes: [],
+        visibleResult: "The recipe count is visible.",
+      },
+    ];
+    consumer.success = {
+      message: "Overview loaded.",
+      visibleResult: "Summary counts are visible.",
+      route: "/",
+    };
+    aggregateArchitecture.workflowContracts[0].handoffs[0] = {
+      ...aggregateArchitecture.workflowContracts[0].handoffs[0],
+      consumerWorkflowId: consumer.id,
+      consumerRoute: "/",
+      consumerControlId: "overview-link",
+      loadRule: "Load recipes and calculate the recipe count.",
+    };
+    aggregateArchitecture.pageMap[1] = {
+      route: "/",
+      name: "Overview",
+      purpose: "Display aggregate recipe counts.",
+      primaryComponents: ["OverviewPage"],
+      workflows: [consumer.name],
+    };
+    const result = analyzePersistenceHandoffs({
+      spec,
+      architecture: aggregateArchitecture,
+      files: files({
+        "src/app/page.tsx": `"use client";
+import { useEffect, useState } from "react";
+import { listRecipes } from "@/lib/recipe-data";
+export default function OverviewPage() {
+  const [recipes, setRecipes] = useState([]);
+  useEffect(() => { void listRecipes().then(setRecipes); }, []);
+  return <main><a href="/">Overview</a><p>Saved recipes: {recipes.length}</p></main>;
+}`,
+        "src/components/recipe-workflow.test.tsx": `${persistenceTest}
+describe("Create and save a recipe then Review overview", () => {
+  it("reloads saved recipes for the overview count", async () => {
+    openOverview();
+    expect(listPlatformRecords).toHaveBeenCalledWith("recipe");
+    expect(screen.getByText("Saved recipes: 1")).toBeVisible();
+  });
+});`,
+      }),
+    });
+
+    expect(result.handoffs[0]).toMatchObject({
+      stableReferenceFound: true,
+      status: "verified",
+    });
+    expect(result.blockingIssues.join(" ")).not.toContain(
+      "stable saved record id",
+    );
   });
 
   it("blocks a calculated or displayed result that only lives in React state", () => {

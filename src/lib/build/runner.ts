@@ -47,6 +47,48 @@ type RunnerOptions = {
 const OUTPUT_TAIL = 8000;
 const DIAGNOSTIC_CAPTURE_LIMIT = 1024 * 1024;
 
+export const SANDBOX_BROWSER_PACKAGES = [
+  "alsa-lib",
+  "atk",
+  "at-spi2-atk",
+  "at-spi2-core",
+  "cups-libs",
+  "libdrm",
+  "libX11",
+  "libXcomposite",
+  "libXdamage",
+  "libXext",
+  "libXfixes",
+  "libXrandr",
+  "libxcb",
+  "libxkbcommon",
+  "mesa-libgbm",
+  "nspr",
+  "nss",
+  "pango",
+  "cairo",
+  "gtk3",
+] as const;
+
+export function sandboxBrowserSetupPlan(): Array<{
+  label: string;
+  cmd: string;
+  args: string[];
+}> {
+  return [
+    {
+      label: "Linux browser libraries",
+      cmd: "sudo",
+      args: ["dnf", "install", "-y", ...SANDBOX_BROWSER_PACKAGES],
+    },
+    {
+      label: "Chromium",
+      cmd: "npx",
+      args: ["playwright", "install", "chromium"],
+    },
+  ];
+}
+
 const STEPS: Record<
   StepName,
   { cmd: string; args: string[]; timeoutMs: number }
@@ -179,6 +221,47 @@ async function createSandboxRunner(options: RunnerOptions): Promise<Runner> {
     runtime: "node24",
     timeout: 25 * 60_000, // hard ceiling for the whole build
   });
+  let browserReady = false;
+
+  const prepareBrowser = async (): Promise<{
+    ok: boolean;
+    output: string;
+  }> => {
+    if (browserReady) {
+      return { ok: true, output: "Hosted browser runtime already prepared." };
+    }
+
+    const completed: string[] = [];
+    for (const command of sandboxBrowserSetupPlan()) {
+      let failureOutput = "";
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const result = await sandbox.runCommand(command.cmd, command.args);
+        const stdout = await result.stdout();
+        const stderr = await result.stderr();
+        if (result.exitCode === 0) {
+          failureOutput = "";
+          break;
+        }
+        failureOutput = [
+          `Hosted browser setup failed while installing ${command.label} (attempt ${attempt}/2).`,
+          stdout,
+          stderr,
+        ]
+          .join("\n")
+          .slice(-DIAGNOSTIC_CAPTURE_LIMIT);
+      }
+      if (failureOutput) {
+        return { ok: false, output: failureOutput };
+      }
+      completed.push(command.label);
+    }
+
+    browserReady = true;
+    return {
+      ok: true,
+      output: `Hosted browser runtime prepared: ${completed.join(", ")}.`,
+    };
+  };
 
   return {
     kind: "sandbox",
@@ -208,6 +291,23 @@ async function createSandboxRunner(options: RunnerOptions): Promise<Runner> {
       const { cmd, args } = STEPS[step];
       const started = Date.now();
       try {
+        const browserSetup =
+          step === "e2e"
+            ? await prepareBrowser()
+            : { ok: true, output: "" };
+        if (!browserSetup.ok) {
+          return {
+            step,
+            ok: false,
+            output: browserSetup.output.slice(-OUTPUT_TAIL),
+            durationMs: Date.now() - started,
+            failureFingerprint: createFailureFingerprint(
+              step,
+              browserSetup.output,
+            ),
+          };
+        }
+
         const result = await sandbox.runCommand("env", [
           "CI=true",
           "NEXT_TELEMETRY_DISABLED=1",
@@ -218,7 +318,13 @@ async function createSandboxRunner(options: RunnerOptions): Promise<Runner> {
           cmd,
           ...args,
         ]);
-        const output = `${await result.stdout()}\n${await result.stderr()}`;
+        const output = [
+          browserSetup.output,
+          await result.stdout(),
+          await result.stderr(),
+        ]
+          .filter(Boolean)
+          .join("\n");
         const ok = result.exitCode === 0;
         return {
           step,

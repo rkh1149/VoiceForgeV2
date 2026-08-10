@@ -120,6 +120,8 @@ export function generatePlatformDataStarterApp(input: {
         filesDeleted: [],
         notes:
           "Created a shared CRUD interface backed by VoiceForge platform data.",
+        turnContinuations: 0,
+        turnLimit: 0,
       },
     ],
     operations,

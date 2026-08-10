@@ -694,6 +694,11 @@ function normalizeSuppliedContract(
   };
   const normalizeEntityReference = (value: string) =>
     resolvePlatformEntity(value)?.key ?? normalizeEntityKey(value);
+  const synthesizedDiscoverabilityControl =
+    contract.controls.length === 0 && contract.trigger === "user_action";
+  const suppliedControls = synthesizedDiscoverabilityControl
+    ? [createDiscoverabilityControl(contract)]
+    : contract.controls;
   const requiredData = contract.requiredData.map((data) => {
     const entity = normalizeEntity(data.entityName, data.entityKey);
     const platform = entities.get(normalizeText(entity.entityKey));
@@ -708,7 +713,7 @@ function normalizeSuppliedContract(
     };
   });
   const controlIdMap = new Map(
-    contract.controls.map((control, index) => [
+    suppliedControls.map((control, index) => [
       control.id,
       slugify(control.id || `${contract.id}-control-${index + 1}`),
     ]),
@@ -761,7 +766,7 @@ function normalizeSuppliedContract(
       ...contract.actor,
       roles: unique(contract.actor.roles),
     },
-    controls: contract.controls.map((control, index) => ({
+    controls: suppliedControls.map((control, index) => ({
       ...control,
       id:
         controlIdMap.get(control.id) ??
@@ -772,9 +777,13 @@ function normalizeSuppliedContract(
       ...step,
       id:
         stepIdMap.get(step.id) ?? slugify(`${contract.id}-step-${index + 1}`),
-      controlId: step.controlId
-        ? (controlIdMap.get(step.controlId) ?? slugify(step.controlId))
-        : "",
+      controlId: synthesizedDiscoverabilityControl
+        ? step.kind === "automatic" || step.kind === "result"
+          ? ""
+          : (controlIdMap.get(suppliedControls[0]?.id ?? "") ?? "")
+        : step.controlId
+          ? (controlIdMap.get(step.controlId) ?? slugify(step.controlId))
+          : "",
       reads: unique(step.reads.map(normalizeEntityReference)),
       writes: unique(step.writes.map(normalizeEntityReference)),
     })),
@@ -793,27 +802,53 @@ function normalizeSuppliedContract(
   };
 }
 
+function createDiscoverabilityControl(
+  contract: WorkflowContract,
+): WorkflowContract["controls"][number] {
+  const label = /^(?:review|view|open|show|see)\b/i.test(contract.name)
+    ? contract.name
+    : `Open ${contract.name}`;
+  return {
+    id: `${slugify(contract.id || contract.name)}-discoverability-control`,
+    kind: "link",
+    accessibleName: label,
+    route: contract.start.route,
+    roles: [...contract.actor.roles],
+    action: `Open ${contract.start.screen} and review ${contract.success.visibleResult}`,
+  };
+}
+
 function assignSourcesAndHandoffs(
   input: WorkflowContract[],
   spec: AppSpec,
 ): WorkflowContract[] {
-  const contracts = input.map((contract) => ({
-    ...contract,
-    handoffs: contract.handoffs.filter((handoff) =>
+  const contracts = input.map((contract) => {
+    const validHandoffs = contract.handoffs.filter((handoff) =>
       contract.expectedSaves.some(
         (save) => save.producedReference === handoff.produces,
       ),
-    ),
-    dependencies: {
-      ...contract.dependencies,
-      workflowIds: [...contract.dependencies.workflowIds],
-    },
-    source: {
-      ...contract.source,
-      acceptanceCriteria: [...contract.source.acceptanceCriteria],
-      testScenarios: [...contract.source.testScenarios],
-    },
-  }));
+    );
+    const hasArchitectHandoffs = validHandoffs.some(
+      (handoff) => !isGenericInferredHandoff(contract.id, handoff),
+    );
+    return {
+      ...contract,
+      handoffs: validHandoffs.filter(
+        (handoff) =>
+          !hasArchitectHandoffs ||
+          !isGenericInferredHandoff(contract.id, handoff),
+      ),
+      dependencies: {
+        ...contract.dependencies,
+        workflowIds: [...contract.dependencies.workflowIds],
+      },
+      source: {
+        ...contract.source,
+        acceptanceCriteria: [...contract.source.acceptanceCriteria],
+        testScenarios: [...contract.source.testScenarios],
+      },
+    };
+  });
 
   assignNamedSources(
     contracts,
@@ -832,9 +867,40 @@ function assignSourcesAndHandoffs(
     "testScenarios",
   );
 
+  for (const producer of contracts) {
+    for (const handoff of producer.handoffs) {
+      const consumer = contracts.find(
+        (candidate) => candidate.id === handoff.consumerWorkflowId,
+      );
+      if (
+        consumer &&
+        !consumer.dependencies.workflowIds.includes(producer.id)
+      ) {
+        consumer.dependencies.workflowIds.push(producer.id);
+      }
+    }
+  }
+
   for (let producerIndex = 0; producerIndex < contracts.length; producerIndex += 1) {
     const producer = contracts[producerIndex];
+    // A planner-supplied map describes the product's intended handoffs. Do not
+    // inflate it with every later collection reader of every record written by
+    // the workflow. Fallback contracts still receive inferred handoffs below.
+    if (
+      producer.handoffs.some(
+        (handoff) => !isGenericInferredHandoff(producer.id, handoff),
+      )
+    ) {
+      continue;
+    }
     for (const save of producer.expectedSaves) {
+      if (
+        producer.handoffs.some(
+          (handoff) => handoff.produces === save.producedReference,
+        )
+      ) {
+        continue;
+      }
       for (let consumerIndex = producerIndex + 1; consumerIndex < contracts.length; consumerIndex += 1) {
         const consumer = contracts[consumerIndex];
         if (
@@ -872,6 +938,17 @@ function assignSourcesAndHandoffs(
   }
 
   return contracts;
+}
+
+function isGenericInferredHandoff(
+  producerWorkflowId: string,
+  handoff: WorkflowContract["handoffs"][number],
+): boolean {
+  const entityKey = handoff.produces.split(".", 1)[0] ?? "";
+  return (
+    handoff.id ===
+    `${producerWorkflowId}-to-${handoff.consumerWorkflowId}-${slugify(entityKey)}`
+  );
 }
 
 function assignNamedSources(
@@ -1035,7 +1112,9 @@ function inferControlKind(
   if (/check|toggle|complete/.test(lower)) return "checkbox";
   if (/choose|select|pick/.test(lower)) return "combobox";
   if (/enter|type|write|search|filter/.test(lower)) return "textbox";
-  if (/open|go to|navigate|view/.test(lower)) return "link";
+  if (/open|go to|navigate|view|review|overview|display|show/.test(lower)) {
+    return "link";
+  }
   return "button";
 }
 

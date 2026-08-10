@@ -7,6 +7,7 @@ import AgentArtifactsList, {
 import WorkflowContractList from "@/components/WorkflowContractList";
 import InterfaceReadinessReport from "@/components/InterfaceReadinessReport";
 import PersistenceHandoffReport from "@/components/PersistenceHandoffReport";
+import AcceptanceJourneysReport from "@/components/AcceptanceJourneysReport";
 import type { WorkflowContract } from "@/lib/workflow-contract";
 
 type LogEntry = { ts: string; message: string };
@@ -195,10 +196,18 @@ export default function BuildStatus({ appId }: { appId: string }) {
       .find(
         (artifact) => artifact.artifactType === "persistence_handoff_review",
       ) ?? null;
+  const acceptanceJourneysArtifact =
+    [...data.agentArtifacts]
+      .reverse()
+      .find((artifact) => artifact.artifactType === "acceptance_test_review") ??
+    null;
+  const browserResult =
+    [...testResults].reverse().find((result) => result.suite === "e2e") ?? null;
   const otherAgentArtifacts = data.agentArtifacts.filter(
     (artifact) =>
       artifact.artifactType !== "ui_affordance_review" &&
-      artifact.artifactType !== "persistence_handoff_review",
+      artifact.artifactType !== "persistence_handoff_review" &&
+      artifact.artifactType !== "acceptance_test_review",
   );
 
   return (
@@ -336,6 +345,11 @@ export default function BuildStatus({ appId }: { appId: string }) {
       <InterfaceReadinessReport artifact={interfaceReadinessArtifact} />
 
       <PersistenceHandoffReport artifact={persistenceHandoffArtifact} />
+
+      <AcceptanceJourneysReport
+        artifact={acceptanceJourneysArtifact}
+        browserResult={browserResult}
+      />
 
       {otherAgentArtifacts.length > 0 && (
         <AgentArtifactsList artifacts={otherAgentArtifacts} />

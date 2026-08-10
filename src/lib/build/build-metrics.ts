@@ -3,6 +3,7 @@ import type { BuildAgentArtifactStatus } from "./agent-artifact-utils";
 export type BuildFailureCategory =
   | "architecture_capability"
   | "workflow_contract"
+  | "code_generation"
   | "dependency_security"
   | "typecheck"
   | "lint"
@@ -51,7 +52,23 @@ export type BuildMetrics = {
   reviewFailures: BuildReviewFailureMetric[];
   debugRounds: BuildDebugRoundMetric[];
   debugRoundsByStep: Record<string, number>;
+  acceptanceJourneyCoverage: AcceptanceJourneyCoverageMetric | null;
   failureCategory: BuildFailureCategory | null;
+};
+
+export type AcceptanceJourneyCoverageMetric = {
+  journeysPlanned: number;
+  journeysVerified: number;
+  workflowsRequired: number;
+  workflowsVerified: number;
+  stepsRequired: number;
+  stepsVerified: number;
+  savesRequired: number;
+  savesVerified: number;
+  refreshChecksRequired: number;
+  refreshChecksVerified: number;
+  handoffsRequired: number;
+  handoffsVerified: number;
 };
 
 type PhaseLike = {
@@ -67,6 +84,7 @@ type ReviewLike = {
   phaseKey: string;
   warnings: string[];
   blockingIssues: string[];
+  payload?: Record<string, unknown>;
 };
 
 export function createBuildMetrics(): BuildMetrics {
@@ -76,6 +94,7 @@ export function createBuildMetrics(): BuildMetrics {
     reviewFailures: [],
     debugRounds: [],
     debugRoundsByStep: {},
+    acceptanceJourneyCoverage: null,
     failureCategory: null,
   };
 }
@@ -107,6 +126,25 @@ export function recordReviewMetrics(
   reviews: readonly ReviewLike[],
 ): void {
   for (const review of reviews) {
+    if (review.agentKey === "acceptance_test_reviewer") {
+      const summary = recordValue(review.payload?.summary);
+      if (summary) {
+        metrics.acceptanceJourneyCoverage = {
+          journeysPlanned: numberValue(summary.journeysPlanned),
+          journeysVerified: numberValue(summary.journeysVerified),
+          workflowsRequired: numberValue(summary.workflowsRequired),
+          workflowsVerified: numberValue(summary.workflowsVerified),
+          stepsRequired: numberValue(summary.stepsRequired),
+          stepsVerified: numberValue(summary.stepsVerified),
+          savesRequired: numberValue(summary.savesRequired),
+          savesVerified: numberValue(summary.savesVerified),
+          refreshChecksRequired: numberValue(summary.refreshChecksRequired),
+          refreshChecksVerified: numberValue(summary.refreshChecksVerified),
+          handoffsRequired: numberValue(summary.handoffsRequired),
+          handoffsVerified: numberValue(summary.handoffsVerified),
+        };
+      }
+    }
     if (review.warnings.length > 0) {
       upsertReviewWarnings(metrics, {
         agentKey: review.agentKey,
@@ -184,6 +222,7 @@ export function buildMetricsPayload(metrics: BuildMetrics): Record<string, unkno
     reviewFailures: metrics.reviewFailures,
     debugRoundsByStep: metrics.debugRoundsByStep,
     debugRounds: metrics.debugRounds,
+    acceptanceJourneyCoverage: metrics.acceptanceJourneyCoverage,
     failureCategory: metrics.failureCategory,
     totals: {
       generatedFileChanges: metrics.generatedFilesByPhase.reduce(
@@ -210,6 +249,13 @@ export function buildMetricsPayload(metrics: BuildMetrics): Record<string, unkno
 export function categorizeBuildFailure(message: string): BuildFailureCategory {
   const text = message.toLowerCase();
   if (
+    text.includes("max turns") ||
+    text.includes("generation phase") ||
+    text.includes("code agent")
+  ) {
+    return "code_generation";
+  }
+  if (
     text.includes("workflow_contract:") ||
     text.includes("workflow contract") ||
     text.includes("workflow plan")
@@ -217,6 +263,7 @@ export function categorizeBuildFailure(message: string): BuildFailureCategory {
     return "workflow_contract";
   }
   if (text.includes("platform capabilities")) return "architecture_capability";
+  if (text.includes("acceptance_test:")) return "integration_review_gate";
   if (
     text.includes("dependencies") ||
     text.includes("dependency") ||
@@ -233,13 +280,29 @@ export function categorizeBuildFailure(message: string): BuildFailureCategory {
   if (text.includes("e2e") || text.includes("browser") || text.includes("axe")) {
     return "browser_accessibility";
   }
-  if (text.includes("review failed") || text.includes("review_gate")) {
+  if (
+    text.includes("review failed") ||
+    text.includes("review_gate") ||
+    text.includes("interface review") ||
+    text.includes("persistence review") ||
+    text.includes("acceptance review")
+  ) {
     return "integration_review_gate";
   }
   if (text.includes("github")) return "github";
   if (text.includes("vercel")) return "vercel";
   if (text.includes("deploy")) return "deployment";
   return "unknown";
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function upsertReviewWarnings(

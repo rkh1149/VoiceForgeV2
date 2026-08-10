@@ -433,6 +433,37 @@ function findLabelsByControlId(sourceFile: ts.SourceFile): Map<string, string> {
   return labels;
 }
 
+function findLabelsByDynamicControlId(
+  sourceFile: ts.SourceFile,
+): Map<string, { label: string; dynamicKey: string | null }> {
+  const labels = new Map<
+    string,
+    { label: string; dynamicKey: string | null }
+  >();
+  const visit = (node: ts.Node) => {
+    if (ts.isJsxElement(node)) {
+      const tagName = node.openingElement.tagName
+        .getText(sourceFile)
+        .toLowerCase();
+      if (tagName === "label") {
+        const controlId = jsxAttributeDynamicKey(
+          node.openingElement,
+          "htmlFor",
+          sourceFile,
+        );
+        const label = jsxElementText(node, sourceFile);
+        const dynamicKey = jsxElementDynamicKey(node, sourceFile);
+        if (controlId && (label || dynamicKey)) {
+          labels.set(controlId, { label, dynamicKey });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return labels;
+}
+
 function componentOwnerForNode(
   node: ts.Node,
   sourceFile: ts.SourceFile,
@@ -547,6 +578,7 @@ function analyzeModule(
   const defaultComponent = findDefaultComponent(sourceFile);
   const componentDefaults = findComponentDefaults(sourceFile, defaultComponent);
   const labelsByControlId = findLabelsByControlId(sourceFile);
+  const labelsByDynamicControlId = findLabelsByDynamicControlId(sourceFile);
 
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
@@ -573,6 +605,28 @@ function analyzeModule(
   }
 
   const visit = (node: ts.Node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      /(?:nav|link|menu|route)/i.test(node.name.text) &&
+      node.initializer
+    ) {
+      for (const targetRoute of staticAppRoutes(node.initializer)) {
+        navigation.push({
+          label: `Open ${targetRoute}`,
+          targetRoute,
+          filePath: path,
+          line: lineOf(sourceFile, node),
+          roles: rolesForNode(node, sourceFile),
+          ownerComponent: componentOwnerForNode(
+            node,
+            sourceFile,
+            defaultComponent,
+          ),
+        });
+      }
+    }
+
     if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
       const opening = ts.isJsxElement(node) ? node.openingElement : node;
       const tagName = opening.tagName.getText(sourceFile);
@@ -607,6 +661,7 @@ function analyzeModule(
         sourceFile,
         ownerComponent,
         labelsByControlId,
+        labelsByDynamicControlId,
       });
       controls.push(...foundControls);
       for (const control of foundControls) {
@@ -650,7 +705,11 @@ function analyzeModule(
     }
 
     if (ts.isObjectLiteralExpression(node)) {
-      const href = objectStringProperty(node, ["href", "route", "to"], sourceFile);
+      const href = objectStringProperty(
+        node,
+        ["href", "route", "to", "path", "url"],
+        sourceFile,
+      );
       if (href) {
         const ownerComponent = componentOwnerForNode(
           node,
@@ -658,7 +717,11 @@ function analyzeModule(
           defaultComponent,
         );
         const label =
-          objectStringProperty(node, ["label", "name", "title"], sourceFile) ??
+          objectStringProperty(
+            node,
+            ["label", "name", "title", "text"],
+            sourceFile,
+          ) ??
           `Open ${href}`;
         navigation.push({
           label,
@@ -675,6 +738,72 @@ function analyzeModule(
           dynamicLabelKey: null,
           sourcePosition: node.getStart(sourceFile),
           targetRoute: href,
+          filePath: path,
+          line: lineOf(sourceFile, node),
+          roles: rolesForNode(node, sourceFile),
+          ownerComponent,
+        });
+      }
+    }
+
+    if (
+      ts.isArrayLiteralExpression(node) &&
+      isNavigationCollection(node, sourceFile)
+    ) {
+      const tuple = navigationTuple(node, sourceFile);
+      if (tuple) {
+        const ownerComponent = componentOwnerForNode(
+          node,
+          sourceFile,
+          defaultComponent,
+        );
+        navigation.push({
+          ...tuple,
+          filePath: path,
+          line: lineOf(sourceFile, node),
+          roles: rolesForNode(node, sourceFile),
+          ownerComponent,
+        });
+        controls.push({
+          kind: "link",
+          label: tuple.label,
+          labelConfidence: "resolved",
+          dynamicLabelKey: null,
+          sourcePosition: node.getStart(sourceFile),
+          targetRoute: tuple.targetRoute,
+          filePath: path,
+          line: lineOf(sourceFile, node),
+          roles: rolesForNode(node, sourceFile),
+          ownerComponent,
+        });
+      }
+    }
+
+    if (
+      ts.isPropertyAssignment(node) &&
+      isNavigationCollection(node, sourceFile)
+    ) {
+      const keyed = keyedNavigationProperty(node, sourceFile);
+      if (keyed) {
+        const ownerComponent = componentOwnerForNode(
+          node,
+          sourceFile,
+          defaultComponent,
+        );
+        navigation.push({
+          ...keyed,
+          filePath: path,
+          line: lineOf(sourceFile, node),
+          roles: rolesForNode(node, sourceFile),
+          ownerComponent,
+        });
+        controls.push({
+          kind: "link",
+          label: keyed.label,
+          labelConfidence: "resolved",
+          dynamicLabelKey: null,
+          sourcePosition: node.getStart(sourceFile),
+          targetRoute: keyed.targetRoute,
           filePath: path,
           line: lineOf(sourceFile, node),
           roles: rolesForNode(node, sourceFile),
@@ -708,6 +837,10 @@ function controlsForElement(input: {
   sourceFile: ts.SourceFile;
   ownerComponent: string | null;
   labelsByControlId: Map<string, string>;
+  labelsByDynamicControlId: Map<
+    string,
+    { label: string; dynamicKey: string | null }
+  >;
 }): ModuleControl[] {
   const kind = controlKind(input.tagName, input.opening, input.sourceFile);
   const composite = compositeControls(input.tagName, input);
@@ -717,6 +850,7 @@ function controlsForElement(input: {
     input.opening,
     input.sourceFile,
     input.labelsByControlId,
+    input.labelsByDynamicControlId,
   );
   const targetRoute =
     jsxAttributeValue(input.opening, "href", input.sourceFile) ??
@@ -806,12 +940,20 @@ function controlLabel(
   opening: ts.JsxOpeningLikeElement,
   sourceFile: ts.SourceFile,
   labelsByControlId: Map<string, string>,
+  labelsByDynamicControlId: Map<
+    string,
+    { label: string; dynamicKey: string | null }
+  >,
 ): {
   label: string;
   confidence: UiAffordanceControlEvidence["labelConfidence"];
   dynamicKey: string | null;
 } {
-  const direct = ["aria-label", "label", "title", "value"]
+  const labelAttributes = ["aria-label", "label", "title"];
+  if (elementValueNamesControl(opening, sourceFile)) {
+    labelAttributes.push("value");
+  }
+  const direct = labelAttributes
     .map((name) => jsxAttributeValue(opening, name, sourceFile))
     .find(Boolean);
   if (direct) {
@@ -821,7 +963,7 @@ function controlLabel(
       dynamicKey: null,
     };
   }
-  const directDynamic = ["aria-label", "label", "title", "value"]
+  const directDynamic = labelAttributes
     .map((name) => jsxAttributeDynamicKey(opening, name, sourceFile))
     .find(Boolean);
   if (directDynamic) {
@@ -837,6 +979,27 @@ function controlLabel(
       confidence: "resolved",
       dynamicKey: null,
     };
+  }
+  const dynamicControlId = jsxAttributeDynamicKey(
+    opening,
+    "id",
+    sourceFile,
+  );
+  const dynamicAssociation = dynamicControlId
+    ? labelsByDynamicControlId.get(dynamicControlId)
+    : undefined;
+  if (dynamicAssociation) {
+    return dynamicAssociation.dynamicKey
+      ? {
+          label: dynamicAssociation.label,
+          confidence: "dynamic",
+          dynamicKey: dynamicAssociation.dynamicKey,
+        }
+      : {
+          label: dynamicAssociation.label,
+          confidence: "resolved",
+          dynamicKey: null,
+        };
   }
   const ownText = jsxElementText(node, sourceFile);
   const ownDynamic = jsxElementDynamicKey(node, sourceFile);
@@ -877,6 +1040,17 @@ function controlLabel(
     parent = parent.parent;
   }
   return { label: "", confidence: "missing", dynamicKey: null };
+}
+
+function elementValueNamesControl(
+  opening: ts.JsxOpeningLikeElement,
+  sourceFile: ts.SourceFile,
+): boolean {
+  const tagName = opening.tagName.getText(sourceFile).toLowerCase();
+  if (tagName === "button") return true;
+  if (tagName !== "input") return false;
+  const type = jsxAttributeValue(opening, "type", sourceFile)?.toLowerCase();
+  return type === "button" || type === "submit" || type === "reset";
 }
 
 function jsxElementDynamicKey(
@@ -1690,6 +1864,105 @@ function objectStringProperty(
     if (text) return normalizeVisibleText(text);
   }
   return null;
+}
+
+function navigationTuple(
+  node: ts.ArrayLiteralExpression,
+  sourceFile: ts.SourceFile,
+): { label: string; targetRoute: string } | null {
+  if (node.elements.length !== 2) return null;
+  const values = node.elements.map((element) =>
+    ts.isExpression(element) ? expressionText(element, sourceFile) : "",
+  );
+  const routeIndex = values.findIndex((value) => isStaticAppRoute(value));
+  if (routeIndex < 0) return null;
+  const label = normalizeVisibleText(values[routeIndex === 0 ? 1 : 0] ?? "");
+  if (!label || isStaticAppRoute(label)) return null;
+  return {
+    label,
+    targetRoute: normalizeTemplateTarget(values[routeIndex]),
+  };
+}
+
+function keyedNavigationProperty(
+  node: ts.PropertyAssignment,
+  sourceFile: ts.SourceFile,
+): { label: string; targetRoute: string } | null {
+  if (
+    ts.isObjectLiteralExpression(node.parent) &&
+    node.parent.properties.some(
+      (property) =>
+        ts.isPropertyAssignment(property) &&
+        ["href", "route", "to", "path", "url"].includes(
+          propertyNameText(property.name, sourceFile),
+        ),
+    )
+  ) {
+    return null;
+  }
+  const key = propertyNameText(node.name, sourceFile);
+  const value = expressionText(node.initializer, sourceFile);
+  if (isStaticAppRoute(key) && value) {
+    return {
+      label: normalizeVisibleText(value),
+      targetRoute: normalizeTemplateTarget(key),
+    };
+  }
+  if (isStaticAppRoute(value) && key) {
+    return {
+      label: normalizeVisibleText(key),
+      targetRoute: normalizeTemplateTarget(value),
+    };
+  }
+  return null;
+}
+
+function isNavigationCollection(node: ts.Node, sourceFile: ts.SourceFile): boolean {
+  let current: ts.Node | undefined = node;
+  while (current && current !== sourceFile) {
+    if (
+      ts.isVariableDeclaration(current) &&
+      ts.isIdentifier(current.name) &&
+      /(?:nav|link|menu|route)/i.test(current.name.text)
+    ) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
+function propertyNameText(name: ts.PropertyName, sourceFile: ts.SourceFile): string {
+  if (
+    ts.isIdentifier(name) ||
+    ts.isStringLiteral(name) ||
+    ts.isNumericLiteral(name)
+  ) {
+    return name.text;
+  }
+  return name.getText(sourceFile).replace(/^["'`]|["'`]$/g, "");
+}
+
+function isStaticAppRoute(value: string): boolean {
+  return /^\/(?:[^\s]*)$/.test(value.trim());
+}
+
+function staticAppRoutes(node: ts.Node): string[] {
+  const routes: string[] = [];
+  const visit = (current: ts.Node) => {
+    if (
+      ts.isStringLiteral(current) ||
+      ts.isNoSubstitutionTemplateLiteral(current)
+    ) {
+      if (isStaticAppRoute(current.text)) {
+        routes.push(normalizeTemplateTarget(current.text));
+      }
+      return;
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return uniqueStrings(routes);
 }
 
 function sourceMentionsEntity(

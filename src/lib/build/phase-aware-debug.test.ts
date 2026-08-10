@@ -164,6 +164,28 @@ describe("phase-aware debug", () => {
     expect(plan.scope.visibleFilePaths).not.toContain("src/lib/unrelated.ts");
   });
 
+  it("prioritizes the generated test for a Playwright locator assertion even when its step title mentions saving", () => {
+    const plan = createPhaseAwareDebugPlan({
+      spec,
+      files,
+      failedStep: "e2e",
+      errorOutput: [
+        "e2e/generated/tasks.spec.ts > [voiceforge-save:task] persists after reload",
+        "Error: expect(locator).toBeVisible() failed",
+        "Locator: getByRole('cell', { name: 'Paint' })",
+      ].join("\n"),
+      generatedPhases: phases,
+    });
+
+    expect(plan.classification.focus).toBe("test_assertion");
+    expect(plan.scope.preferredInspectionPaths[0]).toBe(
+      "e2e/generated/tasks.spec.ts",
+    );
+    expect(plan.scope.preferredInspectionPaths).not.toContain(
+      "src/components/TaskForm.tsx",
+    );
+  });
+
   it("focuses data save failures on forms, payload helpers, and platform data", () => {
     const plan = createPhaseAwareDebugPlan({
       spec,
@@ -251,6 +273,36 @@ describe("phase-aware debug", () => {
 
     expect(plan.responsiblePhase.id).toBe("pages-workflows");
     expect(plan.responsiblePhase.agentKey).toBe("frontend_builder");
+  });
+
+  it("routes Stage 14D acceptance findings to generated browser tests", () => {
+    const filesWithBrowserTest = {
+      ...files,
+      "e2e/generated/tasks.spec.ts": "test('tasks', async () => {});",
+      "e2e/voiceforge-acceptance.ts": "export function workflowStepTitle() {}",
+    };
+    const plan = createPhaseAwareDebugPlan({
+      spec,
+      files: filesWithBrowserTest,
+      failedStep: "review_gate",
+      errorOutput:
+        "acceptance_test:save Journey journey-save-task does not reload and visibly assert saved task data.",
+      generatedPhases: phases,
+    });
+
+    expect(plan.responsiblePhase.id).toBe("browser-acceptance-tests");
+    expect(plan.responsiblePhase.agentKey).toBe("test_agent");
+    expect(plan.scope.visibleFilePaths).toContain(
+      "e2e/generated/tasks.spec.ts",
+    );
+    expect(plan.scope.visibleFilePaths).toContain(
+      "e2e/voiceforge-acceptance.ts",
+    );
+    expect(plan.scope.visibleFilePaths).not.toContain("src/app/tasks/page.tsx");
+    expect(plan.scope.visibleFilePaths).not.toContain("src/lib/tasks.ts");
+    expect(plan.context.instructions.join(" ")).toContain(
+      "workflowJourneyTitle",
+    );
   });
 
   it("routes interface-readiness failures to a focused route and control repair", () => {

@@ -86,6 +86,7 @@ describe("coder shared rules", () => {
     expect(source).toContain("contract accessibleName");
     expect(source).toContain("action-specific aria-label");
     expect(source).toContain("placeholder-only workflow pages");
+    expect(source).toContain("literal href and label fields");
   });
 
   it("requires durable saves, refresh loads, and downstream handoffs", () => {
@@ -106,5 +107,39 @@ describe("coder shared rules", () => {
     expect(source).toContain("filtering it only in React does not satisfy");
     expect(source).toContain("runPlatformRecordReport");
     expect(source).toContain("exportPlatformRecordsCsv");
+  });
+
+  it("requires traceable Stage 14D browser journeys", () => {
+    const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("STAGE 14D BROWSER ACCEPTANCE CONTRACT");
+    expect(source).toContain("workflowJourneyTitle");
+    expect(source).toContain("workflowStepTitle");
+    expect(source).toContain("workflowSaveTitle");
+    expect(source).toContain("workflowHandoffTitle");
+    expect(source).toContain("expectPersistedAfterReload");
+    expect(source).toContain("test.describe.serial");
+    expect(source).toContain("dependsOnJourneyIds");
+    expect(source).toContain("acceptanceRunSuffix");
+    expect(source).toContain("Native select option elements are hidden");
+    expect(source).toContain("toHaveCount(1), never toBeVisible()");
+    expect(source).toContain("never click a Next.js link and immediately reload");
+    expect(source).toContain("Do not use test.skip");
+  });
+
+  it("continues a generation phase once when its initial turn budget is exhausted", () => {
+    const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("MaxTurnsExceededError");
+    expect(source).toContain("error.state");
+    expect(source).toContain("GENERATION_PHASE_CONTINUATION_TURNS");
+    expect(source).toContain("after one automatic continuation");
+  });
+
+  it("requires the debug agent to apply an actionable repair before replying", () => {
+    const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("MUST apply it with patch_file or write_file");
+    expect(source).toContain("do not stop after merely describing the edit");
   });
 });

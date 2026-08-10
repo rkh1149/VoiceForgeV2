@@ -108,6 +108,7 @@ const LOCKED_PLATFORM_HELPERS = [
   "src/lib/device-location.ts",
   "src/lib/voiceforge-modules.ts",
   "src/components/voiceforge-reusable.tsx",
+  "e2e/voiceforge-acceptance.ts",
 ];
 
 const FILE_PATH_PATTERN =
@@ -278,6 +279,9 @@ export function selectDebugFileScope(input: {
   const allPaths = Object.keys(input.files).sort();
   const selected = new Set<string>();
   const preferred = new Set<string>();
+  const acceptanceReviewFailure =
+    input.classification.domain === "integration_review_gate" &&
+    /acceptance_test:/.test(input.errorOutput.toLowerCase());
   const mentionedPaths = extractMentionedFilePaths(input.errorOutput).filter(
     (filePath) => input.files[filePath] !== undefined,
   );
@@ -337,12 +341,20 @@ export function selectDebugFileScope(input: {
       addRelatedImportNeighbors(selected, input.files);
       addPreferredByPattern(preferred, input.files, (path) =>
         mentionedPaths.includes(path) ||
-        path.startsWith("src/app/") ||
-        path.startsWith("src/components/"),
+        (input.classification.focus !== "test_assertion" &&
+          (path.startsWith("src/app/") ||
+            path.startsWith("src/components/"))),
       );
       break;
     case "integration_review_gate":
-      if (/persistence_handoff:/.test(input.errorOutput.toLowerCase())) {
+      if (acceptanceReviewFailure) {
+        addByPattern(selected, input.files, (path) =>
+          path.startsWith("e2e/generated/"),
+        );
+        addPreferredByPattern(preferred, input.files, (path) =>
+          path.startsWith("e2e/generated/"),
+        );
+      } else if (/persistence_handoff:/.test(input.errorOutput.toLowerCase())) {
         addPersistenceHandoffSurface(
           selected,
           preferred,
@@ -360,12 +372,19 @@ export function selectDebugFileScope(input: {
       break;
   }
 
-  if (input.classification.focus === "data_save") {
+  if (
+    input.classification.focus === "data_save" &&
+    !acceptanceReviewFailure
+  ) {
     addDataSaveSurface(selected, preferred, input.files);
   }
 
-  addExisting(selected, input.files, LOCKED_PLATFORM_HELPERS);
-  addRelatedImportNeighbors(selected, input.files);
+  if (acceptanceReviewFailure) {
+    addExisting(selected, input.files, ["e2e/voiceforge-acceptance.ts"]);
+  } else {
+    addExisting(selected, input.files, LOCKED_PLATFORM_HELPERS);
+    addRelatedImportNeighbors(selected, input.files);
+  }
 
   const scopedPaths = input.forceFullScope
     ? allPaths
@@ -419,6 +438,14 @@ function focusFromOutput(
   lowerOutput: string,
 ): DebugFocus {
   if (
+    domain === "browser_accessibility" &&
+    /error:\s*expect\(locator\)|strict mode violation|locator\.(?:click|fill|selectoption)/.test(
+      lowerOutput,
+    )
+  ) {
+    return "test_assertion";
+  }
+  if (
     /record data failed validation|createplatformrecord|updateplatformrecord|save|submit|payload|schema key|validation/.test(
       lowerOutput,
     )
@@ -460,7 +487,11 @@ function phaseHintForReviewGate(input: {
   let phaseId: string | null = null;
   let reason: string | null = null;
 
-  if (/persistence_handoff:schema/.test(lowerOutput)) {
+  if (/acceptance_test:/.test(lowerOutput)) {
+    phaseId = "browser-acceptance-tests";
+    reason =
+      "The Stage 14D review found missing or incomplete contract-driven Playwright proof, so the browser acceptance test phase owns the repair.";
+  } else if (/persistence_handoff:schema/.test(lowerOutput)) {
     phaseId = "foundation";
     reason =
       "The persistence gate found an exact entity-key, field-key, payload, or file-reference problem, so the foundation phase owns the schema and persistence-helper repair.";
@@ -887,6 +918,12 @@ function instructionsFor(
       common.push(
         "When generated test coverage fails, add tests that exercise the named missing entities/workflows rather than only asserting that labels exist.",
         "For persistence tests, assert the exact storage call and payload keys, remount or reload before checking saved data, and prove the producer's saved record appears in the downstream consumer control.",
+      );
+    }
+    if (responsiblePhase.id === "browser-acceptance-tests") {
+      common.push(
+        "For Stage 14D acceptance findings, use the exact workflowJourneyTitle, workflowStepTitle, workflowSaveTitle, and workflowHandoffTitle ids from the supplied acceptance plan and perform the associated visible UI action inside each trace step.",
+        "Do not remove or skip a required journey, bypass its UI with direct API/localStorage setup, or replace save/reload/handoff assertions with generic page-render checks.",
       );
     }
   }

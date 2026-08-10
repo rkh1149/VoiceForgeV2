@@ -55,7 +55,12 @@ const PROTECTED_FILES = new Set([
   "src/app/api/notifications/route.ts", // locked platform notification endpoint (Stage 11B)
   "src/app/api/integrations/route.ts", // locked platform integration endpoint (Stage 12A/12C)
   "e2e/smoke.spec.ts", // locked browser/accessibility smoke test
+  "e2e/voiceforge-acceptance.ts", // locked contract-driven browser test helpers (Stage 14D)
 ]);
+
+const RESUME_REFRESHED_TEMPLATE_FILES = [
+  "e2e/voiceforge-acceptance.ts",
+] as const;
 
 const ALLOWED_EXTENSIONS = new Set([".ts", ".tsx"]);
 
@@ -165,6 +170,22 @@ export async function loadTemplate(vars: {
       .replaceAll("__APP_PURPOSE__", sanitize(vars.purpose));
   }
   return map;
+}
+
+/** Refresh compatible locked test infrastructure in a durable source checkpoint. */
+export async function refreshResumedTemplateFiles(
+  files: FileMap,
+  vars: { slug: string; name: string; purpose: string },
+): Promise<string[]> {
+  const template = await loadTemplate(vars);
+  const refreshed: string[] = [];
+  for (const filePath of RESUME_REFRESHED_TEMPLATE_FILES) {
+    const current = template[filePath];
+    if (current === undefined || files[filePath] === current) continue;
+    files[filePath] = current;
+    refreshed.push(filePath);
+  }
+  return refreshed;
 }
 
 function formatMegabytes(bytes: number): string {

@@ -38,6 +38,28 @@ describe("build metrics", () => {
         warnings: ["Use platform search helpers."],
         blockingIssues: [],
       },
+      {
+        agentKey: "acceptance_test_reviewer",
+        phaseKey: "generated-acceptance-test-review",
+        warnings: [],
+        blockingIssues: [],
+        payload: {
+          summary: {
+            journeysPlanned: 2,
+            journeysVerified: 2,
+            workflowsRequired: 4,
+            workflowsVerified: 4,
+            stepsRequired: 12,
+            stepsVerified: 12,
+            savesRequired: 3,
+            savesVerified: 3,
+            refreshChecksRequired: 3,
+            refreshChecksVerified: 3,
+            handoffsRequired: 2,
+            handoffsVerified: 2,
+          },
+        },
+      },
     ]);
     recordDebugRoundMetric(metrics, {
       step: "test",
@@ -55,6 +77,11 @@ describe("build metrics", () => {
       generatedFileDeletes: 1,
       reviewWarnings: 1,
       debugRounds: 1,
+    });
+    expect(metrics.acceptanceJourneyCoverage).toMatchObject({
+      journeysPlanned: 2,
+      journeysVerified: 2,
+      handoffsVerified: 2,
     });
   });
 
@@ -76,11 +103,27 @@ describe("build metrics", () => {
       "integration_review_gate",
     );
     expect(
+      categorizeBuildFailure("acceptance_test:handoff Route not available"),
+    ).toBe("integration_review_gate");
+    expect(
       categorizeBuildFailure(
         "VoiceForge could not produce a complete workflow plan yet: workflow_contract: missing save",
       ),
     ).toBe("workflow_contract");
     expect(categorizeBuildFailure("Vercel deployment failed")).toBe("vercel");
     expect(categorizeBuildFailure("GitHub returned HTTP 503")).toBe("github");
+    expect(categorizeBuildFailure("Max turns (22) exceeded")).toBe(
+      "code_generation",
+    );
+    expect(
+      categorizeBuildFailure(
+        'Generation phase "Reusable components" exceeded 42 turns',
+      ),
+    ).toBe("code_generation");
+    expect(
+      categorizeBuildFailure(
+        "interface review findings were unchanged after two rounds",
+      ),
+    ).toBe("integration_review_gate");
   });
 });

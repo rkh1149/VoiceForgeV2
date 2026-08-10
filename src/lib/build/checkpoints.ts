@@ -9,7 +9,10 @@ export const BUILD_CHECKPOINT_AGENT_KEY = "pipeline_checkpoint";
 export const BUILD_CHECKPOINT_MAX_FILE_COUNT = 2_000;
 export const BUILD_CHECKPOINT_MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 
-export type BuildCheckpointStage = "testing" | "publish_pending";
+export type BuildCheckpointStage =
+  | "reviewing"
+  | "testing"
+  | "publish_pending";
 
 type EncodedFileMap = {
   encoding: "gzip+base64";
@@ -118,7 +121,9 @@ export async function saveBuildCheckpoint(input: {
     summary:
       input.stage === "publish_pending"
         ? `Saved durable source checkpoint for publishing (${archive.fileCount} files).`
-        : `Saved durable source checkpoint for testing (${archive.fileCount} files).`,
+        : input.stage === "reviewing"
+          ? `Saved durable source checkpoint for workflow review (${archive.fileCount} files).`
+          : `Saved durable source checkpoint for testing (${archive.fileCount} files).`,
     payload: payload as unknown as Record<string, unknown>,
   });
 }
@@ -190,7 +195,9 @@ function isCheckpointPayload(value: unknown): value is BuildCheckpointPayload {
   return (
     isRecord(value) &&
     value.version === 1 &&
-    (value.stage === "testing" || value.stage === "publish_pending") &&
+    (value.stage === "reviewing" ||
+      value.stage === "testing" ||
+      value.stage === "publish_pending") &&
     isRecord(value.archive) &&
     isRecord(value.metadata) &&
     typeof value.savedAt === "string"

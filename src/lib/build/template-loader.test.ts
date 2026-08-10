@@ -4,6 +4,7 @@ import path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   listTemplateFiles,
+  refreshResumedTemplateFiles,
   TEMPLATE_IGNORED_DIRECTORIES,
 } from "./template";
 
@@ -31,5 +32,24 @@ describe("template loader", () => {
     }
 
     await expect(listTemplateFiles(root)).resolves.toEqual(["src/app/page.tsx"]);
+  });
+
+  it("refreshes the locked acceptance helper without replacing generated app source", async () => {
+    const files = {
+      "e2e/voiceforge-acceptance.ts": "old helper",
+      "src/app/page.tsx": "generated app source",
+    };
+
+    await expect(
+      refreshResumedTemplateFiles(files, {
+        slug: "lending-tracker",
+        name: "Lending Tracker",
+        purpose: "Track shared equipment",
+      }),
+    ).resolves.toEqual(["e2e/voiceforge-acceptance.ts"]);
+    expect(files["e2e/voiceforge-acceptance.ts"]).toContain(
+      "export function acceptanceRunSuffix",
+    );
+    expect(files["src/app/page.tsx"]).toBe("generated app source");
   });
 });

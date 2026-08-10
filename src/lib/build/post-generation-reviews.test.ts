@@ -6,9 +6,12 @@ import {
 } from "../architecture";
 import { computeSpecComplexity, normalizeAppSpec, type AppSpec } from "../spec";
 import {
+  assessPostGenerationRepair,
   comparePostGenerationIssueSets,
   getPostGenerationBlockingIssues,
+  postGenerationIssuesForDomain,
   runPostGenerationReviews,
+  selectPostGenerationRepairBatch,
   shouldStopUnchangedInterfaceRepairs,
 } from "./post-generation-reviews";
 import type { FileMap } from "./template";
@@ -340,6 +343,39 @@ function mixMatchImageSpec(): AppSpec {
   };
 }
 
+describe("post-generation repair policy", () => {
+  it("accepts a target-domain improvement only when no other domain regresses", () => {
+    const assessment = assessPostGenerationRepair({
+      domain: "acceptance",
+      previousIssues: [
+        "acceptance_test:journey missing journey",
+        "acceptance_test:save missing refresh proof",
+        "ui_affordance: missing Save button",
+      ],
+      currentIssues: [
+        "acceptance_test:save missing refresh proof",
+        "ui_affordance: missing Save button",
+      ],
+    });
+
+    expect(assessment.accepted).toBe(true);
+    expect(assessment.currentCounts.acceptance).toBe(1);
+    expect(assessment.regressedDomains).toEqual([]);
+  });
+
+  it("rejects a repair that trades one review failure for another", () => {
+    const assessment = assessPostGenerationRepair({
+      domain: "acceptance",
+      previousIssues: ["acceptance_test:journey missing journey"],
+      currentIssues: ["ui_affordance: Save route is no longer reachable"],
+    });
+
+    expect(assessment.accepted).toBe(false);
+    expect(assessment.regressedDomains).toEqual(["interface"]);
+    expect(assessment.reason).toContain("increased findings in interface");
+  });
+});
+
 describe("post-generation reviews", () => {
   it("detects unchanged review findings before repeated repairs", () => {
     expect(
@@ -362,6 +398,32 @@ describe("post-generation reviews", () => {
     });
     expect(shouldStopUnchangedInterfaceRepairs(1)).toBe(false);
     expect(shouldStopUnchangedInterfaceRepairs(2)).toBe(true);
+  });
+
+  it("repairs implementation and persistence findings before acceptance tests", () => {
+    const issues = [
+      "acceptance_test:handoff Missing route proof",
+      "persistence_handoff:handoff Overview does not reload records",
+      "code_review: Missing platform search",
+    ];
+
+    expect(selectPostGenerationRepairBatch(issues)).toEqual({
+      domain: "implementation",
+      issues: ["code_review: Missing platform search"],
+    });
+    expect(
+      selectPostGenerationRepairBatch(
+        issues.filter((issue) => !issue.startsWith("code_review:")),
+      ),
+    ).toEqual({
+      domain: "persistence",
+      issues: [
+        "persistence_handoff:handoff Overview does not reload records",
+      ],
+    });
+    expect(postGenerationIssuesForDomain(issues, "acceptance")).toEqual([
+      "acceptance_test:handoff Missing route proof",
+    ]);
   });
 
   it("records passing gates for a shared app with platform clients and generated tests", () => {
@@ -390,6 +452,7 @@ test("loads", async ({ page }) => { await page.goto("/"); await expect(page.getB
       "code_reviewer",
       "ui_affordance_reviewer",
       "persistence_handoff_reviewer",
+      "acceptance_test_reviewer",
       "test_reviewer",
       "security_reviewer",
       "ux_accessibility_reviewer",
@@ -397,7 +460,8 @@ test("loads", async ({ page }) => { await page.goto("/"); await expect(page.getB
     expect(
       reviews.every((item) =>
         item.agentKey === "ui_affordance_reviewer" ||
-        item.agentKey === "persistence_handoff_reviewer"
+        item.agentKey === "persistence_handoff_reviewer" ||
+        item.agentKey === "acceptance_test_reviewer"
           ? item.status === "skipped"
           : item.status === "passed",
       ),
@@ -551,6 +615,34 @@ export default function Page() {
     expect(codeReview.blockingIssues).toContain(
       "code_review: Architecture requires platform search, but the generated app did not use searchPlatformRecords for server-side search/filter/sort.",
     );
+  });
+
+  it("records a blocking Stage 14D artifact for generic browser-only coverage", () => {
+    const spec = normalizeAppSpec(personalSpecInput);
+    const architecture = buildArchitecture(spec);
+    const files: FileMap = {
+      "src/app/page.tsx": `"use client"; export default function Page() { return <main><h1>Packing Helper</h1><label>Item<input /></label><button>Add item</button></main>; }`,
+      "src/lib/items.test.ts": `import { expect, it } from "vitest"; it("works", () => expect(true).toBe(true));`,
+      "e2e/generated/items.spec.ts": `import { test, expect } from "@playwright/test"; test("page renders", async ({ page }) => { await page.goto("/"); await expect(page.getByRole("heading")).toBeVisible(); });`,
+    };
+
+    const acceptanceReview = findReview(
+      review({
+        spec,
+        architecture,
+        allFiles: files,
+        enableUiAffordanceReview: true,
+      }),
+      "acceptance_test_reviewer",
+    );
+
+    expect(acceptanceReview.status).toBe("failed");
+    expect(acceptanceReview.blockingIssues.join(" ")).toContain(
+      "Missing generated Playwright journey",
+    );
+    expect(acceptanceReview.payload).toMatchObject({
+      summary: { journeysPlanned: 1, journeysVerified: 0 },
+    });
   });
 
   it("warns about missing generated tests and basic accessibility gaps", () => {
