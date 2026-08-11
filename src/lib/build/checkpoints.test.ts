@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  BUILD_CHECKPOINT_SCHEMA_VERSION,
   BUILD_CHECKPOINT_MAX_FILE_COUNT,
   BUILD_CHECKPOINT_MAX_SOURCE_BYTES,
   decodeFileMapFromCheckpoint,
   encodeFileMapForCheckpoint,
+  getBuildPipelineIdentity,
+  isBuildCheckpointCompatible,
 } from "./checkpoints";
 
 describe("build checkpoints", () => {
@@ -48,5 +51,36 @@ describe("build checkpoints", () => {
     expect(() => encodeFileMapForCheckpoint(files)).toThrow(
       "checkpoints may contain source files only",
     );
+  });
+
+  it("rejects checkpoints that predate pipeline identity metadata", () => {
+    expect(isBuildCheckpointCompatible({ generated: {} })).toBe(false);
+  });
+
+  it("accepts checkpoints from the same pipeline deployment", () => {
+    const identity = getBuildPipelineIdentity({
+      VERCEL_GIT_COMMIT_SHA: "current-commit",
+    });
+
+    expect(
+      isBuildCheckpointCompatible({ pipelineIdentity: identity }, identity),
+    ).toBe(true);
+  });
+
+  it("rejects checkpoints from another pipeline deployment", () => {
+    expect(
+      isBuildCheckpointCompatible(
+        {
+          pipelineIdentity: {
+            checkpointSchemaVersion: BUILD_CHECKPOINT_SCHEMA_VERSION,
+            deploymentRevision: "old-commit",
+          },
+        },
+        {
+          checkpointSchemaVersion: BUILD_CHECKPOINT_SCHEMA_VERSION,
+          deploymentRevision: "current-commit",
+        },
+      ),
+    ).toBe(false);
   });
 });

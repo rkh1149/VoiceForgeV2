@@ -8,6 +8,12 @@ export const BUILD_CHECKPOINT_ARTIFACT_TYPE = "checkpoint";
 export const BUILD_CHECKPOINT_AGENT_KEY = "pipeline_checkpoint";
 export const BUILD_CHECKPOINT_MAX_FILE_COUNT = 2_000;
 export const BUILD_CHECKPOINT_MAX_SOURCE_BYTES = 25 * 1024 * 1024;
+export const BUILD_CHECKPOINT_SCHEMA_VERSION = 2;
+
+type BuildPipelineIdentity = {
+  checkpointSchemaVersion: number;
+  deploymentRevision: string | null;
+};
 
 export type BuildCheckpointStage =
   | "reviewing"
@@ -36,6 +42,38 @@ export type LoadedBuildCheckpoint<TMetadata = Record<string, unknown>> = {
   metadata: TMetadata;
   createdAt: Date;
 };
+
+export function getBuildPipelineIdentity(
+  env: Record<string, string | undefined> = process.env,
+): BuildPipelineIdentity {
+  return {
+    checkpointSchemaVersion: BUILD_CHECKPOINT_SCHEMA_VERSION,
+    deploymentRevision: env.VERCEL_GIT_COMMIT_SHA?.trim() || null,
+  };
+}
+
+export function isBuildCheckpointCompatible(
+  metadata: unknown,
+  currentIdentity: BuildPipelineIdentity = getBuildPipelineIdentity(),
+): boolean {
+  if (!isRecord(metadata) || !isRecord(metadata.pipelineIdentity)) {
+    return false;
+  }
+  const savedIdentity = metadata.pipelineIdentity;
+  if (
+    savedIdentity.checkpointSchemaVersion !==
+    currentIdentity.checkpointSchemaVersion
+  ) {
+    return false;
+  }
+  if (
+    currentIdentity.deploymentRevision &&
+    savedIdentity.deploymentRevision !== currentIdentity.deploymentRevision
+  ) {
+    return false;
+  }
+  return true;
+}
 
 export function encodeFileMapForCheckpoint(files: FileMap): EncodedFileMap {
   const paths = Object.keys(files);
@@ -107,7 +145,10 @@ export async function saveBuildCheckpoint(input: {
     version: 1,
     stage: input.stage,
     archive,
-    metadata: input.metadata ?? {},
+    metadata: {
+      ...(input.metadata ?? {}),
+      pipelineIdentity: getBuildPipelineIdentity(),
+    },
     savedAt: new Date().toISOString(),
   };
 

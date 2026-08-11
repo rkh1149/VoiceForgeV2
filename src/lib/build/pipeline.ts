@@ -98,6 +98,7 @@ import {
 } from "./debug-progress";
 import { validateGeneratedAppDependencies } from "./dependencies";
 import {
+  isBuildCheckpointCompatible,
   loadLatestBuildCheckpoint,
   saveBuildCheckpoint,
 } from "./checkpoints";
@@ -2134,6 +2135,16 @@ export async function resumeBuildPipelineContinuation(
 
   const [app] = await db.select().from(apps).where(eq(apps.id, appId)).limit(1);
   if (!app) return;
+  if (!isBuildCheckpointCompatible(checkpoint.metadata)) {
+    await markBuildFailed({
+      app,
+      buildRunId: run.id,
+      requirementId: run.requirementId,
+      message:
+        "This build checkpoint was created by an older VoiceForge pipeline. Use Build again to start a clean build with the current generator.",
+    });
+    return;
+  }
   const [requirement] = run.requirementId
     ? await db
         .select()

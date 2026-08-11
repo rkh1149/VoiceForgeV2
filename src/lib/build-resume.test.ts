@@ -45,7 +45,8 @@ describe("build resume status filter", () => {
     expect(pipeline).toContain("options?.resetDebugBudget");
     expect(pipeline).toContain("preserved the checkpoint and will retry");
     expect(pipeline).not.toContain("Debug agent could not produce a fix");
-    expect(rebuildRoute).toContain("getLatestBuildCheckpointStage");
+    expect(rebuildRoute).toContain("isBuildCheckpointCompatible");
+    expect(rebuildRoute).toContain("restartedFromStaleCheckpoint");
     expect(rebuildRoute).toContain("resetDebugBudget");
     expect(rebuildRoute).toContain("resumed: true");
   });

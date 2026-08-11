@@ -15,7 +15,10 @@ import {
   resumeBuildPipelineContinuation,
   startBuildPipeline,
 } from "@/lib/build/pipeline";
-import { getLatestBuildCheckpointStage } from "@/lib/build/checkpoints";
+import {
+  isBuildCheckpointCompatible,
+  loadLatestBuildCheckpoint,
+} from "@/lib/build/checkpoints";
 import { checkBuildQuota } from "@/lib/quota";
 import { runInBackground } from "@/lib/background";
 
@@ -115,11 +118,16 @@ export async function POST(
     )
     .orderBy(desc(buildRuns.createdAt))
     .limit(1);
-  const failedCheckpointStage = failedRun
-    ? await getLatestBuildCheckpointStage(failedRun.id)
+  const failedCheckpoint = failedRun
+    ? await loadLatestBuildCheckpoint(failedRun.id)
     : null;
+  const failedCheckpointStage = failedCheckpoint?.stage ?? null;
+  const canResumeFailedCheckpoint = Boolean(
+    failedCheckpoint && isBuildCheckpointCompatible(failedCheckpoint.metadata),
+  );
   if (
     failedRun &&
+    canResumeFailedCheckpoint &&
     (failedCheckpointStage === "reviewing" ||
       failedCheckpointStage === "testing")
   ) {
@@ -193,10 +201,21 @@ export async function POST(
     appId,
     buildRunId: run.id,
     action: "build.retried",
-    payload: { requirementVersion: latestRequirement.version },
+    payload: {
+      requirementVersion: latestRequirement.version,
+      replacedStaleCheckpoint: Boolean(
+        failedCheckpoint && !canResumeFailedCheckpoint,
+      ),
+    },
   });
 
   runInBackground(() => startBuildPipeline(run.id), `build ${run.id}`);
 
-  return NextResponse.json({ ok: true, buildRunId: run.id });
+  return NextResponse.json({
+    ok: true,
+    buildRunId: run.id,
+    restartedFromStaleCheckpoint: Boolean(
+      failedCheckpoint && !canResumeFailedCheckpoint,
+    ),
+  });
 }
