@@ -62,6 +62,7 @@ const PROTECTED_TEMPLATE_FILES = new Set([
   "src/app/api/integrations/route.ts",
   "e2e/smoke.spec.ts",
   "e2e/voiceforge-acceptance.ts",
+  "e2e/voiceforge-progress-reporter.ts",
 ]);
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx"] as const;

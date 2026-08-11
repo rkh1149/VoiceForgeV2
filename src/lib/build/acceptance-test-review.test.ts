@@ -245,6 +245,34 @@ describe("generated acceptance test review", () => {
     );
   });
 
+  it("defers locator wording uncertainty to the real browser journey", () => {
+    const { spec, architecture } = sharedApp();
+    const journey = synthesizeWorkflowAcceptancePlan(
+      spec,
+      architecture,
+    ).journeys[0];
+    const actionable = journey.steps.find(
+      (step) => step.kind === "action" || step.kind === "save",
+    )!;
+    const source = compliantTest(journey).replace(
+      `await page.getByRole("button", { name: ${JSON.stringify(actionable.accessibleName)} }).click();`,
+      'await page.getByRole("button", { name: "Save this item" }).click();',
+    );
+    const review = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: { "e2e/generated/chore-journey.spec.ts": source },
+    });
+
+    expect(review.blockingIssues.join(" ")).not.toContain(
+      "does not use the contracted control",
+    );
+    expect(review.warnings.join(" ")).toContain(
+      "locator wording is equivalent",
+    );
+    expect(review.warnings.join(" ")).toContain("actual Playwright result");
+  });
+
   it("defers an opaque helper implementation to the actual Playwright run", () => {
     const { spec, architecture } = sharedApp();
     const journey = synthesizeWorkflowAcceptancePlan(spec, architecture).journeys[0];

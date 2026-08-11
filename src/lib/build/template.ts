@@ -56,10 +56,13 @@ const PROTECTED_FILES = new Set([
   "src/app/api/integrations/route.ts", // locked platform integration endpoint (Stage 12A/12C)
   "e2e/smoke.spec.ts", // locked browser/accessibility smoke test
   "e2e/voiceforge-acceptance.ts", // locked contract-driven browser test helpers (Stage 14D)
+  "e2e/voiceforge-progress-reporter.ts", // locked streamed browser progress reporter
 ]);
 
 const RESUME_REFRESHED_TEMPLATE_FILES = [
   "e2e/voiceforge-acceptance.ts",
+  "e2e/voiceforge-progress-reporter.ts",
+  "playwright.config.ts",
 ] as const;
 
 const ALLOWED_EXTENSIONS = new Set([".ts", ".tsx"]);

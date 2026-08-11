@@ -37,6 +37,8 @@ describe("template loader", () => {
   it("refreshes the locked acceptance helper without replacing generated app source", async () => {
     const files = {
       "e2e/voiceforge-acceptance.ts": "old helper",
+      "e2e/voiceforge-progress-reporter.ts": "old reporter",
+      "playwright.config.ts": "old config",
       "src/app/page.tsx": "generated app source",
     };
 
@@ -46,10 +48,18 @@ describe("template loader", () => {
         name: "Lending Tracker",
         purpose: "Track shared equipment",
       }),
-    ).resolves.toEqual(["e2e/voiceforge-acceptance.ts"]);
+    ).resolves.toEqual([
+      "e2e/voiceforge-acceptance.ts",
+      "e2e/voiceforge-progress-reporter.ts",
+      "playwright.config.ts",
+    ]);
     expect(files["e2e/voiceforge-acceptance.ts"]).toContain(
       "export function acceptanceRunSuffix",
     );
+    expect(files["e2e/voiceforge-progress-reporter.ts"]).toContain(
+      "class VoiceForgeProgressReporter",
+    );
+    expect(files["playwright.config.ts"]).toContain("actionTimeout: 12_000");
     expect(files["src/app/page.tsx"]).toBe("generated app source");
   });
 });

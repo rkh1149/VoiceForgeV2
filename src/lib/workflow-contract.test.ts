@@ -553,6 +553,117 @@ describe("workflow contract layer", () => {
     );
   });
 
+  it("normalizes automatic game effects behind one concise user command", () => {
+    const spec = normalizeAppSpec({
+      ...personalInput,
+      appName: "Count to 20 Fun",
+      purpose: "Help a child practice counting objects from 1 to 20.",
+      screens: [
+        { name: "Welcome", description: "Start a counting round." },
+        {
+          name: "Counting Question",
+          description: "Answer five picture counting questions.",
+        },
+        {
+          name: "Results",
+          description: "Show the score and let the player play again.",
+        },
+      ],
+      features: ["Play a counting round", "Play again"],
+      dataToStore: [],
+      testPlan: ["Finish a round and play again with a reset score"],
+    });
+    spec.dataEntities = [];
+    spec.workflows = [
+      {
+        name: "Play again",
+        actor: "Player",
+        trigger: "The player presses Play again on Results.",
+        steps: [
+          "The app clears the prior round.",
+          "The app creates five new counting questions.",
+          "The player begins at question 1.",
+        ],
+        successOutcome: "Question 1 is visible with a score of 0 out of 5.",
+        failureStates: [],
+      },
+    ];
+    spec.acceptanceCriteria = [];
+    spec.testScenarios = [];
+
+    const supplied = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const contract = supplied.workflowContracts[0];
+    contract.start = {
+      route: "/",
+      screen: "Welcome",
+      preconditions: [],
+    };
+    const effectDescriptions = [
+      "The app clears the prior round.",
+      "The app creates five new counting questions.",
+      "The app shows the first new group of object pictures.",
+      "The player begins at question 1.",
+    ];
+    contract.controls = effectDescriptions.map((description, index) => ({
+      id: `effect-${index + 1}`,
+      kind: "button",
+      accessibleName: description,
+      route: "/results",
+      roles: ["owner"],
+      action: description,
+    }));
+    contract.steps = effectDescriptions.map((description, index) => ({
+      id: `play-again-step-${index + 1}`,
+      description,
+      kind: "action",
+      route: "/results",
+      controlId: `effect-${index + 1}`,
+      reads: [],
+      writes: [],
+      visibleResult:
+        index === effectDescriptions.length - 1
+          ? "Question 1 is visible with a score of 0 out of 5."
+          : "",
+    }));
+    contract.dependencies.platformServices = ["integrations"];
+
+    const normalized = ensureWorkflowContracts(spec, supplied);
+    const playAgain = normalized.workflowContracts[0];
+
+    expect(playAgain.start).toMatchObject({
+      route: "/results",
+      screen: "Results",
+    });
+    expect(playAgain.controls).toEqual([
+      expect.objectContaining({
+        kind: "button",
+        accessibleName: "Play again",
+        route: "/results",
+      }),
+    ]);
+    expect(playAgain.steps[0]).toMatchObject({
+      description: "Play again",
+      kind: "action",
+      route: "/results",
+      controlId: playAgain.controls[0].id,
+    });
+    expect(playAgain.steps.slice(1).map((step) => step.kind)).toEqual([
+      "automatic",
+      "automatic",
+      "result",
+      "automatic",
+    ]);
+    expect(
+      playAgain.steps.slice(1).every((step) => step.controlId === ""),
+    ).toBe(true);
+    expect(playAgain.dependencies.platformServices).not.toContain(
+      "integrations",
+    );
+  });
+
   it("reconstructs contracts when resuming an older architecture record", () => {
     const spec = bikeSpec();
     const architecture = createFallbackArchitecturePlan(

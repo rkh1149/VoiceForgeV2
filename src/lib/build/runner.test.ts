@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
+  E2E_PROGRESS_HEARTBEAT_MS,
   SANDBOX_BROWSER_PACKAGES,
   sandboxBrowserSetupPlan,
 } from "./runner";
@@ -38,5 +39,32 @@ describe("sandbox browser setup", () => {
     expect(source).toContain("acceptanceRunSuffix");
     expect(source).toContain("process.pid");
     expect(source).toContain("Date.now()");
+  });
+
+  it("fails deterministic browser actions quickly and emits progress markers", () => {
+    const config = readFileSync(
+      new URL(
+        "../../../templates/nextjs-base/playwright.config.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const reporter = readFileSync(
+      new URL(
+        "../../../templates/nextjs-base/e2e/voiceforge-progress-reporter.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(config).toContain("timeout: 120_000");
+    expect(config).toContain("actionTimeout: 12_000");
+    expect(config).toContain("timeout: 15_000");
+    expect(config).toContain("retries: 0");
+    expect(config).toContain("voiceforge-progress-reporter.ts");
+    expect(reporter).toContain("[voiceforge-e2e]");
+    expect(reporter).toContain("onTestBegin");
+    expect(reporter).toContain("onTestEnd");
+    expect(E2E_PROGRESS_HEARTBEAT_MS).toBe(15_000);
   });
 });

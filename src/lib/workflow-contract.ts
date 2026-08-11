@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { normalizeEntityKey } from "./platform/data";
 import { platformEntityFromSpec } from "./platform/spec-seeding";
-import type { AppSpec } from "./spec";
+import {
+  isExternalIntegrationRequirement,
+  type AppSpec,
+} from "./spec";
 
 export const WORKFLOW_CONTRACT_VERSION = 1 as const;
 
@@ -245,11 +248,14 @@ export function ensureWorkflowContracts<T extends WorkflowContractArchitecture>(
     supplied.length > 0
       ? supplied.map((contract) => normalizeSuppliedContract(contract, spec))
       : compileWorkflowContracts(spec, architecture);
+  const interactionSafeContracts = contracts.map((contract) =>
+    normalizeContractInteractionSemantics(contract, architecture),
+  );
 
   return {
     ...architecture,
     workflowContractVersion: WORKFLOW_CONTRACT_VERSION,
-    workflowContracts: assignSourcesAndHandoffs(contracts, spec),
+    workflowContracts: assignSourcesAndHandoffs(interactionSafeContracts, spec),
   };
 }
 
@@ -359,6 +365,7 @@ export function compileWorkflowContracts(
           workflow,
           requiredData,
           architecture,
+          spec,
         ),
       },
       source: {
@@ -797,20 +804,279 @@ function normalizeSuppliedContract(
     ),
     dependencies: {
       workflowIds: unique(contract.dependencies.workflowIds.map(slugify)),
-      platformServices: unique(contract.dependencies.platformServices),
+      platformServices: unique(contract.dependencies.platformServices).filter(
+        (service) =>
+          service !== "integrations" ||
+          spec.integrations.some(isExternalIntegrationRequirement),
+      ),
     },
   };
+}
+
+function normalizeContractInteractionSemantics(
+  contract: WorkflowContract,
+  architecture: WorkflowContractArchitecture,
+): WorkflowContract {
+  let steps = contract.steps.map((step) => {
+    const kind = normalizedStepKind(step);
+    return {
+      ...step,
+      kind,
+      controlId:
+        kind === "automatic" || kind === "result" ? "" : step.controlId,
+    };
+  });
+  const actionableControlIds = new Set(
+    steps.map((step) => step.controlId).filter(Boolean),
+  );
+  let controls = contract.controls
+    .filter(
+      (control) =>
+        actionableControlIds.has(control.id) ||
+        isUserGestureDescription(control.accessibleName) ||
+        isUserGestureDescription(control.action),
+    )
+    .map((control) => ({
+      ...control,
+      accessibleName: conciseControlLabel(control, contract),
+    }));
+
+  const hasUserGestureStep = steps.some((step) =>
+    ["navigate", "input", "action", "save"].includes(step.kind),
+  );
+  const needsCommandTrigger =
+    contract.trigger === "user_action" &&
+    !hasUserGestureStep &&
+    isCommandWorkflowName(contract.name);
+
+  let start = { ...contract.start };
+  if (needsCommandTrigger) {
+    const page = bestContractStartPage(contract, architecture.pageMap);
+    if (page) {
+      start = { ...start, route: page.route, screen: page.name };
+    }
+    let triggerControl = controls.find(
+      (control) =>
+        normalizeText(control.accessibleName) === normalizeText(contract.name),
+    );
+    if (!triggerControl) {
+      triggerControl = {
+        id: uniqueControlId(`${contract.id}-trigger`, controls),
+        kind: "button",
+        accessibleName: contract.name,
+        route: start.route,
+        roles: [...contract.actor.roles],
+        action: contract.name,
+      };
+      controls = [triggerControl, ...controls];
+    }
+    const triggerStepId = uniqueStepId(`${contract.id}-trigger`, steps);
+    steps = [
+      {
+        id: triggerStepId,
+        description: contract.name,
+        kind: "action",
+        route: triggerControl.route,
+        controlId: triggerControl.id,
+        reads: [],
+        writes: [],
+        visibleResult: "",
+      },
+      ...steps,
+    ];
+  }
+
+  if (contract.trigger === "user_action" && controls.length === 0) {
+    controls = [createDiscoverabilityControl({ ...contract, start, steps })];
+  }
+
+  const validControlIds = new Set(controls.map((control) => control.id));
+  steps = steps.map((step) => ({
+    ...step,
+    controlId:
+      step.kind === "automatic" || step.kind === "result"
+        ? ""
+        : validControlIds.has(step.controlId)
+          ? step.controlId
+          : bestControlForStep(step, controls)?.id ?? "",
+  }));
+
+  return {
+    ...contract,
+    start,
+    controls: uniqueBy(controls, (control) => control.id),
+    steps,
+  };
+}
+
+function normalizedStepKind(
+  step: WorkflowContract["steps"][number],
+): WorkflowContract["steps"][number]["kind"] {
+  if (step.kind === "automatic" || step.kind === "result") return step.kind;
+  const description = step.description.trim();
+  if (isVisibleOutcomeDescription(description)) return "result";
+  if (isAutomaticEffectDescription(description)) return "automatic";
+  if (!isUserGestureDescription(description)) return step.kind;
+  const lower = description.toLowerCase();
+  if (/\b(enter|type|write|choose|select|pick|upload|attach|check|uncheck|toggle|drag|drop|change .*date)\b/.test(lower)) {
+    return "input";
+  }
+  if (/^\s*(?:the\s+)?(?:user|player|rider|member|owner|editor)?\s*(?:open|go to|navigate|visit)\b/i.test(description)) {
+    return "navigate";
+  }
+  return step.kind === "save" || step.writes.length > 0 ? "save" : "action";
+}
+
+function isUserGestureDescription(value: string): boolean {
+  const normalized = value.trim();
+  if (/^\s*(?:the\s+)?(?:app|application|system|game|screen|page)\b/i.test(normalized)) {
+    return false;
+  }
+  if (isAutomaticEffectDescription(normalized) || isVisibleOutcomeDescription(normalized)) {
+    return false;
+  }
+  return /\b(click|tap|press|enter|type|write|choose|select|pick|upload|attach|check|uncheck|toggle|drag|drop|open|go to|navigate|visit|add|create|edit|update|delete|remove|save|submit|start|stop|play|retry|restart|finish|answer|calculate|export|download|search|filter|sort)\b/i.test(
+    normalized,
+  );
+}
+
+function isAutomaticEffectDescription(value: string): boolean {
+  return (
+    /^\s*(?:the\s+)?(?:app|application|system|game|screen|page)\s+(?:automatically\s+)?(?:checks?|clears?|compares?|creates?|generates?|loads?|calculates?|moves?|navigates?|persists?|resets?|redirects?|advances?|saves?|starts?|prepares?|stores?|updates?|records?|chooses?|selects?|validates?)\b/i.test(
+      value,
+    ) ||
+    /^\s*(?:the\s+)?(?:user|player|rider|member)\s+(?:automatically\s+)?(?:begins?|arrives?|returns?|lands?|is taken|is redirected)\b/i.test(
+      value,
+    )
+  );
+}
+
+function isVisibleOutcomeDescription(value: string): boolean {
+  return (
+    /^\s*(?:the\s+)?(?:app|application|system|game|screen|page)\s+(?:shows?|displays?|renders?|presents?|provides?|reveals?)\b/i.test(
+      value,
+    ) ||
+    /^\s*(?:the\s+)?(?:user|player|rider|member)\s+(?:sees?|receives?|is shown)\b/i.test(
+      value,
+    ) ||
+    /\b(?:appears?|is shown|is displayed|is visible|becomes visible|shows? (?:the )?(?:result|score|feedback|message))\b/i.test(
+      value,
+    )
+  );
+}
+
+function isCommandWorkflowName(value: string): boolean {
+  return /^\s*(?:add|answer|calculate|change|choose|create|delete|download|edit|export|finish|mark|move|play|record|remove|restart|retry|save|search|select|start|stop|submit|track|try|update|upload)\b/i.test(
+    value,
+  );
+}
+
+function conciseControlLabel(
+  control: WorkflowContract["controls"][number],
+  contract: WorkflowContract,
+): string {
+  const label = control.accessibleName.trim();
+  if (
+    isAutomaticEffectDescription(label) ||
+    isVisibleOutcomeDescription(label) ||
+    label.length > 80 ||
+    label.split(/\s+/).length > 12
+  ) {
+    return isCommandWorkflowName(contract.name)
+      ? contract.name
+      : `Open ${contract.start.screen}`;
+  }
+  return label;
+}
+
+function bestContractStartPage(
+  contract: WorkflowContract,
+  pages: WorkflowContractArchitecture["pageMap"],
+): WorkflowContractArchitecture["pageMap"][number] | undefined {
+  const controlRoutes = uniqueStrings(
+    contract.controls.map((control) => control.route),
+  );
+  if (controlRoutes.length === 1) {
+    const controlPage = pages.find((page) => page.route === controlRoutes[0]);
+    if (controlPage) return controlPage;
+  }
+  const exact = pages.filter((page) =>
+    page.workflows.some(
+      (workflow) => normalizeText(workflow) === normalizeText(contract.name),
+    ),
+  );
+  const candidates = exact.length > 0 ? exact : pages;
+  const contractText = [
+    contract.name,
+    ...contract.steps.map((step) => step.description),
+  ].join(" ");
+  return candidates.reduce<WorkflowContractArchitecture["pageMap"][number] | undefined>(
+    (best, page) => {
+      if (!best) return page;
+      const pageScore = overlapScore(
+        contractText,
+        `${page.name} ${page.purpose}`,
+      );
+      const bestScore = overlapScore(
+        contractText,
+        `${best.name} ${best.purpose}`,
+      );
+      return pageScore > bestScore ? page : best;
+    },
+    undefined,
+  );
+}
+
+function bestControlForStep(
+  step: WorkflowContract["steps"][number],
+  controls: WorkflowContract["controls"],
+): WorkflowContract["controls"][number] | undefined {
+  return controls
+    .map((control) => ({
+      control,
+      score: overlapScore(
+        step.description,
+        `${control.accessibleName} ${control.action}`,
+      ),
+    }))
+    .sort((left, right) => right.score - left.score)
+    .find((candidate) => candidate.score > 0)?.control;
+}
+
+function uniqueControlId(
+  base: string,
+  controls: WorkflowContract["controls"],
+): string {
+  const ids = new Set(controls.map((control) => control.id));
+  let candidate = slugify(base);
+  let suffix = 2;
+  while (ids.has(candidate)) candidate = `${slugify(base)}-${suffix++}`;
+  return candidate;
+}
+
+function uniqueStepId(
+  base: string,
+  steps: WorkflowContract["steps"],
+): string {
+  const ids = new Set(steps.map((step) => step.id));
+  let candidate = slugify(base);
+  let suffix = 2;
+  while (ids.has(candidate)) candidate = `${slugify(base)}-${suffix++}`;
+  return candidate;
 }
 
 function createDiscoverabilityControl(
   contract: WorkflowContract,
 ): WorkflowContract["controls"][number] {
-  const label = /^(?:review|view|open|show|see)\b/i.test(contract.name)
+  const command = isCommandWorkflowName(contract.name);
+  const label = command
     ? contract.name
-    : `Open ${contract.name}`;
+    : /^(?:review|view|open|show|see)\b/i.test(contract.name)
+      ? contract.name
+      : `Open ${contract.name}`;
   return {
     id: `${slugify(contract.id || contract.name)}-discoverability-control`,
-    kind: "link",
+    kind: command ? "button" : "link",
     accessibleName: label,
     route: contract.start.route,
     roles: [...contract.actor.roles],
@@ -1160,6 +1426,7 @@ function inferPlatformServices(
   workflow: AppSpec["workflows"][number],
   requiredData: WorkflowContract["requiredData"],
   architecture: WorkflowContractArchitecture,
+  spec: AppSpec,
 ): WorkflowContract["dependencies"]["platformServices"] {
   const text = workflowText(workflow).toLowerCase();
   const requested = new Set<z.infer<typeof workflowPlatformServiceSchema>>();
@@ -1173,7 +1440,12 @@ function inferPlatformServices(
     );
     if (usesPlatformData) requested.add("data");
   }
-  if (/\b(map|route|place|geocode|elevation)\b/.test(text)) requested.add("integrations");
+  if (
+    spec.integrations.some(isExternalIntegrationRequirement) &&
+    /\b(map|route|place|geocode|elevation)\b/.test(text)
+  ) {
+    requested.add("integrations");
+  }
   if (/\b(gps|location|track|tracking|gpx)\b/.test(text)) requested.add("device_location");
   if (/\b(file|photo|image|attachment|upload|download)\b/.test(text)) requested.add("files");
   if (/\b(remind|notification|notify|scheduled)\b/.test(text)) requested.add("jobs");

@@ -305,6 +305,41 @@ describe("phase-aware debug", () => {
     );
   });
 
+  it("keeps repeated Stage 14D static repairs inside acceptance tests", () => {
+    const filesWithBrowserTest = {
+      ...files,
+      "e2e/generated/tasks.spec.ts": "test('tasks', async () => {});",
+      "e2e/generated/results.spec.ts": "test('results', async () => {});",
+      "e2e/voiceforge-acceptance.ts":
+        "export function workflowStepTitle() {}",
+    };
+    const plan = createPhaseAwareDebugPlan({
+      spec,
+      files: filesWithBrowserTest,
+      failedStep: "review_gate",
+      errorOutput:
+        'acceptance_test:step Journey journey-play-again cannot confirm the contracted accessible name "Play again".',
+      generatedPhases: phases,
+      forceFullScope: true,
+      escalationReason: "The static locator finding was unchanged.",
+    });
+
+    expect(plan.scope.label).toBe("escalated acceptance-test scope");
+    expect(plan.scope.visibleFilePaths).toContain(
+      "e2e/generated/tasks.spec.ts",
+    );
+    expect(plan.scope.visibleFilePaths).toContain(
+      "e2e/generated/results.spec.ts",
+    );
+    expect(plan.scope.visibleFilePaths).not.toContain("src/app/tasks/page.tsx");
+    expect(plan.scope.visibleFilePaths).not.toContain(
+      "src/components/TaskForm.tsx",
+    );
+    expect(plan.context.instructions.join(" ")).toContain(
+      "do not rewrite application pages or components",
+    );
+  });
+
   it("routes interface-readiness failures to a focused route and control repair", () => {
     const plan = createPhaseAwareDebugPlan({
       spec,

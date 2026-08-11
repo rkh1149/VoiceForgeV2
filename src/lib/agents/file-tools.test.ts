@@ -48,6 +48,9 @@ describe("agent file tool path policy", () => {
     );
     expect(isAgentWritablePath("e2e/smoke.spec.ts").ok).toBe(false);
     expect(isAgentWritablePath("e2e/voiceforge-acceptance.ts").ok).toBe(false);
+    expect(
+      isAgentWritablePath("e2e/voiceforge-progress-reporter.ts").ok,
+    ).toBe(false);
     expect(isAgentWritablePath("src/app/api/custom/route.ts").ok).toBe(false);
     expect(isAgentWritablePath("package.json").ok).toBe(false);
     expect(isAgentWritablePath("../src/app/page.tsx").ok).toBe(false);

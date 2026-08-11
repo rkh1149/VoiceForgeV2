@@ -243,18 +243,13 @@ function reviewJourney(
       !containsLooseText(window, step.accessibleName) &&
       step.controlKind !== "drag_drop"
     ) {
-      if (hasOpaqueBrowserHelperCall(window)) {
-        warnings.push(
-          browserArbitrationWarning(
-            `Journey ${journey.id} uses a helper for ${step.contractStepId}, so static review cannot confirm the contracted accessible name "${step.accessibleName}"`,
-          ),
-        );
-        return true;
-      }
-      issues.push(
-        `acceptance_test:step Journey ${journey.id} does not use the contracted control "${step.accessibleName}" for ${step.contractStepId}.`,
+      warnings.push(
+        browserArbitrationWarning(
+          hasOpaqueBrowserHelperCall(window)
+            ? `Journey ${journey.id} uses a helper for ${step.contractStepId}, so static review cannot confirm the contracted accessible name "${step.accessibleName}"`
+            : `Journey ${journey.id} performs ${step.contractStepId}, but static review cannot prove that its locator wording is equivalent to the contracted accessible name "${step.accessibleName}"`,
+        ),
       );
-      return false;
     }
     return true;
   });

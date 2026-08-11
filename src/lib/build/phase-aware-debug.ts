@@ -386,7 +386,9 @@ export function selectDebugFileScope(input: {
     addRelatedImportNeighbors(selected, input.files);
   }
 
-  const scopedPaths = input.forceFullScope
+  const keepAcceptanceRepairTestOnly =
+    input.forceFullScope && acceptanceReviewFailure;
+  const scopedPaths = input.forceFullScope && !keepAcceptanceRepairTestOnly
     ? allPaths
     : [...selected]
         .filter((path) => input.files[path] !== undefined)
@@ -402,11 +404,13 @@ export function selectDebugFileScope(input: {
   const limited = visibleFilePaths.length < allPaths.length;
 
   return {
-    label: input.forceFullScope
-      ? "escalated full workflow scope"
-      : limited
-        ? "focused debug scope"
-        : "full generated-app scope",
+    label: keepAcceptanceRepairTestOnly
+      ? "escalated acceptance-test scope"
+      : input.forceFullScope
+        ? "escalated full workflow scope"
+        : limited
+          ? "focused debug scope"
+          : "full generated-app scope",
     reason:
       input.forceFullScope && input.escalationReason
         ? input.escalationReason
@@ -888,7 +892,15 @@ function instructionsFor(
       "For unit/workflow failures, inspect the failing test and source together; avoid only weakening assertions when user-visible behavior is broken.",
     );
   }
-  if (escalation.forceFullScope) {
+  if (
+    escalation.forceFullScope &&
+    responsiblePhase.id === "browser-acceptance-tests"
+  ) {
+    common.push(
+      `This debug round is escalated across the generated acceptance-test suite because earlier focused repairs did not make reliable progress${escalation.escalationReason ? `: ${escalation.escalationReason}` : "."}`,
+      "Inspect the complete contracted Playwright journey and shared acceptance helpers, but do not rewrite application pages or components to satisfy uncertain static locator wording. The running browser test will arbitrate locator semantics.",
+    );
+  } else if (escalation.forceFullScope) {
     common.push(
       `This debug round is deliberately escalated to the full generated app because earlier focused repairs did not make reliable progress${escalation.escalationReason ? `: ${escalation.escalationReason}` : "."}`,
       "Trace the complete user workflow from form state through validation and persistence to refreshed UI before editing. Reconsider the root cause instead of repeating the prior test-only strategy.",

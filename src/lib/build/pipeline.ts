@@ -1327,7 +1327,12 @@ async function runTestGauntlet(input: {
       const result =
         step === "dependencies"
           ? runDependencySecurityStep(input.files)
-          : await runner.run(step);
+          : await runner.run(step, {
+              onProgress:
+                step === "e2e"
+                  ? (progress) => log(input.buildRunId, progress.message)
+                  : undefined,
+            });
 
       await db.insert(testResults).values({
         buildRunId: input.buildRunId,

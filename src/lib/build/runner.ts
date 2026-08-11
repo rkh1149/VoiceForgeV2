@@ -2,6 +2,7 @@ import { spawn } from "child_process";
 import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
+import { Writable } from "stream";
 import {
   createFailureFingerprint,
   type FailureFingerprint,
@@ -32,11 +33,21 @@ export type StepResult = {
   failureFingerprint?: FailureFingerprint;
 };
 
+export type StepProgress = {
+  step: StepName;
+  elapsedMs: number;
+  message: string;
+};
+
+export type RunStepOptions = {
+  onProgress?: (progress: StepProgress) => void | Promise<void>;
+};
+
 export type Runner = {
   kind: "local" | "sandbox";
   writeFiles(files: FileMap): Promise<void>;
   deleteFiles(paths: string[]): Promise<void>;
-  run(step: StepName): Promise<StepResult>;
+  run(step: StepName, options?: RunStepOptions): Promise<StepResult>;
   dispose(): Promise<void>;
 };
 
@@ -46,6 +57,71 @@ type RunnerOptions = {
 
 const OUTPUT_TAIL = 8000;
 const DIAGNOSTIC_CAPTURE_LIMIT = 1024 * 1024;
+export const E2E_PROGRESS_HEARTBEAT_MS = 15_000;
+const E2E_PROGRESS_PREFIX = "[voiceforge-e2e]";
+
+type StepProgressTracker = {
+  observe(chunk: string): void;
+  note(message: string): void;
+  stop(): Promise<void>;
+};
+
+function createStepProgressTracker(input: {
+  step: StepName;
+  startedAt: number;
+  onProgress?: RunStepOptions["onProgress"];
+}): StepProgressTracker {
+  let partialLine = "";
+  let latestActivity = "Browser tests are active.";
+  let pending = Promise.resolve();
+  const emit = (message: string) => {
+    if (!input.onProgress) return;
+    const progress: StepProgress = {
+      step: input.step,
+      elapsedMs: Date.now() - input.startedAt,
+      message,
+    };
+    pending = pending
+      .then(() => input.onProgress?.(progress))
+      .then(() => undefined)
+      .catch(() => undefined);
+  };
+  const processLine = (line: string) => {
+    const marker = line.indexOf(E2E_PROGRESS_PREFIX);
+    if (marker < 0) return;
+    latestActivity = line.slice(marker + E2E_PROGRESS_PREFIX.length).trim();
+    if (latestActivity) emit(`E2E progress: ${latestActivity}`);
+  };
+  const heartbeat =
+    input.step === "e2e" && input.onProgress
+      ? setInterval(() => {
+          const seconds = Math.max(
+            1,
+            Math.round((Date.now() - input.startedAt) / 1_000),
+          );
+          emit(`E2E still running (${seconds}s): ${latestActivity}`);
+        }, E2E_PROGRESS_HEARTBEAT_MS)
+      : null;
+  heartbeat?.unref();
+
+  return {
+    observe(chunk: string) {
+      if (input.step !== "e2e") return;
+      const lines = `${partialLine}${chunk}`.split(/\r?\n/);
+      partialLine = lines.pop() ?? "";
+      lines.forEach(processLine);
+    },
+    note(message: string) {
+      latestActivity = message;
+      emit(`E2E progress: ${message}`);
+    },
+    async stop() {
+      if (heartbeat) clearInterval(heartbeat);
+      if (partialLine) processLine(partialLine);
+      await pending;
+    },
+  };
+}
 
 export const SANDBOX_BROWSER_PACKAGES = [
   "alsa-lib",
@@ -144,9 +220,15 @@ async function createLocalRunner(
         await fs.rm(path.join(dir, rel), { force: true });
       }
     },
-    run(step: StepName): Promise<StepResult> {
+    run(step: StepName, runOptions: RunStepOptions = {}): Promise<StepResult> {
       const { cmd, args, timeoutMs } = STEPS[step];
       const started = Date.now();
+      const progress = createStepProgressTracker({
+        step,
+        startedAt: started,
+        onProgress: runOptions.onProgress,
+      });
+      if (step === "e2e") progress.note("Preparing the browser test runtime.");
 
       return new Promise((resolve) => {
         const child = spawn(cmd, args, {
@@ -166,7 +248,9 @@ async function createLocalRunner(
 
         let output = "";
         const append = (chunk: Buffer) => {
-          output = (output + chunk.toString()).slice(-DIAGNOSTIC_CAPTURE_LIMIT);
+          const text = chunk.toString();
+          output = (output + text).slice(-DIAGNOSTIC_CAPTURE_LIMIT);
+          progress.observe(text);
         };
         child.stdout.on("data", append);
         child.stderr.on("data", append);
@@ -176,8 +260,9 @@ async function createLocalRunner(
           output += `\n[voiceforge-v2] step "${step}" timed out after ${timeoutMs / 1000}s`;
         }, timeoutMs);
 
-        child.on("close", (code) => {
+        child.on("close", async (code) => {
           clearTimeout(timer);
+          await progress.stop();
           const ok = code === 0;
           resolve({
             step,
@@ -189,8 +274,9 @@ async function createLocalRunner(
               : createFailureFingerprint(step, output),
           });
         });
-        child.on("error", (err) => {
+        child.on("error", async (err) => {
           clearTimeout(timer);
+          await progress.stop();
           resolve({
             step,
             ok: false,
@@ -287,15 +373,27 @@ async function createSandboxRunner(options: RunnerOptions): Promise<Runner> {
         await sandbox.runCommand("rm", ["-f", ...paths]);
       }
     },
-    async run(step: StepName): Promise<StepResult> {
-      const { cmd, args } = STEPS[step];
+    async run(
+      step: StepName,
+      runOptions: RunStepOptions = {},
+    ): Promise<StepResult> {
+      const { cmd, args, timeoutMs } = STEPS[step];
       const started = Date.now();
+      const progress = createStepProgressTracker({
+        step,
+        startedAt: started,
+        onProgress: runOptions.onProgress,
+      });
+      if (step === "e2e") {
+        progress.note("Preparing the hosted browser test runtime.");
+      }
       try {
         const browserSetup =
           step === "e2e"
             ? await prepareBrowser()
             : { ok: true, output: "" };
         if (!browserSetup.ok) {
+          await progress.stop();
           return {
             step,
             ok: false,
@@ -308,21 +406,49 @@ async function createSandboxRunner(options: RunnerOptions): Promise<Runner> {
           };
         }
 
-        const result = await sandbox.runCommand("env", [
-          "CI=true",
-          "NEXT_TELEMETRY_DISABLED=1",
-          "VOICEFORGE_DATA_LOCAL_FALLBACK=1",
-          ...Object.entries(options.env ?? {}).map(
-            ([key, value]) => `${key}=${value}`,
-          ),
-          cmd,
-          ...args,
-        ]);
-        const output = [
-          browserSetup.output,
-          await result.stdout(),
-          await result.stderr(),
-        ]
+        if (step === "e2e") {
+          progress.note("Browser runtime is ready; starting Playwright.");
+        }
+
+        let streamedOutput = "";
+        const appendOutput = (chunk: Buffer | string) => {
+          const text = chunk.toString();
+          streamedOutput = (streamedOutput + text).slice(
+            -DIAGNOSTIC_CAPTURE_LIMIT,
+          );
+          progress.observe(text);
+        };
+        const outputStream = () =>
+          new Writable({
+            write(chunk, _encoding, callback) {
+              appendOutput(chunk as Buffer);
+              callback();
+            },
+          });
+        const result = await sandbox.runCommand({
+          cmd: "env",
+          args: [
+            "CI=true",
+            "NEXT_TELEMETRY_DISABLED=1",
+            "VOICEFORGE_DATA_LOCAL_FALLBACK=1",
+            ...Object.entries(options.env ?? {}).map(
+              ([key, value]) => `${key}=${value}`,
+            ),
+            cmd,
+            ...args,
+          ],
+          stdout: outputStream(),
+          stderr: outputStream(),
+          timeoutMs,
+        });
+        if (!streamedOutput) {
+          streamedOutput = [await result.stdout(), await result.stderr()]
+            .filter(Boolean)
+            .join("\n");
+          progress.observe(streamedOutput);
+        }
+        await progress.stop();
+        const output = [browserSetup.output, streamedOutput]
           .filter(Boolean)
           .join("\n");
         const ok = result.exitCode === 0;
@@ -336,6 +462,7 @@ async function createSandboxRunner(options: RunnerOptions): Promise<Runner> {
             : createFailureFingerprint(step, output),
         };
       } catch (err) {
+        await progress.stop();
         const output = `Sandbox command failed: ${err instanceof Error ? err.message : String(err)}`;
         return {
           step,
