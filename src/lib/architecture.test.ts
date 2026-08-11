@@ -4,7 +4,11 @@ import {
   validateArchitecturePlan,
   type ArchitecturePlan,
 } from "./architecture";
-import { computeSpecComplexity, normalizeAppSpec } from "./spec";
+import {
+  computeSpecComplexity,
+  normalizeAppSpec,
+  type AppSpec,
+} from "./spec";
 
 const personalSpecInput = {
   appName: "Reading Timer",
@@ -47,6 +51,112 @@ describe("architecture planning", () => {
     expect(plan.capabilityValidation.canBuildNow).toBe(true);
     expect(validation.canBuildNow).toBe(true);
     expect(validation.blockingIssues).toEqual([]);
+  });
+
+  it("keeps built-in no-save story content out of persistence services", () => {
+    const base = normalizeAppSpec({
+      ...personalSpecInput,
+      appName: "Story Sprout",
+      purpose: "Play short built-in choose-what-happens-next stories.",
+      screens: [
+        { name: "Story Garden", description: "Choose a story cover." },
+        { name: "Story Time", description: "Read and choose the next page." },
+        { name: "The End", description: "Finish or choose another story." },
+      ],
+      features: ["Choose a built-in story", "Start another story"],
+      dataToStore: [],
+      testPlan: ["Complete a story without saving child data"],
+    });
+    const spec: AppSpec = {
+      ...base,
+      dataEntities: [
+        {
+          name: "Story",
+          description: "A built-in illustrated story.",
+          ownership: "system",
+          fields: [
+            {
+              name: "title",
+              label: "Story title",
+              type: "text",
+              required: true,
+              validation: "Required",
+            },
+            {
+              name: "coverImage",
+              label: "Cover picture",
+              type: "image",
+              required: true,
+              validation: "Built in",
+            },
+          ],
+          relationships: [],
+        },
+      ],
+      workflows: [
+        {
+          name: "Choose and play a story",
+          actor: "Child",
+          trigger: "The child opens Story Sprout.",
+          steps: [
+            "Child sees large story cover pictures.",
+            "Child taps a story cover.",
+            "The first illustrated page appears on Story Time.",
+            "Child taps a choice to see the next page.",
+            "A cheerful ending appears on The End.",
+          ],
+          successOutcome: "The child completes a story.",
+          failureStates: [],
+        },
+        {
+          name: "Start another story",
+          actor: "Child",
+          trigger: "The child reaches a story ending.",
+          steps: [
+            "Child taps the Another story button.",
+            "The Story Garden screen appears.",
+            "Child selects a new story.",
+          ],
+          successOutcome: "A new story begins.",
+          failureStates: [],
+        },
+      ],
+    };
+
+    const plan = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const chooseStory = plan.workflowContracts[0];
+    const anotherStory = plan.workflowContracts[1];
+
+    expect(plan.dataModel).toEqual([
+      expect.objectContaining({ name: "Story", storage: "none" }),
+    ]);
+    expect(plan.platformServices.map((service) => service.service)).not.toContain(
+      "data",
+    );
+    expect(plan.dependencyProfile).not.toContain("platformData");
+    expect(plan.dependencyProfile).not.toContain("localStorage");
+    expect(chooseStory.expectedSaves).toEqual([]);
+    expect(anotherStory.expectedSaves).toEqual([]);
+    expect(chooseStory.start.route).toBe("/");
+    expect(chooseStory.steps.map((step) => step.route)).toContain("/story-time");
+    expect(
+      chooseStory.steps.find((step) => step.description.includes("taps a choice")),
+    ).toEqual(
+      expect.objectContaining({
+        kind: "action",
+        route: "/story-time",
+        writes: [],
+      }),
+    );
+    expect(chooseStory.dependencies.platformServices).toEqual([]);
+    expect(anotherStory.start.route).toBe("/the-end");
+    expect(anotherStory.steps.at(-1)?.route).toBe("/");
+    expect(anotherStory.steps.at(-1)).toEqual(
+      expect.objectContaining({ kind: "input", writes: [] }),
+    );
   });
 
   it("allows signed-in shared apps to use VoiceForge member roles", () => {

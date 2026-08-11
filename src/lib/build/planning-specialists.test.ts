@@ -60,6 +60,44 @@ describe("planning specialist reviews", () => {
     expect(reviews.every((item) => item.status === "passed")).toBe(true);
   });
 
+  it("accepts built-in system content with no persistence service", () => {
+    const base = normalizeAppSpec({
+      ...sharedSpecInput,
+      appName: "Story Sprout",
+      purpose: "Play built-in stories without saving child data.",
+      features: ["Choose a built-in story"],
+      dataToStore: [],
+      needsLogin: false,
+      sharingModel: "private",
+      testPlan: ["Open a story without saving progress"],
+    });
+    const spec: AppSpec = {
+      ...base,
+      dataEntities: [
+        {
+          name: "Story",
+          description: "Built-in story content.",
+          ownership: "system",
+          fields: [
+            {
+              name: "title",
+              label: "Title",
+              type: "text",
+              required: true,
+              validation: "Required",
+            },
+          ],
+          relationships: [],
+        },
+      ],
+    };
+    const architecture = buildPlan(spec);
+    const reviews = review(spec, architecture);
+
+    expect(architecture.dataModel[0]?.storage).toBe("none");
+    expect(reviews.every((item) => item.status === "passed")).toBe(true);
+  });
+
   it("blocks when the architecture omits approved data entities", () => {
     const spec = normalizeAppSpec(sharedSpecInput);
     const architecture = { ...buildPlan(spec), dataModel: [] };

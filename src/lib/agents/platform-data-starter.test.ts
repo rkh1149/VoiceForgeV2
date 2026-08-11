@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createFallbackArchitecturePlan } from "../architecture";
-import { computeSpecComplexity, normalizeAppSpec } from "../spec";
+import {
+  computeSpecComplexity,
+  normalizeAppSpec,
+  type AppSpec,
+} from "../spec";
 import {
   canUsePlatformDataStarter,
   generatePlatformDataStarterApp,
@@ -129,6 +133,51 @@ describe("platform data starter generator", () => {
         "fileExport",
       ]),
     );
+    expect(canUsePlatformDataStarter({ spec, architecture })).toBe(false);
+  });
+
+  it("does not turn a multi-screen built-in story into a CRUD app", () => {
+    const base = normalizeAppSpec({
+      ...sharedGroceryInput,
+      appName: "Story Sprout",
+      purpose: "Play built-in illustrated stories without saving progress.",
+      screens: [
+        { name: "Story Garden", description: "Choose a story." },
+        { name: "Story Time", description: "Play the story." },
+        { name: "The End", description: "Choose another story." },
+      ],
+      features: ["Choose a built-in story", "Start another story"],
+      dataToStore: [],
+      needsLogin: false,
+      sharingModel: "private",
+      testPlan: ["No child data is saved"],
+    });
+    const spec: AppSpec = {
+      ...base,
+      dataEntities: [
+        {
+          name: "Story",
+          description: "Built-in story content.",
+          ownership: "system",
+          fields: [
+            {
+              name: "title",
+              label: "Title",
+              type: "text",
+              required: true,
+              validation: "Required",
+            },
+          ],
+          relationships: [],
+        },
+      ],
+    };
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+
+    expect(architecture.dataModel[0]?.storage).toBe("none");
     expect(canUsePlatformDataStarter({ spec, architecture })).toBe(false);
   });
 

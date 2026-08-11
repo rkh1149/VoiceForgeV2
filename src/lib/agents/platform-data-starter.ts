@@ -1,7 +1,7 @@
 import type { ArchitecturePlan } from "../architecture";
 import type { FileMap } from "../build/template";
 import { platformEntityFromSpec } from "../platform/spec-seeding";
-import type { AppSpec } from "../spec";
+import { appHasPersistentData, type AppSpec } from "../spec";
 import type { FileOperation } from "./file-tools";
 import type { CodegenResult } from "./coder";
 
@@ -23,9 +23,11 @@ export function canUsePlatformDataStarter(input: {
     ) || hasExplicitRichUiRequest(input.spec);
   return (
     !needsRichStage10Ui &&
+    appHasPersistentData(input.spec) &&
     input.spec.fileRequirements.length === 0 &&
     input.spec.notifications.every((notification) => notification.channel === "none") &&
-    input.spec.dataEntities.length > 0 &&
+    input.spec.screens.length === 1 &&
+    input.spec.dataEntities.length === 1 &&
     input.architecture.dataModel.some((entity) => entity.storage === "platformData")
   );
 }

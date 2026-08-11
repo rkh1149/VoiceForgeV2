@@ -266,10 +266,15 @@ export function compileWorkflowContracts(
   const contracts = spec.workflows.map((workflow, workflowIndex) => {
     const id = uniqueWorkflowId(workflow.name, workflowIndex);
     const route = selectStartingPage(workflow, architecture.pageMap);
+    const stepPages = selectWorkflowStepPages(
+      workflow,
+      architecture.pageMap,
+      route,
+    );
     const operations = inferOperations(workflow);
     const requiredData = inferRequiredData(spec, architecture, workflow, operations);
     const roles = inferRoles(spec, workflow.actor, operations);
-    const controls = inferControls(id, route.route, roles, workflow.steps);
+    const controls = inferControls(id, roles, workflow.steps, stepPages);
     const storageByEntity = new Map(
       architecture.dataModel.map((entity) => [
         normalizeEntityKey(entity.name),
@@ -282,7 +287,11 @@ export function compileWorkflowContracts(
     const saveStepId = `${id}-step-${Math.max(1, workflow.steps.length)}`;
     const expectedSaves = saveOperation
       ? requiredData
-          .filter((entity) => entity.operations.includes(saveOperation))
+          .filter(
+            (entity) =>
+              entity.operations.includes(saveOperation) &&
+              isPersistentStorage(storageByEntity.get(entity.entityKey)),
+          )
           .map((entity) => ({
           stepId: saveStepId,
           operation: saveOperation,
@@ -299,14 +308,16 @@ export function compileWorkflowContracts(
     const writeKeys = expectedSaves.map((save) => save.entityKey);
     const readKeys = requiredData.map((entity) => entity.entityKey);
     const steps = workflow.steps.map((description, stepIndex) => {
-      const control = controls[stepIndex] ?? controls.at(-1);
+      const control = controls.find(
+        (candidate) => candidate.id === `${id}-control-${stepIndex + 1}`,
+      );
       const isLast = stepIndex === workflow.steps.length - 1;
       const kind = inferStepKind(description, isLast && expectedSaves.length > 0);
       return {
         id: `${id}-step-${stepIndex + 1}`,
         description,
         kind,
-        route: route.route,
+        route: stepPages[stepIndex]?.route ?? route.route,
         controlId: kind === "result" || kind === "automatic" ? "" : control?.id ?? "",
         reads: kind === "navigate" ? [] : readKeys,
         writes: kind === "save" ? writeKeys : [],
@@ -355,7 +366,7 @@ export function compileWorkflowContracts(
       success: {
         message: successMessage(workflow.successOutcome),
         visibleResult: workflow.successOutcome,
-        route: route.route,
+        route: steps.at(-1)?.route ?? route.route,
       },
       failureStates: workflow.failureStates,
       handoffs: [],
@@ -817,11 +828,32 @@ function normalizeContractInteractionSemantics(
   contract: WorkflowContract,
   architecture: WorkflowContractArchitecture,
 ): WorkflowContract {
+  const storageByEntity = new Map(
+    architecture.dataModel.map((entity) => [
+      normalizeEntityKey(entity.name),
+      entity.storage,
+    ]),
+  );
+  const persistentEntityKeys = new Set(
+    [...storageByEntity.entries()]
+      .filter(([, storage]) => isPersistentStorage(storage))
+      .map(([entityKey]) => entityKey),
+  );
+  const expectedSaves = contract.expectedSaves.filter((save) =>
+    persistentEntityKeys.has(save.entityKey),
+  );
+  const producedReferences = new Set(
+    expectedSaves.map((save) => save.producedReference),
+  );
   let steps = contract.steps.map((step) => {
-    const kind = normalizedStepKind(step);
+    const writes = step.writes.filter((entityKey) =>
+      persistentEntityKeys.has(entityKey),
+    );
+    const kind = normalizedStepKind({ ...step, writes });
     return {
       ...step,
       kind,
+      writes,
       controlId:
         kind === "automatic" || kind === "result" ? "" : step.controlId,
     };
@@ -906,17 +938,46 @@ function normalizeContractInteractionSemantics(
     start,
     controls: uniqueBy(controls, (control) => control.id),
     steps,
+    requiredData: contract.requiredData.map((data) => ({
+      ...data,
+      operations: persistentEntityKeys.has(data.entityKey)
+        ? data.operations
+        : unique([
+            "read" as const,
+            ...data.operations.filter(
+              (operation) => !WRITE_OPERATIONS.has(operation),
+            ),
+          ]),
+    })),
+    expectedSaves,
+    handoffs: contract.handoffs.filter((handoff) =>
+      producedReferences.has(handoff.produces),
+    ),
+    dependencies: {
+      ...contract.dependencies,
+      platformServices: contract.dependencies.platformServices.filter(
+        (service) =>
+          service !== "data" ||
+          [...storageByEntity.values()].some(
+            (storage) => storage === "platformData",
+          ),
+      ),
+    },
   };
 }
 
 function normalizedStepKind(
   step: WorkflowContract["steps"][number],
 ): WorkflowContract["steps"][number]["kind"] {
-  if (step.kind === "automatic" || step.kind === "result") return step.kind;
+  if (step.kind === "automatic") return step.kind;
   const description = step.description.trim();
-  if (isVisibleOutcomeDescription(description)) return "result";
+  if (step.kind === "result" && !isDirectUserGestureDescription(description)) {
+    return step.kind;
+  }
   if (isAutomaticEffectDescription(description)) return "automatic";
-  if (!isUserGestureDescription(description)) return step.kind;
+  const isUserGesture = isUserGestureDescription(description);
+  if (!isUserGesture && isVisibleOutcomeDescription(description)) return "result";
+  if (!isUserGesture) return step.kind;
   const lower = description.toLowerCase();
   if (/\b(enter|type|write|choose|select|pick|upload|attach|check|uncheck|toggle|drag|drop|change .*date)\b/.test(lower)) {
     return "input";
@@ -924,7 +985,13 @@ function normalizedStepKind(
   if (/^\s*(?:the\s+)?(?:user|player|rider|member|owner|editor)?\s*(?:open|go to|navigate|visit)\b/i.test(description)) {
     return "navigate";
   }
-  return step.kind === "save" || step.writes.length > 0 ? "save" : "action";
+  return step.writes.length > 0 ? "save" : "action";
+}
+
+function isDirectUserGestureDescription(value: string): boolean {
+  return /^\s*(?:the\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:may\s+)?(?:clicks?|taps?|presses?|enters?|types?|writes?|chooses?|selects?|picks?|uploads?|attaches?|checks?|unchecks?|toggles?|drags?|drops?|opens?|navigates?|visits?|adds?|creates?|edits?|updates?|deletes?|removes?|saves?|submits?|starts?|stops?|plays?|retries?|restarts?|finishes?|answers?|calculates?|exports?|downloads?|searches?|filters?|sorts?)\b/i.test(
+    value,
+  );
 }
 
 function isUserGestureDescription(value: string): boolean {
@@ -1276,13 +1343,22 @@ function inferRequiredData(
   const storageKeys = new Set(
     architecture.dataModel.map((entity) => normalizeEntityKey(entity.name)),
   );
+  const storageByKey = new Map(
+    architecture.dataModel.map((entity) => [
+      normalizeEntityKey(entity.name),
+      entity.storage,
+    ]),
+  );
   const requirements: WorkflowContract["requiredData"] = selected
     .filter((item) => storageKeys.has(item.platform.key))
     .map(({ entity, platform, score }) => ({
       entityName: entity.name,
       entityKey: platform.key,
       operations:
-        score === 0 || score >= maxScore - 1 ? operations : ["read"],
+        isPersistentStorage(storageByKey.get(platform.key)) &&
+        (score === 0 || score >= maxScore - 1)
+          ? operations
+          : ["read"],
       requiredFieldKeys: platform.fields
         .filter((field) => field.required)
         .map((field) => field.key),
@@ -1350,22 +1426,24 @@ function inferRoles(
 
 function inferControls(
   workflowId: string,
-  route: string,
   roles: WorkflowContractRole[],
   steps: string[],
+  stepPages: WorkflowContractArchitecture["pageMap"],
 ): WorkflowContract["controls"] {
-  const actionable = steps.filter(
-    (step) => !/^\s*(review|see|show|display|result|confirm)\b/i.test(step),
+  return steps.flatMap((step, index) =>
+    isUserGestureDescription(step)
+      ? [
+          {
+            id: `${workflowId}-control-${index + 1}`,
+            kind: inferControlKind(step),
+            accessibleName: controlLabel(step),
+            route: stepPages[index]?.route ?? stepPages[0]?.route ?? "/",
+            roles,
+            action: step,
+          } satisfies WorkflowContract["controls"][number],
+        ]
+      : [],
   );
-  const source = actionable.length > 0 ? actionable : steps;
-  return source.map((step, index) => ({
-    id: `${workflowId}-control-${index + 1}`,
-    kind: inferControlKind(step),
-    accessibleName: controlLabel(step),
-    route,
-    roles,
-    action: step,
-  }));
 }
 
 function inferControlKind(
@@ -1390,9 +1468,12 @@ function inferStepKind(
 ): WorkflowContract["steps"][number]["kind"] {
   if (shouldSave) return "save";
   const lower = step.toLowerCase();
+  if (!isUserGestureDescription(step)) {
+    if (isAutomaticEffectDescription(step)) return "automatic";
+    if (isVisibleOutcomeDescription(step)) return "result";
+  }
   if (/^\s*(open|go to|navigate)/.test(lower)) return "navigate";
   if (/enter|type|write|choose|select|pick|upload|date/.test(lower)) return "input";
-  if (/review|see|show|display|confirm/.test(lower)) return "result";
   return "action";
 }
 
@@ -1412,14 +1493,67 @@ function selectStartingPage(
     ),
   );
   const candidates = exact.length > 0 ? exact : pages;
+  const startText = workflowStartText(workflow);
   return candidates.reduce(
     (best, page) =>
-      overlapScore(workflowText(workflow), `${page.name} ${page.purpose}`) >
-      overlapScore(workflowText(workflow), `${best.name} ${best.purpose}`)
+      pageWorkflowScore(startText, page) > pageWorkflowScore(startText, best)
         ? page
         : best,
     candidates[0] ?? fallback,
   );
+}
+
+function selectWorkflowStepPages(
+  workflow: AppSpec["workflows"][number],
+  pages: WorkflowContractArchitecture["pageMap"],
+  startingPage: WorkflowContractArchitecture["pageMap"][number],
+): WorkflowContractArchitecture["pageMap"] {
+  let current = startingPage;
+  return workflow.steps.map((description) => {
+    const normalizedDescription = normalizeText(description);
+    const explicit = pages.find((page) =>
+      normalizedDescription.includes(normalizeText(page.name)),
+    );
+    if (explicit) {
+      current = explicit;
+      return current;
+    }
+    const best = pages.reduce(
+      (candidate, page) =>
+        pageWorkflowScore(description, page) >
+        pageWorkflowScore(description, candidate)
+          ? page
+          : candidate,
+      current,
+    );
+    const bestScore = pageWorkflowScore(description, best);
+    const currentScore = pageWorkflowScore(description, current);
+    if (best.route !== current.route && bestScore >= 2 && bestScore > currentScore) {
+      current = best;
+    }
+    return current;
+  });
+}
+
+function workflowStartText(workflow: AppSpec["workflows"][number]): string {
+  return [workflow.name, workflow.trigger, ...workflow.steps.slice(0, 2)].join(
+    " ",
+  );
+}
+
+function pageWorkflowScore(
+  text: string,
+  page: WorkflowContractArchitecture["pageMap"][number],
+): number {
+  const pageText = `${page.name} ${page.purpose}`;
+  let score = overlapScore(text, pageText);
+  if (
+    /\b(end|ending|finished|complete|completed)\b/i.test(text) &&
+    /\b(end|ending|finished|complete|completed|celebrat)/i.test(pageText)
+  ) {
+    score += 4;
+  }
+  return score;
 }
 
 function inferPlatformServices(
@@ -1447,7 +1581,12 @@ function inferPlatformServices(
     requested.add("integrations");
   }
   if (/\b(gps|location|track|tracking|gpx)\b/.test(text)) requested.add("device_location");
-  if (/\b(file|photo|image|attachment|upload|download)\b/.test(text)) requested.add("files");
+  if (
+    spec.fileRequirements.length > 0 &&
+    /\b(file|photo|image|attachment|upload|download)\b/.test(text)
+  ) {
+    requested.add("files");
+  }
   if (/\b(remind|notification|notify|scheduled)\b/.test(text)) requested.add("jobs");
   if (/\b(email)\b/.test(text)) requested.add("email");
   if (/\b(search|filter|sort|find)\b/.test(text)) requested.add("search");
@@ -1484,6 +1623,12 @@ function persistentStorage(
   if (storage === "platformData") return "platformData";
   if (storage === "localStorage") return "localStorage";
   return sharingModel === "private" ? "localStorage" : "platformData";
+}
+
+function isPersistentStorage(
+  storage: WorkflowContractArchitecture["dataModel"][number]["storage"] | undefined,
+): storage is "localStorage" | "platformData" {
+  return storage === "localStorage" || storage === "platformData";
 }
 
 function canAnyRoleWrite(

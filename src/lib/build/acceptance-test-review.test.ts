@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createFallbackArchitecturePlan } from "../architecture";
-import { computeSpecComplexity } from "../spec";
+import {
+  computeSpecComplexity,
+  normalizeAppSpec,
+  type AppSpec,
+} from "../spec";
 import { GOLDEN_REGRESSION_SPECS } from "./golden-regression-specs";
 import { analyzeGeneratedAcceptanceTests } from "./acceptance-test-review";
 import {
@@ -17,6 +21,69 @@ function sharedApp() {
   const spec = GOLDEN_REGRESSION_SPECS.find(
     (golden) => golden.id === "shared-platform-data",
   )!.spec;
+  const architecture = createFallbackArchitecturePlan(
+    spec,
+    computeSpecComplexity(spec),
+  );
+  return { spec, architecture };
+}
+
+function builtInStoryApp() {
+  const base = normalizeAppSpec({
+    appName: "Story Sprout",
+    purpose: "Play a built-in illustrated story without saving progress.",
+    targetUsers: "A young child",
+    screens: [
+      { name: "Story Garden", description: "Choose a built-in story cover." },
+    ],
+    features: ["Choose a story"],
+    dataToStore: [],
+    needsLogin: false,
+    sharingModel: "private" as const,
+    aiFeatures: [],
+    testPlan: ["A story cover opens its illustrated first page"],
+    deploymentNotes: "",
+  });
+  const spec: AppSpec = {
+    ...base,
+    dataEntities: [
+      {
+        name: "Story",
+        description: "A built-in illustrated story.",
+        ownership: "system",
+        fields: [
+          {
+            name: "title",
+            label: "Story title",
+            type: "text",
+            required: true,
+            validation: "Required",
+          },
+          {
+            name: "coverImage",
+            label: "Cover picture",
+            type: "image",
+            required: true,
+            validation: "Built in",
+          },
+        ],
+        relationships: [],
+      },
+    ],
+    workflows: [
+      {
+        name: "Choose a story",
+        actor: "Child",
+        trigger: "The child opens Story Sprout.",
+        steps: [
+          "Child taps a story cover.",
+          "The illustrated first page appears.",
+        ],
+        successOutcome: "The built-in story is ready to play.",
+        failureStates: [],
+      },
+    ],
+  };
   const architecture = createFallbackArchitecturePlan(
     spec,
     computeSpecComplexity(spec),
@@ -110,6 +177,26 @@ describe("generated acceptance test review", () => {
     );
     expect(review.summary.roleScenariosVerified).toBe(
       review.summary.roleScenariosRequired,
+    );
+  });
+
+  it("does not require an upload for a read-only built-in illustration", () => {
+    const { spec, architecture } = builtInStoryApp();
+    const plan = synthesizeWorkflowAcceptancePlan(spec, architecture);
+    const journey = plan.journeys[0];
+    const review = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: {
+        "e2e/generated/story-journey.spec.ts": compliantTest(journey),
+      },
+    });
+
+    expect(journey.fixtures.some((fixture) => fixture.type === "image")).toBe(
+      true,
+    );
+    expect(review.blockingIssues.join(" ")).not.toContain(
+      "includes a file/image workflow",
     );
   });
 

@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+  appHasPersistentData,
+  appNeedsServerData,
   isExternalIntegrationRequirement,
   type AppSpec,
   type ComplexityResult,
@@ -145,6 +147,7 @@ export function createFallbackArchitecturePlan(
   const platformServices = inferPlatformServices(spec);
   const blockingIssues = blockingIssuesForServices(platformServices);
   const needsFuturePlatform = blockingIssues.length > 0;
+  const hasPersistentData = appHasPersistentData(spec);
 
   const plan: ArchitecturePlan = {
     summary: `${spec.appName} is planned as a ${spec.capabilityTier} app with ${spec.screens.length} screen(s), ${spec.dataEntities.length} data entity/entities, and ${spec.workflows.length} workflow(s).`,
@@ -168,7 +171,9 @@ export function createFallbackArchitecturePlan(
     dataModel: spec.dataEntities.map((entity) => ({
       name: entity.name,
       storage:
-        entity.ownership === "per_user" && !needsServerData(spec)
+        entity.ownership === "system" && !hasPersistentData
+          ? "none"
+          : entity.ownership === "per_user" && !appNeedsServerData(spec)
           ? "localStorage"
           : "platformData",
       fields: entity.fields.map((field) => `${field.name}:${field.type}`),
@@ -181,7 +186,7 @@ export function createFallbackArchitecturePlan(
       role: rule.role,
       enforcement: needsGeneratedAppUsers(spec)
         ? "serverRequired"
-        : needsServerData(spec)
+        : appNeedsServerData(spec)
           ? "clientHint"
           : "notNeeded",
       rules: [`${rule.entity}: ${rule.actions.join(", ")} ${rule.condition}`.trim()],
@@ -362,7 +367,7 @@ export function createFallbackArchitecturePlan(
       canBuildNow: !needsFuturePlatform,
       approach: needsFuturePlatform
         ? "Stop before code generation so the user can revise or wait for platform services."
-        : needsServerData(spec) ||
+        : appNeedsServerData(spec) ||
             spec.fileRequirements.length > 0 ||
             hasPlatformNotifications(spec) ||
             hasApprovedPlatformIntegrations(spec) ||
@@ -471,7 +476,7 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
       reason: "Locked /api/ai route is available for generated apps.",
     });
   }
-  if (needsServerData(spec)) {
+  if (appNeedsServerData(spec)) {
     services.push({
       service: "data",
       required: true,
@@ -586,24 +591,16 @@ function inferPlatformServices(spec: AppSpec): ArchitecturePlan["platformService
   return services;
 }
 
-function needsServerData(spec: AppSpec): boolean {
-  return (
-    spec.needsLogin ||
-    spec.sharingModel !== "private" ||
-    spec.dataEntities.some((entity) => entity.ownership !== "per_user")
-  );
-}
-
 function hasPlatformNotifications(spec: AppSpec): boolean {
   return spec.notifications.some((notification) => notification.channel !== "none");
 }
 
 function hasPlatformSearch(spec: AppSpec): boolean {
-  return needsServerData(spec) && spec.searchRequirements.length > 0;
+  return appNeedsServerData(spec) && spec.searchRequirements.length > 0;
 }
 
 function hasPlatformReports(spec: AppSpec): boolean {
-  return needsServerData(spec) && spec.reports.length > 0;
+  return appNeedsServerData(spec) && spec.reports.length > 0;
 }
 
 function hasPlatformSearchReports(spec: AppSpec): boolean {

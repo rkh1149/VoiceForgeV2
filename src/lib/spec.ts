@@ -242,6 +242,24 @@ const legacyAppSpecSchema = z.object({
 export type AppSpec = z.infer<typeof appSpecSchema>;
 export type AppCapabilityTier = AppSpec["capabilityTier"];
 
+/** Whether the approved app promises data that survives beyond current UI state. */
+export function appHasPersistentData(spec: AppSpec): boolean {
+  return (
+    spec.dataToStore.length > 0 ||
+    spec.dataEntities.some((entity) => entity.ownership !== "system")
+  );
+}
+
+/** Whether persisted app data needs VoiceForge's server-side record service. */
+export function appNeedsServerData(spec: AppSpec): boolean {
+  if (!appHasPersistentData(spec)) return false;
+  return (
+    spec.needsLogin ||
+    spec.sharingModel !== "private" ||
+    spec.dataEntities.some((entity) => entity.ownership !== "per_user")
+  );
+}
+
 export type ComplexityLevel = "simple" | "intermediate" | "advanced";
 
 export type ComplexityResult = {

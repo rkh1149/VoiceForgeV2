@@ -1,5 +1,9 @@
 import { builtinModules } from "module";
-import type { AppSpec } from "@/lib/spec";
+import {
+  appHasPersistentData,
+  appNeedsServerData,
+  type AppSpec,
+} from "../spec";
 import type { FileMap } from "./template";
 
 export const DEPENDENCY_PROFILE_VALUES = [
@@ -180,8 +184,8 @@ export const APPROVED_DEPENDENCY_GUIDANCE = [
 
 export function inferDependencyProfiles(spec: AppSpec): DependencyProfileId[] {
   const profiles = new Set<DependencyProfileId>(["base", "baseUi"]);
-  if (needsServerData(spec)) profiles.add("platformData");
-  else profiles.add("localStorage");
+  if (appNeedsServerData(spec)) profiles.add("platformData");
+  else if (appHasPersistentData(spec)) profiles.add("localStorage");
   if (spec.aiFeatures.length > 0) profiles.add("ai");
 
   const text = searchableSpecText(spec);
@@ -370,14 +374,6 @@ function packageNameFromSpecifier(specifier: string): string | null {
     return scope && name ? `${scope}/${name}` : specifier;
   }
   return specifier.split("/")[0] || null;
-}
-
-function needsServerData(spec: AppSpec): boolean {
-  return (
-    spec.needsLogin ||
-    spec.sharingModel !== "private" ||
-    spec.dataEntities.some((entity) => entity.ownership !== "per_user")
-  );
 }
 
 function searchableSpecText(spec: AppSpec): string {

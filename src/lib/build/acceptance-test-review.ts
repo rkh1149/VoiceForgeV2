@@ -374,9 +374,18 @@ function reviewJourney(
     }
   }
 
-  const requiresUpload = journey.fixtures.some(
-    (fixture) => fixture.type === "file" || fixture.type === "image",
+  const savedFieldKeys = new Set(
+    journey.saves.flatMap((save) =>
+      save.fieldKeys.map((fieldKey) => `${save.entityKey}:${fieldKey}`),
+    ),
   );
+  const requiresUpload =
+    journey.steps.some((step) => step.controlKind === "file") ||
+    journey.fixtures.some(
+      (fixture) =>
+        (fixture.type === "file" || fixture.type === "image") &&
+        savedFieldKeys.has(`${fixture.entityKey}:${fixture.fieldKey}`),
+    );
   if (
     requiresUpload &&
     (!/\.setInputFiles\s*\(/.test(source) || !/tinyPngUpload\s*\(/.test(source))

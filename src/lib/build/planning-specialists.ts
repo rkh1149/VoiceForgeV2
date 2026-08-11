@@ -1,5 +1,10 @@
 import type { ArchitecturePlan, ArchitectureValidation } from "../architecture";
-import { type AppSpec, isExternalIntegrationRequirement } from "../spec";
+import {
+  appHasPersistentData,
+  appNeedsServerData,
+  type AppSpec,
+  isExternalIntegrationRequirement,
+} from "../spec";
 import { isApprovedIntegrationRequirement } from "../platform/integration-catalog";
 import { platformEntityFromSpec } from "../platform/spec-seeding";
 import { normalizeEntityKey } from "../platform/data";
@@ -66,7 +71,8 @@ function reviewDataModel(
   }
 
   const sharedEntityStorageIssues = specEntities.filter(({ spec: entity, key }) => {
-    if (entity.ownership === "per_user" && !needsServerData(spec)) return false;
+    if (entity.ownership === "system" && !appHasPersistentData(spec)) return false;
+    if (entity.ownership === "per_user" && !appNeedsServerData(spec)) return false;
     const planned = architectureEntities.find((item) => item.key === key);
     return planned?.architecture.storage !== "platformData";
   });
@@ -376,11 +382,11 @@ function expectedPlatformServices(
   };
 
   if (spec.aiFeatures.length > 0) add("ai");
-  if (needsServerData(spec)) add("data");
+  if (appNeedsServerData(spec)) add("data");
   if (spec.needsLogin || spec.permissionRules.some(hasAdminAction)) add("users");
   if (spec.fileRequirements.length > 0) add("files");
-  if (needsServerData(spec) && spec.searchRequirements.length > 0) add("search");
-  if (needsServerData(spec) && spec.reports.length > 0) add("reports");
+  if (appNeedsServerData(spec) && spec.searchRequirements.length > 0) add("search");
+  if (appNeedsServerData(spec) && spec.reports.length > 0) add("reports");
   if (spec.notifications.some((notification) => notification.channel !== "none")) {
     add("jobs");
   }
@@ -405,14 +411,6 @@ function expectedPlatformServices(
 
 function hasAdminAction(rule: AppSpec["permissionRules"][number]): boolean {
   return rule.actions.some((action) => action === "invite" || action === "admin");
-}
-
-function needsServerData(spec: AppSpec): boolean {
-  return (
-    spec.needsLogin ||
-    spec.sharingModel !== "private" ||
-    spec.dataEntities.some((entity) => entity.ownership !== "per_user")
-  );
 }
 
 function normalizeKey(value: string): string {
