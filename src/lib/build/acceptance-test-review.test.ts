@@ -200,6 +200,39 @@ describe("generated acceptance test review", () => {
     );
   });
 
+  it("accepts a visual selection performed by clicking a card", () => {
+    const { spec, architecture } = sharedApp();
+    const journey = synthesizeWorkflowAcceptancePlan(
+      spec,
+      architecture,
+    ).journeys[0];
+    const inputStep = journey.steps.find((step) => step.kind === "input")!;
+    const contract = architecture.workflowContracts.find(
+      (candidate) => candidate.id === inputStep.workflowId,
+    )!;
+    const contractStep = contract.steps.find(
+      (candidate) => candidate.id === inputStep.contractStepId,
+    )!;
+    const control = contract.controls.find(
+      (candidate) => candidate.id === contractStep.controlId,
+    )!;
+    control.kind = "button";
+    inputStep.controlKind = "button";
+    const source = compliantTest(journey).replace(
+      /await page\.getByLabel\([^;]+?\)\.fill\([^;]+?\);/,
+      `await page.getByRole("button", { name: ${JSON.stringify(inputStep.accessibleName)} }).click();`,
+    );
+    const review = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: { "e2e/generated/card-selection.spec.ts": source },
+    });
+
+    expect(review.blockingIssues.join(" ")).not.toContain(
+      `labels ${inputStep.contractStepId} but does not perform`,
+    );
+  });
+
   it("recognizes trace helpers that use aliases and statically declared ids", () => {
     const { spec, architecture } = sharedApp();
     const journey = synthesizeWorkflowAcceptancePlan(

@@ -979,10 +979,10 @@ function normalizedStepKind(
   if (!isUserGesture && isVisibleOutcomeDescription(description)) return "result";
   if (!isUserGesture) return step.kind;
   const lower = description.toLowerCase();
-  if (/\b(enter|type|write|choose|select|pick|upload|attach|check|uncheck|toggle|drag|drop|change .*date)\b/.test(lower)) {
+  if (isFieldInputDescription(lower)) {
     return "input";
   }
-  if (/^\s*(?:the\s+)?(?:user|player|rider|member|owner|editor)?\s*(?:open|go to|navigate|visit)\b/i.test(description)) {
+  if (/^\s*(?:the\s+)?(?:user|player|rider|member|owner|editor|child|parent|guest|visitor|customer|student|teacher|participant|person)?\s*(?:open|go to|navigate|visit)\b/i.test(description)) {
     return "navigate";
   }
   return step.writes.length > 0 ? "save" : "action";
@@ -1012,7 +1012,7 @@ function isAutomaticEffectDescription(value: string): boolean {
     /^\s*(?:the\s+)?(?:app|application|system|game|screen|page)\s+(?:automatically\s+)?(?:checks?|clears?|compares?|creates?|generates?|loads?|calculates?|moves?|navigates?|persists?|resets?|redirects?|advances?|saves?|starts?|prepares?|stores?|updates?|records?|chooses?|selects?|validates?)\b/i.test(
       value,
     ) ||
-    /^\s*(?:the\s+)?(?:user|player|rider|member)\s+(?:automatically\s+)?(?:begins?|arrives?|returns?|lands?|is taken|is redirected)\b/i.test(
+    /^\s*(?:the\s+)?(?:user|player|rider|member|child|parent|guest|visitor|customer|student|teacher|participant|person)\s+(?:automatically\s+)?(?:begins?|arrives?|returns?|lands?|is taken|is redirected)\b/i.test(
       value,
     )
   );
@@ -1023,7 +1023,7 @@ function isVisibleOutcomeDescription(value: string): boolean {
     /^\s*(?:the\s+)?(?:app|application|system|game|screen|page)\s+(?:shows?|displays?|renders?|presents?|provides?|reveals?)\b/i.test(
       value,
     ) ||
-    /^\s*(?:the\s+)?(?:user|player|rider|member)\s+(?:sees?|receives?|is shown)\b/i.test(
+    /^\s*(?:the\s+)?(?:user|player|rider|member|child|parent|guest|visitor|customer|student|teacher|participant|person)\s+(?:sees?|receives?|is shown)\b/i.test(
       value,
     ) ||
     /\b(?:appears?|is shown|is displayed|is visible|becomes visible|shows? (?:the )?(?:result|score|feedback|message))\b/i.test(
@@ -1454,7 +1454,9 @@ function inferControlKind(
   if (/drag|drop|move between/.test(lower)) return "drag_drop";
   if (/date|day|time/.test(lower)) return "date";
   if (/check|toggle|complete/.test(lower)) return "checkbox";
-  if (/choose|select|pick/.test(lower)) return "combobox";
+  if (/choose|select|pick/.test(lower) && isFieldInputDescription(lower)) {
+    return "combobox";
+  }
   if (/enter|type|write|search|filter/.test(lower)) return "textbox";
   if (/open|go to|navigate|view|review|overview|display|show/.test(lower)) {
     return "link";
@@ -1473,8 +1475,24 @@ function inferStepKind(
     if (isVisibleOutcomeDescription(step)) return "result";
   }
   if (/^\s*(open|go to|navigate)/.test(lower)) return "navigate";
-  if (/enter|type|write|choose|select|pick|upload|date/.test(lower)) return "input";
+  if (isFieldInputDescription(lower)) return "input";
   return "action";
+}
+
+function isFieldInputDescription(value: string): boolean {
+  if (
+    /\b(enter|type|write|upload|attach|check|uncheck|toggle|drag|drop|change .*date)\b/.test(
+      value,
+    )
+  ) {
+    return true;
+  }
+  return (
+    /\b(choose|select|pick)\b/.test(value) &&
+    /\b(option|value|date|day|time|status|priority|category|assignee|member|address|origin|destination|location|place|dropdown|menu|selector|field)\b|\bfrom\s+(?:a|the)\s+(?:list|menu|dropdown)\b/.test(
+      value,
+    )
+  );
 }
 
 function selectStartingPage(

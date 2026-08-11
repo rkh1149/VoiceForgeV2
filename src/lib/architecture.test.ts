@@ -141,6 +141,9 @@ describe("architecture planning", () => {
     expect(chooseStory.expectedSaves).toEqual([]);
     expect(anotherStory.expectedSaves).toEqual([]);
     expect(chooseStory.start.route).toBe("/");
+    expect(chooseStory.steps[0]).toEqual(
+      expect.objectContaining({ kind: "result", controlId: "" }),
+    );
     expect(chooseStory.steps.map((step) => step.route)).toContain("/story-time");
     expect(
       chooseStory.steps.find((step) => step.description.includes("taps a choice")),
@@ -155,7 +158,7 @@ describe("architecture planning", () => {
     expect(anotherStory.start.route).toBe("/the-end");
     expect(anotherStory.steps.at(-1)?.route).toBe("/");
     expect(anotherStory.steps.at(-1)).toEqual(
-      expect.objectContaining({ kind: "input", writes: [] }),
+      expect.objectContaining({ kind: "action", writes: [] }),
     );
   });
 

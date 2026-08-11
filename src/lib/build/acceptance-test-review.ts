@@ -475,7 +475,10 @@ function stepHasRequiredAction(
         /\.click\s*\(/.test(sourceWindow)
       );
     case "input":
-      return INPUT_INTERACTION_PATTERN.test(sourceWindow);
+      return (
+        INPUT_INTERACTION_PATTERN.test(sourceWindow) ||
+        (step.controlKind !== "textbox" && /\.click\s*\(/.test(sourceWindow))
+      );
     case "action":
     case "save":
       return INTERACTION_PATTERN.test(sourceWindow);
