@@ -174,13 +174,33 @@ function findFailureSignature(lines: string[], start: number): string {
       const locator = /^Error: (?:expect\(locator\)|locator\.)/i.test(line)
         ? findPlaywrightLocator(lines, index + 1)
         : "";
-      return [line, locator]
+      const accessibilityDetail = /accessibility violations/i.test(line)
+        ? findAccessibilityDiagnostic(lines, index + 1)
+        : "";
+      return [line, locator, accessibilityDetail]
         .filter(Boolean)
         .join(" | ")
         .slice(0, MAX_SIGNATURE_LENGTH);
     }
   }
   return "unspecified failure";
+}
+
+function findAccessibilityDiagnostic(lines: string[], start: number): string {
+  for (let index = start; index < Math.min(lines.length, start + 80); index++) {
+    const line = normalizeDiagnosticLine(lines[index]);
+    if (
+      /(?:color-contrast|target=|contrast ratio|aria-|document-title|heading-order)/i.test(
+        line,
+      )
+    ) {
+      return line;
+    }
+    if (VITEST_FAILURE_PATTERN.test(line) || PLAYWRIGHT_FAILURE_PATTERN.test(line)) {
+      break;
+    }
+  }
+  return "";
 }
 
 function findPlaywrightLocator(lines: string[], start: number): string {

@@ -124,6 +124,20 @@ describe("debug progress", () => {
     expect(compareFailureFingerprints(before, changed).status).toBe("changed");
   });
 
+  it("retains the offending axe target in an accessibility signature", () => {
+    const fingerprint = createFailureFingerprint(
+      "e2e",
+      [
+        "1) e2e/smoke.spec.ts:9:5 › home page is accessible",
+        "Error: Serious accessibility violations",
+        'color-contrast: Elements must meet thresholds; node 1 target=[\".bg-emerald-600\"]; html=<a>Story ending</a>; contrast ratio 3.65',
+      ].join("\n"),
+    );
+
+    expect(fingerprint.cases[0].signature).toContain(".bg-emerald-600");
+    expect(fingerprint.cases[0].signature).toContain("Story ending");
+  });
+
   it("tracks progress within one generated journey instead of treating its next step as a regression", () => {
     const before = createFailureFingerprint(
       "e2e",

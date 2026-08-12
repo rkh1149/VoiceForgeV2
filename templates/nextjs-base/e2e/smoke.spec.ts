@@ -71,8 +71,20 @@ test("home page loads cleanly, survives clicks, and is accessible", async ({
   const serious = axeResults.violations.filter(
     (v) => v.impact === "critical" || v.impact === "serious",
   );
+  const seriousDetails = serious.flatMap((violation) =>
+    violation.nodes.slice(0, 5).map((node, index) =>
+      [
+        `${violation.id}: ${violation.help} (${violation.nodes.length} element(s))`,
+        `node ${index + 1} target=${JSON.stringify(node.target)}`,
+        `html=${node.html.slice(0, 600)}`,
+        node.failureSummary?.replace(/\s+/g, " ").slice(0, 800) ?? "",
+      ]
+        .filter(Boolean)
+        .join("; "),
+    ),
+  );
   expect(
-    serious.map((v) => `${v.id}: ${v.help} (${v.nodes.length} element(s))`),
+    seriousDetails,
     "Serious accessibility violations",
   ).toEqual([]);
 });

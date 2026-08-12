@@ -4,6 +4,7 @@ import path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   listTemplateFiles,
+  loadTemplate,
   refreshResumedTemplateFiles,
   TEMPLATE_IGNORED_DIRECTORIES,
 } from "./template";
@@ -36,6 +37,7 @@ describe("template loader", () => {
 
   it("refreshes the locked acceptance helper without replacing generated app source", async () => {
     const files = {
+      "e2e/smoke.spec.ts": "old smoke test",
       "e2e/voiceforge-acceptance.ts": "old helper",
       "e2e/voiceforge-progress-reporter.ts": "old reporter",
       "playwright.config.ts": "old config",
@@ -49,6 +51,7 @@ describe("template loader", () => {
         purpose: "Track shared equipment",
       }),
     ).resolves.toEqual([
+      "e2e/smoke.spec.ts",
       "e2e/voiceforge-acceptance.ts",
       "e2e/voiceforge-progress-reporter.ts",
       "playwright.config.ts",
@@ -60,6 +63,21 @@ describe("template loader", () => {
       "class VoiceForgeProgressReporter",
     );
     expect(files["playwright.config.ts"]).toContain("actionTimeout: 12_000");
+    expect(files["e2e/smoke.spec.ts"]).toContain("node.failureSummary");
     expect(files["src/app/page.tsx"]).toBe("generated app source");
+  });
+
+  it("keeps actionable axe node details in the locked smoke test", async () => {
+    const files = await loadTemplate({
+      slug: "accessible-app",
+      name: "Accessible App",
+      purpose: "Verify accessibility diagnostics",
+    });
+
+    expect(files["e2e/smoke.spec.ts"]).toContain(
+      "target=${JSON.stringify(node.target)}",
+    );
+    expect(files["e2e/smoke.spec.ts"]).toContain("html=${node.html.slice");
+    expect(files["e2e/smoke.spec.ts"]).toContain("node.failureSummary");
   });
 });

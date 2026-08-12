@@ -60,6 +60,7 @@ const PROTECTED_FILES = new Set([
 ]);
 
 const RESUME_REFRESHED_TEMPLATE_FILES = [
+  "e2e/smoke.spec.ts",
   "e2e/voiceforge-acceptance.ts",
   "e2e/voiceforge-progress-reporter.ts",
   "playwright.config.ts",

@@ -886,6 +886,11 @@ function instructionsFor(
     common.push(
       "For browser/accessibility failures, inspect pages and components first; edit generated e2e tests only when the test assertion is brittle.",
     );
+    if (classification.focus === "accessibility") {
+      common.push(
+        "For axe contrast failures, follow the exact diagnostic target and rendered HTML. Compare the reported foreground/background colors, ratio, font size, and required ratio, then edit that element's source utility classes; do not guess from nearby similarly colored text.",
+      );
+    }
   }
   if (classification.domain === "unit_test") {
     common.push(
