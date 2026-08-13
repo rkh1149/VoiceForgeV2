@@ -184,6 +184,18 @@ describe("phase-aware debug", () => {
     expect(plan.scope.preferredInspectionPaths).not.toContain(
       "src/components/TaskForm.tsx",
     );
+    expect(plan.context.instructions.join(" ")).toContain(
+      "fresh browser context",
+    );
+    expect(plan.context.instructions.join(" ")).toContain(
+      "scope the assertion to the specific row, card, list item, or heading",
+    );
+    expect(plan.context.instructions.join(" ")).toContain(
+      "capture the required title/id/date before clicking",
+    );
+    expect(plan.context.instructions.join(" ")).toContain(
+      "use a stable visible route link",
+    );
   });
 
   it("focuses data save failures on forms, payload helpers, and platform data", () => {
@@ -302,6 +314,24 @@ describe("phase-aware debug", () => {
     expect(plan.scope.visibleFilePaths).not.toContain("src/lib/tasks.ts");
     expect(plan.context.instructions.join(" ")).toContain(
       "workflowJourneyTitle",
+    );
+  });
+
+  it("routes human completeness gaps to the full user workflow surface", () => {
+    const plan = createPhaseAwareDebugPlan({
+      spec,
+      files,
+      failedStep: "review_gate",
+      errorOutput:
+        "human_completeness:workflow:save-task A person can enter a task, but there is no visible saved result on /tasks. Evidence: src/app/tasks/page.tsx.",
+      generatedPhases: phases,
+    });
+
+    expect(plan.responsiblePhase.id).toBe("pages-workflows");
+    expect(plan.scope.visibleFilePaths).toContain("src/app/tasks/page.tsx");
+    expect(plan.scope.visibleFilePaths).toContain("src/components/TaskForm.tsx");
+    expect(plan.context.instructions.join(" ")).toContain(
+      "repair the named user outcome",
     );
   });
 

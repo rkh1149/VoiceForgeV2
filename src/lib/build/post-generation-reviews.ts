@@ -17,7 +17,8 @@ export type PostGenerationReviewAgentKey =
   | "ux_accessibility_reviewer"
   | "ui_affordance_reviewer"
   | "persistence_handoff_reviewer"
-  | "acceptance_test_reviewer";
+  | "acceptance_test_reviewer"
+  | "product_completeness_reviewer";
 
 export type PostGenerationReview = {
   agentKey: PostGenerationReviewAgentKey;
@@ -26,7 +27,8 @@ export type PostGenerationReview = {
     | "review_gate"
     | "ui_affordance_review"
     | "persistence_handoff_review"
-    | "acceptance_test_review";
+    | "acceptance_test_review"
+    | "human_completeness_review";
   status: BuildAgentArtifactStatus;
   summary: string;
   warnings: string[];
@@ -436,7 +438,8 @@ export type PostGenerationRepairDomain =
   | "implementation"
   | "interface"
   | "persistence"
-  | "acceptance";
+  | "acceptance"
+  | "completeness";
 
 export type PostGenerationRepairBatch = {
   domain: PostGenerationRepairDomain;
@@ -462,6 +465,7 @@ const POST_GENERATION_REPAIR_PRIORITY: PostGenerationRepairDomain[] = [
   "interface",
   "persistence",
   "acceptance",
+  "completeness",
 ];
 
 export function postGenerationRepairDomain(
@@ -470,6 +474,7 @@ export function postGenerationRepairDomain(
   if (issue.startsWith("ui_affordance:")) return "interface";
   if (issue.startsWith("persistence_handoff:")) return "persistence";
   if (issue.startsWith("acceptance_test:")) return "acceptance";
+  if (issue.startsWith("human_completeness:")) return "completeness";
   return "implementation";
 }
 
@@ -503,6 +508,7 @@ export function countPostGenerationIssues(
     interface: postGenerationIssuesForDomain(issues, "interface").length,
     persistence: postGenerationIssuesForDomain(issues, "persistence").length,
     acceptance: postGenerationIssuesForDomain(issues, "acceptance").length,
+    completeness: postGenerationIssuesForDomain(issues, "completeness").length,
   };
 }
 
@@ -530,6 +536,7 @@ export function assessPostGenerationRepair(input: {
     "interface",
     "persistence",
     "acceptance",
+    "completeness",
   ];
   const regressedDomains = domains.filter(
     (domain) => currentCounts[domain] > previousCounts[domain],
@@ -562,8 +569,10 @@ export function createPostGenerationRepairEvidence(input: {
       ? "ui_affordance_reviewer"
       : input.domain === "persistence"
         ? "persistence_handoff_reviewer"
-        : input.domain === "acceptance"
+      : input.domain === "acceptance"
           ? "acceptance_test_reviewer"
+          : input.domain === "completeness"
+            ? "product_completeness_reviewer"
           : null;
   const reviews = input.reviews
     .filter((review) => relevantAgent === null || review.agentKey === relevantAgent)
@@ -644,6 +653,16 @@ function compactReviewPayload(
       "summary",
       "generatedTestFiles",
       "journeys",
+    ]);
+  }
+  if (review.agentKey === "product_completeness_reviewer") {
+    return pickPayload(payload, [
+      "summary",
+      "overallAssessment",
+      "assessments",
+      "filesInspected",
+      "testFilesInspected",
+      "limitations",
     ]);
   }
   return pickPayload(payload, [

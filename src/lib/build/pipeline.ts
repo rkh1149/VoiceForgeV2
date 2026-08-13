@@ -29,6 +29,7 @@ import {
   runDebugAgent,
   type CodegenResult,
 } from "@/lib/agents/coder";
+import { runHumanCompletenessReviewer } from "@/lib/agents/completeness-reviewer";
 import { selectChangeWorkflow } from "@/lib/agents/change-workflow";
 import {
   canUsePlatformDataStarter,
@@ -112,6 +113,12 @@ import {
   ensureWorkflowContracts,
   validateWorkflowContracts,
 } from "../workflow-contract";
+import {
+  createHumanCompletenessEvidence,
+  humanCompletenessPostGenerationReview,
+  type HumanCompletenessSourceContext,
+} from "./human-completeness-review";
+import { loadHumanCompletenessSourceContext } from "./human-completeness-source";
 
 /**
  * Build pipeline (Stage 2): approved spec -> generated code -> local test
@@ -274,6 +281,9 @@ function restoreBuildMetrics(value: unknown): BuildMetrics {
     acceptanceJourneyCoverage: isRecord(value.acceptanceJourneyCoverage)
       ? (value.acceptanceJourneyCoverage as BuildMetrics["acceptanceJourneyCoverage"])
       : base.acceptanceJourneyCoverage,
+    humanCompletenessCoverage: isRecord(value.humanCompletenessCoverage)
+      ? (value.humanCompletenessCoverage as BuildMetrics["humanCompletenessCoverage"])
+      : base.humanCompletenessCoverage,
     failureCategory:
       typeof value.failureCategory === "string"
         ? (value.failureCategory as BuildMetrics["failureCategory"])
@@ -1039,6 +1049,10 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     if (generated.filesWritten.length === 0) {
       throw new Error("Code agent produced no files");
     }
+    const completenessSource = await loadHumanCompletenessSourceContext({
+      requirement,
+      changeSummary: changeRequest?.description,
+    });
     const debugBudget = createDebugBudget({
       maxRoundsPerStep: MAX_DEBUG_ROUNDS_PER_STEP,
       maxTotalRounds: MAX_TOTAL_DEBUG_ROUNDS,
@@ -1077,6 +1091,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       metrics,
       seededPlatformEntities,
       reviewProgress,
+      completenessSource,
     });
 
     await saveBuildCheckpoint({
@@ -1834,6 +1849,8 @@ async function runCheckpointReviewGate(input: {
   metrics: BuildMetrics;
   seededPlatformEntities: unknown[];
   reviewProgress: SerializedReviewProgress;
+  completenessSource: HumanCompletenessSourceContext;
+  includeCompleteness?: boolean;
 }): Promise<void> {
   let changedFilePaths = [...input.reviewProgress.changedFilePaths];
   let deletedFilePaths = [...input.reviewProgress.deletedFilePaths];
@@ -2070,6 +2087,246 @@ async function runCheckpointReviewGate(input: {
       );
     }
   }
+
+  if (input.includeCompleteness === false) {
+    if (
+      reviews
+        .flatMap((review) => review.warnings)
+        .some((warning) =>
+          warning.startsWith("acceptance_test:browser_arbitration"),
+        )
+    ) {
+      await log(
+        input.buildRunId,
+        "Static acceptance review deferred helper-based evidence to the generated Playwright journeys; the e2e result will arbitrate it.",
+      );
+    }
+    await log(
+      input.buildRunId,
+      "Updated deterministic workflow reviews passed before resumed checks.",
+    );
+    return;
+  }
+
+  const runCompletenessReview = async (
+    deterministicReviews: readonly PostGenerationReview[],
+  ) => {
+    const evidence = createHumanCompletenessEvidence({
+      spec: input.spec,
+      architecture: input.architecture,
+      files: agentVisibleFiles(input.files),
+      source: input.completenessSource,
+      changedFilePaths,
+      deletedFilePaths,
+      phases: input.generated.phases,
+      deterministicReviews,
+    });
+    return runHumanCompletenessReviewer({
+      evidence,
+      files: agentVisibleFiles(input.files),
+    });
+  };
+
+  let completenessReport = await runCompletenessReview(reviews);
+  let completenessReview = humanCompletenessPostGenerationReview(
+    completenessReport,
+  );
+  await recordPostGenerationReviewArtifacts({
+    appId: input.app.id,
+    buildRunId: input.buildRunId,
+    reviews: [completenessReview],
+  });
+  recordReviewMetrics(input.metrics, [completenessReview]);
+  await log(input.buildRunId, completenessReview.summary);
+
+  while (completenessReview.blockingIssues.length > 0) {
+    const domain = "completeness" as const;
+    const budgetStep = `review_gate:${domain}`;
+    const priorUnchanged = unchangedRounds.get(domain) ?? 0;
+    const { stepRound, previousAttempts } = reserveDebugRound(
+      input.debugBudget,
+      budgetStep,
+    );
+    const allReviews = [...reviews, completenessReview];
+    const evidence = createPostGenerationRepairEvidence({
+      domain,
+      issues: completenessReview.blockingIssues,
+      reviews: allReviews,
+    });
+    const errorOutput = `${completenessReview.blockingIssues.join("\n")}\n\nSTRUCTURED PRODUCT COMPLETENESS EVIDENCE:\n${serializeReviewEvidence(evidence)}`;
+    const debugPlan = createPhaseAwareDebugPlan({
+      spec: input.spec,
+      files: agentVisibleFiles(input.files),
+      failedStep: "review_gate",
+      errorOutput,
+      generatedPhases: input.generated.phases,
+      changedFilePaths,
+      forceFullScope: priorUnchanged > 0,
+      escalationReason:
+        priorUnchanged > 0
+          ? "A prior product-completeness repair did not improve the promised user outcome. Trace the named workflow through its route, components, persistence path, and generated acceptance journey before changing strategy."
+          : undefined,
+    });
+    recordDebugRoundMetric(input.metrics, {
+      step: budgetStep,
+      domain: debugPlan.classification.domain,
+      focus: debugPlan.classification.focus,
+      responsiblePhaseId: debugPlan.responsiblePhase.id,
+      responsibleAgentKey: debugPlan.responsiblePhase.agentKey,
+    });
+    await saveReviewCheckpoint();
+    await setStatus(input.buildRunId, "debugging");
+    await log(
+      input.buildRunId,
+      `Product completeness repair round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP}; inspecting ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} relevant files.`,
+    );
+    const fix = await runDebugAgent({
+      spec: input.spec,
+      currentFiles: debugPlan.scope.scopedFiles,
+      failedStep: "review_gate",
+      errorOutput,
+      previousAttempts,
+      debugContext: debugPlan.context,
+    });
+    recordDebugAttempt(
+      input.debugBudget,
+      budgetStep,
+      fix.debugDiagnostics.suspectedRootCause ||
+        fix.notes ||
+        "The product-completeness repair produced no useful source change.",
+    );
+
+    if (fix.filesWritten.length === 0 && fix.deletedFiles.length === 0) {
+      const rounds = priorUnchanged + 1;
+      unchangedRounds.set(domain, rounds);
+      await saveReviewCheckpoint();
+      await recordBuildAgentArtifact({
+        appId: input.app.id,
+        buildRunId: input.buildRunId,
+        agentKey: "pipeline_observer",
+        phaseKey: "review-repair-completeness",
+        artifactType: "review_gate",
+        status: rounds >= 2 ? "failed" : "warning",
+        summary:
+          "Product completeness repair produced no source changes; the best checkpoint remains active.",
+        payload: {
+          outcome: "possible_reviewer_limitation",
+          stepRound,
+          unchangedRounds: rounds,
+          evidence,
+          suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+          filesInspected: fix.debugDiagnostics.filesInspected,
+        },
+      });
+      if (rounds >= 2) {
+        throw new Error(
+          "Product completeness review still could not identify an actionable repair. VoiceForge preserved the best checkpoint; this likely needs a reviewer-rule improvement.",
+        );
+      }
+      continue;
+    }
+
+    const beforeFiles: FileMap = { ...input.files };
+    const beforeChangedFiles: FileMap = { ...changedFiles };
+    const beforeChangedPaths = [...changedFilePaths];
+    const beforeDeletedPaths = [...deletedFilePaths];
+    applyCodegenResult(input.files, fix);
+    Object.assign(changedFiles, fix.files);
+    fix.deletedFiles.forEach((path) => delete changedFiles[path]);
+    changedFilePaths = uniqueStrings([
+      ...changedFilePaths,
+      ...fix.filesWritten,
+    ]);
+    deletedFilePaths = uniqueStrings([
+      ...deletedFilePaths,
+      ...fix.deletedFiles,
+    ]);
+
+    const candidateReviews = runPostGenerationReviews({
+      spec: input.spec,
+      architecture: input.architecture,
+      allFiles: agentVisibleFiles(input.files),
+      changedFiles,
+      changedFilePaths,
+      deletedFilePaths,
+      changeMode: input.reviewProgress.changeMode,
+    });
+    const candidateStaticIssues = getPostGenerationBlockingIssues(
+      candidateReviews,
+    );
+    const candidateCompletenessReport =
+      candidateStaticIssues.length === 0
+        ? await runCompletenessReview(candidateReviews)
+        : completenessReport;
+    const candidateCompletenessReview =
+      humanCompletenessPostGenerationReview(candidateCompletenessReport);
+    const candidateCompletenessIssues = candidateCompletenessReport.available
+      ? candidateCompletenessReview.blockingIssues
+      : completenessReview.blockingIssues;
+    const assessment = assessPostGenerationRepair({
+      domain,
+      previousIssues: completenessReview.blockingIssues,
+      currentIssues: [
+        ...candidateStaticIssues,
+        ...candidateCompletenessIssues,
+      ],
+    });
+    const rounds = assessment.accepted ? 0 : priorUnchanged + 1;
+    unchangedRounds.set(domain, rounds);
+
+    if (assessment.accepted) {
+      reviews = candidateReviews;
+      blockingIssues = candidateStaticIssues;
+      completenessReport = candidateCompletenessReport;
+      completenessReview = candidateCompletenessReview;
+      await recordPostGenerationReviewArtifacts({
+        appId: input.app.id,
+        buildRunId: input.buildRunId,
+        reviews: [...reviews, completenessReview],
+        rerunRound: stepRound,
+      });
+      recordReviewMetrics(input.metrics, [...reviews, completenessReview]);
+    } else {
+      restoreFileMap(input.files, beforeFiles);
+      restoreFileMap(changedFiles, beforeChangedFiles);
+      changedFilePaths = beforeChangedPaths;
+      deletedFilePaths = beforeDeletedPaths;
+    }
+    await saveReviewCheckpoint();
+    await recordBuildAgentArtifact({
+      appId: input.app.id,
+      buildRunId: input.buildRunId,
+      agentKey: "pipeline_observer",
+      phaseKey: "review-repair-completeness",
+      artifactType: "review_gate",
+      status: assessment.accepted ? "passed" : rounds >= 2 ? "failed" : "warning",
+      summary: assessment.accepted
+        ? `Accepted product completeness repair: ${assessment.reason}`
+        : `Rolled back product completeness repair: ${assessment.reason}`,
+      payload: {
+        outcome: assessment.accepted ? "accepted" : "rolled_back",
+        stepRound,
+        assessment,
+        evidence,
+        suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+        filesInspected: fix.debugDiagnostics.filesInspected,
+        filesWritten: fix.filesWritten,
+        filesDeleted: fix.deletedFiles,
+      },
+    });
+    await log(
+      input.buildRunId,
+      assessment.accepted
+        ? `Accepted and checkpointed product completeness repair: ${assessment.reason}`
+        : `Rolled back product completeness repair: ${assessment.reason}`,
+    );
+    if (!assessment.accepted && rounds >= 2) {
+      throw new Error(
+        "Product completeness review could not validate an improving repair after two attempts. VoiceForge preserved the best generated source; this may be a reviewer limitation.",
+      );
+    }
+  }
+
   if (
     reviews
       .flatMap((review) => review.warnings)
@@ -2153,6 +2410,15 @@ export async function resumeBuildPipelineContinuation(
         .limit(1)
     : [];
   if (!requirement) return;
+  const [sourceChangeRequest] = await db
+    .select({ description: changeRequests.description })
+    .from(changeRequests)
+    .where(eq(changeRequests.requirementId, requirement.id))
+    .limit(1);
+  const completenessSource = await loadHumanCompletenessSourceContext({
+    requirement,
+    changeSummary: sourceChangeRequest?.description,
+  });
   const [architectureRow] = await db
     .select()
     .from(architecturePlans)
@@ -2230,13 +2496,21 @@ export async function resumeBuildPipelineContinuation(
     const seededPlatformEntities = restoreSeededPlatformEntities(
       metadata.seededPlatformEntities,
     );
-    if (checkpoint.stage === "reviewing") {
+    const recheckTestingCheckpoint =
+      checkpoint.stage === "testing" && options?.resetDebugBudget === true;
+    if (checkpoint.stage === "reviewing" || recheckTestingCheckpoint) {
       const changeMode = Boolean(app.githubRepoUrl && requirement.version > 1);
       const reviewProgress = restoreReviewProgress(
         metadata.reviewProgress,
         generated,
         changeMode,
       );
+      if (recheckTestingCheckpoint) {
+        await log(
+          run.id,
+          "Rechecking the saved source with the latest deterministic workflow and acceptance rules before resuming browser tests…",
+        );
+      }
       await runCheckpointReviewGate({
         app,
         buildRunId: run.id,
@@ -2248,6 +2522,8 @@ export async function resumeBuildPipelineContinuation(
         metrics,
         seededPlatformEntities,
         reviewProgress,
+        completenessSource,
+        includeCompleteness: !recheckTestingCheckpoint,
       });
       await saveBuildCheckpoint({
         appId: app.id,

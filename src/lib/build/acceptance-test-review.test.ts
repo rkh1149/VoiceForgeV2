@@ -284,6 +284,39 @@ describe("generated acceptance test review", () => {
     );
   });
 
+  it("accepts run-scoped fixtures and ordinary toBe result assertions", () => {
+    const { spec, architecture } = sharedApp();
+    const journey = synthesizeWorkflowAcceptancePlan(spec, architecture).journeys[0];
+    const fixture = journey.fixtures.find(
+      (candidate) =>
+        typeof candidate.value === "string" &&
+        !String(candidate.value).startsWith("@"),
+    );
+    const fixtureValue = String(fixture?.value ?? "VoiceForge acceptance record");
+    const source = compliantTest(journey)
+      .replace(
+        'import { test, expect } from "@playwright/test";',
+        'import { test, expect } from "@playwright/test";\nconst suffix = acceptanceRunSuffix();\nconst runScopedTitle = `VF Movie ${suffix}`;',
+      )
+      .replaceAll(JSON.stringify(fixtureValue), "runScopedTitle")
+      .replace(
+        ".toBeVisible();",
+        ".toBeVisible();\n  expect(runScopedTitle).not.toBe(\"\");",
+      );
+    const review = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: { "e2e/generated/run-scoped.spec.ts": source },
+    });
+
+    expect(review.blockingIssues.join(" ")).not.toContain(
+      "does not use its unique",
+    );
+    expect(review.blockingIssues.join(" ")).not.toContain(
+      "does not perform its result action",
+    );
+  });
+
   it("assigns nested workflow actions to both owning trace blocks", () => {
     const source = `await test.step(workflowHandoffTitle("member-to-loan"), async () => {
   await test.step(workflowStepTitle("lend-equipment", "open-active-loans", "Open active loans"), async () => {
@@ -341,6 +374,73 @@ describe("generated acceptance test review", () => {
     );
     expect(review.blockingIssues.join(" ")).toContain(
       "not direct storage or platform API setup",
+    );
+  });
+
+  it("requires dependent localStorage journeys to recreate prerequisites in their fresh browser context", () => {
+    const { spec, architecture } = sharedApp();
+    const template = architecture.workflowContracts.find(
+      (contract) => contract.trigger === "user_action",
+    )!;
+    architecture.workflowContracts = Array.from({ length: 4 }, (_, index) => ({
+      ...template,
+      id: `movie-workflow-${index + 1}`,
+      name: `Movie workflow ${index + 1}`,
+      dependencies: {
+        ...template.dependencies,
+        workflowIds: index === 0 ? [] : [`movie-workflow-${index}`],
+      },
+      expectedSaves: template.expectedSaves.map((save) => ({
+        ...save,
+        storage: "localStorage" as const,
+      })),
+      handoffs: [],
+    }));
+    const plan = synthesizeWorkflowAcceptancePlan(spec, architecture);
+    expect(plan.journeys).toHaveLength(2);
+    const [producer, dependent] = plan.journeys;
+    const producerSource = compliantTest(producer).replace(
+      'import { test, expect } from "@playwright/test";',
+      "",
+    );
+    const dependentSource = compliantTest(dependent).replace(
+      'import { test, expect } from "@playwright/test";',
+      "",
+    );
+    const withoutSetup = `import { test, expect } from "@playwright/test";
+test.describe.serial("movie workflows", () => {
+${producerSource}
+${dependentSource}
+});`;
+    const blocked = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: { "e2e/generated/movie.spec.ts": withoutSetup },
+    });
+
+    expect(blocked.blockingIssues.join(" ")).toContain(
+      "does not recreate those prerequisites through visible UI",
+    );
+    expect(blocked.blockingIssues.join(" ")).toContain(
+      "does not preserve localStorage",
+    );
+
+    const startNavigation = `await page.goto(${JSON.stringify(dependent.startRoute)});`;
+    const withSetup = withoutSetup.replace(
+      dependentSource,
+      dependentSource.replace(
+        startNavigation,
+        `${startNavigation}\n  await createMoviePrerequisites(page);`,
+      ),
+    );
+    const repaired = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: { "e2e/generated/movie.spec.ts": withSetup },
+    });
+
+    expect(repaired.blockingIssues.join(" ")).not.toContain(
+      "does not recreate those prerequisites through visible UI",
     );
   });
 

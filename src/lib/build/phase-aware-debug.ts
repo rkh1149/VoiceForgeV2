@@ -491,7 +491,11 @@ function phaseHintForReviewGate(input: {
   let phaseId: string | null = null;
   let reason: string | null = null;
 
-  if (/acceptance_test:/.test(lowerOutput)) {
+  if (/human_completeness:/.test(lowerOutput)) {
+    phaseId = "pages-workflows";
+    reason =
+      "The product completeness reviewer found that a normal user cannot obtain a promised outcome, so the pages/workflows phase owns the first end-to-end repair.";
+  } else if (/acceptance_test:/.test(lowerOutput)) {
     phaseId = "browser-acceptance-tests";
     reason =
       "The Stage 14D review found missing or incomplete contract-driven Playwright proof, so the browser acceptance test phase owns the repair.";
@@ -885,6 +889,10 @@ function instructionsFor(
   if (classification.domain === "browser_accessibility") {
     common.push(
       "For browser/accessibility failures, inspect pages and components first; edit generated e2e tests only when the test assertion is brittle.",
+      "Every Playwright test receives a fresh browser context even inside test.describe.serial. If a dependent test cannot find an option or record backed by localStorage/sessionStorage, recreate its prerequisites through visible UI in that same test; do not rely on data or mutable module variables from an earlier test.",
+      "When a locator matches both a form/filter control and a saved result, scope the assertion to the specific row, card, list item, or heading identified by the run-scoped fixture instead of using unscoped page text or inventing an ARIA role the app does not render.",
+      "If the page snapshot shows a successful completion/delete/status change but the test cannot find the prior selected result, treat the missing result as expected mutation behavior: capture the required title/id/date before clicking the state-clearing action, then assert the success state and use the captured value downstream.",
+      "If a contextual result link disappears after mutation, inspect the rendered navigation and use a stable visible route link with its actual accessible name; do not invent or keep waiting for an optional contextual link.",
     );
     if (classification.focus === "accessibility") {
       common.push(
@@ -915,6 +923,11 @@ function instructionsFor(
     common.push(
       "For review-gate failures, fix the generated platform/security/accessibility contract directly before the sandbox gauntlet runs.",
     );
+    if (/product completeness/i.test(responsiblePhase.reason)) {
+      common.push(
+        "For product completeness findings, preserve the approved specification and repair the named user outcome. Inspect the route, visible controls, implementation path, and generated acceptance journey together; do not add unrelated features or rewrite unrelated workflows.",
+      );
+    }
     if (responsiblePhase.id === "pages-workflows") {
       common.push(
         "When advanced workflow coverage fails, add compact but real route/control surfaces and wire save/update/delete or runtime integration calls for the named missing entities/workflows; do not satisfy the gate with placeholders or dead buttons.",

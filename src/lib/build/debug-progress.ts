@@ -93,10 +93,17 @@ export function compareFailureFingerprints(
   const newFailures = currentKeys.filter((key) => !previousSet.has(key));
   const resolvedFailures = previousKeys.filter((key) => !currentSet.has(key));
   const changedFailures = changedCaseSignatures(previous, current);
+  const advancedToLaterJourney = isLaterGeneratedJourneyProgress(
+    previous,
+    newFailures,
+    resolvedFailures,
+  );
 
   let status: FailureProgressStatus;
   if (currentKeys.length === 0) {
     status = "resolved";
+  } else if (advancedToLaterJourney) {
+    status = "improved";
   } else if (newFailures.length > 0 || currentKeys.length > previousKeys.length) {
     status = "regressed";
   } else if (resolvedFailures.length > 0) {
@@ -279,6 +286,58 @@ function changedCaseSignatures(
         previousById.get(failureCase.id) !== failureCase.signature,
     )
     .map((failureCase) => failureCase.id);
+}
+
+function isLaterGeneratedJourneyProgress(
+  previous: FailureFingerprint,
+  newFailures: readonly string[],
+  resolvedFailures: readonly string[],
+): boolean {
+  if (
+    previous.step !== "e2e" ||
+    newFailures.length === 0 ||
+    resolvedFailures.length === 0 ||
+    newFailures.length > resolvedFailures.length
+  ) {
+    return false;
+  }
+
+  const resolvedJourneys = resolvedFailures
+    .map(generatedJourneyOrder)
+    .filter((value): value is GeneratedJourneyOrder => value !== null);
+  const newJourneys = newFailures
+    .map(generatedJourneyOrder)
+    .filter((value): value is GeneratedJourneyOrder => value !== null);
+  if (
+    resolvedJourneys.length !== resolvedFailures.length ||
+    newJourneys.length !== newFailures.length
+  ) {
+    return false;
+  }
+
+  return newJourneys.every((next) =>
+    resolvedJourneys.some(
+      (resolved) =>
+        resolved.component === next.component &&
+        resolved.sequence < next.sequence,
+    ),
+  );
+}
+
+type GeneratedJourneyOrder = {
+  component: number;
+  sequence: number;
+};
+
+function generatedJourneyOrder(value: string): GeneratedJourneyOrder | null {
+  const match = value.match(
+    /\[voiceforge-journey:journey-(\d+)-(\d+)(?:-|\])/i,
+  );
+  if (!match) return null;
+  return {
+    component: Number(match[1]),
+    sequence: Number(match[2]),
+  };
 }
 
 function progressSummary(input: Omit<FailureProgress, "summary">): string {

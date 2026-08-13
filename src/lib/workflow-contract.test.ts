@@ -337,6 +337,179 @@ describe("workflow contract layer", () => {
     );
   });
 
+  it("keeps movie picker UI state out of the approved persistent data model", () => {
+    const spec = normalizeAppSpec({
+      ...personalInput,
+      appName: "Family Movie Night Picker",
+      purpose: "Collect movie suggestions and randomly choose movie-night picks.",
+      screens: [
+        { name: "Suggestions", description: "Add and review movie suggestions." },
+        { name: "Pick", description: "Pick a movie and choose another result." },
+      ],
+      features: ["Add a movie suggestion", "Pick a movie", "Choose another"],
+      dataToStore: ["movie suggestions", "watched history"],
+      testPlan: ["Add a suggestion, pick it, and choose another movie"],
+    });
+    spec.dataEntities = [
+      {
+        name: "Movie Suggestion",
+        description: "A movie suggested for family movie night.",
+        ownership: "per_user",
+        fields: [
+          {
+            name: "title",
+            label: "Movie title",
+            type: "text",
+            required: true,
+            validation: "Required",
+          },
+          {
+            name: "watched",
+            label: "Watched",
+            type: "boolean",
+            required: false,
+            validation: "",
+          },
+        ],
+        relationships: [],
+      },
+      {
+        name: "Watched History Entry",
+        description: "A snapshot of a watched movie.",
+        ownership: "per_user",
+        fields: [
+          {
+            name: "movieTitleSnapshot",
+            label: "Movie title",
+            type: "text",
+            required: true,
+            validation: "Required",
+          },
+          {
+            name: "watchedDate",
+            label: "Watched date",
+            type: "date",
+            required: true,
+            validation: "Required",
+          },
+        ],
+        relationships: [],
+      },
+    ];
+    spec.workflows = [
+      {
+        name: "Add a movie suggestion",
+        actor: "Family member",
+        trigger: "The family member opens Suggestions.",
+        steps: ["Enter a movie title", "Save movie suggestion"],
+        successOutcome: "The movie suggestion appears in the list.",
+        failureStates: ["Title is missing"],
+      },
+      {
+        name: "Pick a movie and choose another",
+        actor: "Family member",
+        trigger: "The family member opens Pick.",
+        steps: ["Pick a movie", "Choose another movie without an immediate repeat"],
+        successOutcome: "A different current movie pick is visible.",
+        failureStates: ["No unwatched suggestions are available"],
+      },
+    ];
+    spec.acceptanceCriteria = [];
+    spec.testScenarios = [];
+
+    const supplied: ArchitecturePlan = structuredClone(
+      createFallbackArchitecturePlan(spec, computeSpecComplexity(spec)),
+    );
+    supplied.dataModel[0].fields.push(
+      "id:text",
+      "createdAt:datetime",
+      "updatedAt:datetime",
+    );
+    supplied.dataModel.push({
+      name: "Picker Session",
+      storage: "localStorage",
+      fields: ["currentPickerMovieId:text", "lastPickedMovieId:text", "updatedAt:datetime"],
+      relationships: [],
+    });
+
+    const addSuggestion = supplied.workflowContracts.find((contract) =>
+      contract.name.startsWith("Add a movie"),
+    );
+    const pickMovie = supplied.workflowContracts.find((contract) =>
+      contract.name.startsWith("Pick a movie"),
+    );
+    if (!addSuggestion || !pickMovie) {
+      throw new Error("Missing movie workflow fixtures");
+    }
+    const approvedRequiredFields = [
+      ...addSuggestion.requiredData[0].requiredFieldKeys,
+    ];
+    const approvedSaveFields = [...addSuggestion.expectedSaves[0].fieldKeys];
+    addSuggestion.requiredData[0]?.requiredFieldKeys.push(
+      "id",
+      "createdAt",
+      "updatedAt",
+    );
+    addSuggestion.expectedSaves[0]?.fieldKeys.push(
+      "id",
+      "createdAt",
+      "updatedAt",
+    );
+    pickMovie.requiredData.push({
+      entityName: "Picker Session",
+      entityKey: "picker_session",
+      operations: ["create", "read", "update"],
+      requiredFieldKeys: ["currentPickerMovieId", "lastPickedMovieId", "updatedAt"],
+    });
+    const pickerStep = pickMovie.steps.at(-1)!;
+    pickerStep.kind = "save";
+    pickerStep.writes.push("picker_session");
+    pickMovie.expectedSaves.push({
+      stepId: pickerStep.id,
+      operation: "update",
+      entityName: "Picker Session",
+      entityKey: "picker_session",
+      fieldKeys: ["currentPickerMovieId", "lastPickedMovieId", "updatedAt"],
+      storage: "localStorage",
+      producedReference: "picker_session.id",
+    });
+
+    const normalized = ensureWorkflowContracts(spec, supplied);
+    const normalizedSuggestion = normalized.workflowContracts.find(
+      (contract) => contract.id === addSuggestion.id,
+    )!;
+    const normalizedPicker = normalized.workflowContracts.find(
+      (contract) => contract.id === pickMovie.id,
+    )!;
+
+    expect(normalized.dataModel.map((entity) => entity.name)).toEqual([
+      "Movie Suggestion",
+      "Watched History Entry",
+    ]);
+    expect(normalized.dataModel[0].fields).toEqual([
+      "title:text",
+      "watched:boolean",
+    ]);
+    expect(normalizedSuggestion.requiredData[0].requiredFieldKeys).toEqual(
+      approvedRequiredFields,
+    );
+    expect(normalizedSuggestion.expectedSaves[0].fieldKeys).toEqual(
+      approvedSaveFields,
+    );
+    expect(normalizedPicker.requiredData).not.toContainEqual(
+      expect.objectContaining({ entityKey: "picker_session" }),
+    );
+    expect(normalizedPicker.expectedSaves).not.toContainEqual(
+      expect.objectContaining({ entityKey: "picker_session" }),
+    );
+    expect(normalizedPicker.steps.flatMap((step) => step.writes)).not.toContain(
+      "picker_session",
+    );
+    expect(validateWorkflowContracts(spec, normalized).blockingIssues).toEqual(
+      [],
+    );
+  });
+
   it("does not add generic handoffs after an architect maps a saved reference", () => {
     const spec = bikeSpec();
     const architecture = createFallbackArchitecturePlan(
@@ -662,6 +835,76 @@ describe("workflow contract layer", () => {
     expect(playAgain.dependencies.platformServices).not.toContain(
       "integrations",
     );
+  });
+
+  it("treats sequential saves caused by one button press as automatic effects", () => {
+    const spec = bikeSpec();
+    const supplied = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const workflow = supplied.workflowContracts.find((contract) =>
+      contract.name.startsWith("Plan and save"),
+    )!;
+    workflow.controls.push({
+      id: "confirm-route",
+      kind: "button",
+      accessibleName: "Confirm route",
+      route: "/",
+      roles: ["owner", "editor"],
+      action: "Confirm the route and save its details",
+    });
+    workflow.steps.push(
+      {
+        id: "confirm-route",
+        description: "Press Confirm route",
+        kind: "action",
+        route: "/",
+        controlId: "confirm-route",
+        reads: ["route_option"],
+        writes: [],
+        visibleResult: "The route is being saved.",
+      },
+      {
+        id: "persist-route-details",
+        description: "Set the saved route details.",
+        kind: "save",
+        route: "/",
+        controlId: "confirm-route",
+        reads: ["route_option"],
+        writes: ["route_option"],
+        visibleResult: "The route details are saved.",
+      },
+      {
+        id: "create-route-history",
+        description: "Create one route history entry.",
+        kind: "save",
+        route: "/",
+        controlId: "confirm-route",
+        reads: ["route_option"],
+        writes: ["route_option"],
+        visibleResult: "The route history is saved.",
+      },
+    );
+
+    const normalized = ensureWorkflowContracts(spec, supplied);
+    const normalizedWorkflow = normalized.workflowContracts.find(
+      (contract) => contract.id === workflow.id,
+    )!;
+    const effectSteps = normalizedWorkflow.steps.slice(-3);
+
+    expect(effectSteps.map((step) => step.kind)).toEqual([
+      "action",
+      "automatic",
+      "automatic",
+    ]);
+    expect(effectSteps.map((step) => step.controlId)).toEqual([
+      "confirm-route",
+      "",
+      "",
+    ]);
+    expect(effectSteps[1].writes).toEqual(["route_option"]);
+    expect(effectSteps[2].writes).toEqual(["route_option"]);
   });
 
   it("reconstructs contracts when resuming an older architecture record", () => {

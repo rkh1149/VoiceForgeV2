@@ -242,18 +242,21 @@ export function ensureWorkflowContracts<T extends WorkflowContractArchitecture>(
   workflowContractVersion: typeof WORKFLOW_CONTRACT_VERSION;
   workflowContracts: WorkflowContract[];
 } {
+  const dataModel = normalizeApprovedDataModel(spec, architecture.dataModel);
+  const approvedArchitecture = { ...architecture, dataModel };
   const supplied = architecture.workflowContracts ?? [];
   const contracts =
     architecture.workflowContractVersion === WORKFLOW_CONTRACT_VERSION &&
     supplied.length > 0
       ? supplied.map((contract) => normalizeSuppliedContract(contract, spec))
-      : compileWorkflowContracts(spec, architecture);
+      : compileWorkflowContracts(spec, approvedArchitecture);
   const interactionSafeContracts = contracts.map((contract) =>
-    normalizeContractInteractionSemantics(contract, architecture),
+    normalizeContractInteractionSemantics(contract, approvedArchitecture),
   );
 
   return {
     ...architecture,
+    dataModel,
     workflowContractVersion: WORKFLOW_CONTRACT_VERSION,
     workflowContracts: assignSourcesAndHandoffs(interactionSafeContracts, spec),
   };
@@ -703,32 +706,42 @@ function normalizeSuppliedContract(
     }
     return scored[0].platform;
   };
-  const normalizeEntity = (name: string, key: string) => {
-    const platform =
-      resolvePlatformEntity(key) ?? resolvePlatformEntity(name);
-    return platform
-      ? { entityName: platform.name, entityKey: platform.key }
-      : { entityName: name, entityKey: normalizeEntityKey(key || name) };
-  };
+  const resolveEntityPair = (name: string, key: string) =>
+    resolvePlatformEntity(key) ?? resolvePlatformEntity(name);
   const normalizeEntityReference = (value: string) =>
-    resolvePlatformEntity(value)?.key ?? normalizeEntityKey(value);
+    resolvePlatformEntity(value)?.key;
+  const normalizeFieldReference = (
+    platform: (typeof platformEntities)[number],
+    value: string,
+  ) => {
+    const normalized = normalizeEntityKey(value);
+    return platform.fields.find(
+      (field) =>
+        field.key === normalized ||
+        normalizeEntityKey(field.label) === normalized,
+    )?.key;
+  };
   const synthesizedDiscoverabilityControl =
     contract.controls.length === 0 && contract.trigger === "user_action";
   const suppliedControls = synthesizedDiscoverabilityControl
     ? [createDiscoverabilityControl(contract)]
     : contract.controls;
-  const requiredData = contract.requiredData.map((data) => {
-    const entity = normalizeEntity(data.entityName, data.entityKey);
-    const platform = entities.get(normalizeText(entity.entityKey));
-    const fields = new Set(platform?.fields.map((field) => field.key) ?? []);
-    return {
-      ...data,
-      ...entity,
-      requiredFieldKeys: data.requiredFieldKeys.map((field) => {
-        const key = normalizeEntityKey(field);
-        return fields.has(key) ? key : field;
-      }),
-    };
+  const requiredData = contract.requiredData.flatMap((data) => {
+    const platform = resolveEntityPair(data.entityName, data.entityKey);
+    if (!platform) return [];
+    return [
+      {
+        ...data,
+        entityName: platform.name,
+        entityKey: platform.key,
+        requiredFieldKeys: unique(
+          data.requiredFieldKeys.flatMap((field) => {
+            const key = normalizeFieldReference(platform, field);
+            return key ? [key] : [];
+          }),
+        ),
+      },
+    ];
   });
   const controlIdMap = new Map(
     suppliedControls.map((control, index) => [
@@ -742,40 +755,54 @@ function normalizeSuppliedContract(
       slugify(step.id || `${contract.id}-step-${index + 1}`),
     ]),
   );
-  const expectedSaves = contract.expectedSaves.map((save) => {
-    const entity = normalizeEntity(save.entityName, save.entityKey);
-    const platform = entities.get(normalizeText(entity.entityKey));
-    const fields = new Set(platform?.fields.map((field) => field.key) ?? []);
-    return {
-      ...save,
-      ...entity,
-      stepId: stepIdMap.get(save.stepId) ?? slugify(save.stepId),
-      fieldKeys: save.fieldKeys.map((field) => {
-        const key = normalizeEntityKey(field);
-        return fields.has(key) ? key : field;
-      }),
-      producedReference: `${entity.entityKey}.id`,
-    };
+  const producedReferenceMap = new Map<string, string>();
+  const expectedSaves = contract.expectedSaves.flatMap((save) => {
+    const platform = resolveEntityPair(save.entityName, save.entityKey);
+    if (!platform) return [];
+    const producedReference = `${platform.key}.id`;
+    producedReferenceMap.set(save.producedReference, producedReference);
+    producedReferenceMap.set(`${save.entityKey}.id`, producedReference);
+    producedReferenceMap.set(`${save.entityName}.id`, producedReference);
+    return [
+      {
+        ...save,
+        entityName: platform.name,
+        entityKey: platform.key,
+        stepId: stepIdMap.get(save.stepId) ?? slugify(save.stepId),
+        fieldKeys: unique(
+          save.fieldKeys.flatMap((field) => {
+            const key = normalizeFieldReference(platform, field);
+            return key ? [key] : [];
+          }),
+        ),
+        producedReference,
+      },
+    ];
   });
-  const producedReferenceMap = new Map(
-    contract.expectedSaves.map((save, index) => [
-      save.producedReference,
-      expectedSaves[index]?.producedReference ?? save.producedReference,
-    ]),
+  const expectedProducedReferences = new Set(
+    expectedSaves.map((save) => save.producedReference),
   );
-  const normalizedHandoffs = contract.handoffs.map((handoff) => ({
-    ...handoff,
-    id: slugify(handoff.id),
-    fromStepId:
-      stepIdMap.get(handoff.fromStepId) ?? slugify(handoff.fromStepId),
-    produces:
+  const normalizedHandoffs = contract.handoffs.flatMap((handoff) => {
+    const entityReference = handoff.produces.replace(/\.id$/i, "");
+    const entityKey = normalizeEntityReference(entityReference);
+    const produces =
       producedReferenceMap.get(handoff.produces) ??
-      `${normalizeEntityReference(handoff.produces)}.id`,
-    consumerWorkflowId: slugify(handoff.consumerWorkflowId),
-    consumerControlId: handoff.consumerControlId
-      ? slugify(handoff.consumerControlId)
-      : "",
-  }));
+      (entityKey ? `${entityKey}.id` : undefined);
+    if (!produces || !expectedProducedReferences.has(produces)) return [];
+    return [
+      {
+        ...handoff,
+        id: slugify(handoff.id),
+        fromStepId:
+          stepIdMap.get(handoff.fromStepId) ?? slugify(handoff.fromStepId),
+        produces,
+        consumerWorkflowId: slugify(handoff.consumerWorkflowId),
+        consumerControlId: handoff.consumerControlId
+          ? slugify(handoff.consumerControlId)
+          : "",
+      },
+    ];
+  });
 
   return {
     ...contract,
@@ -802,8 +829,18 @@ function normalizeSuppliedContract(
         : step.controlId
           ? (controlIdMap.get(step.controlId) ?? slugify(step.controlId))
           : "",
-      reads: unique(step.reads.map(normalizeEntityReference)),
-      writes: unique(step.writes.map(normalizeEntityReference)),
+      reads: unique(
+        step.reads.flatMap((value) => {
+          const entityKey = normalizeEntityReference(value);
+          return entityKey ? [entityKey] : [];
+        }),
+      ),
+      writes: unique(
+        step.writes.flatMap((value) => {
+          const entityKey = normalizeEntityReference(value);
+          return entityKey ? [entityKey] : [];
+        }),
+      ),
     })),
     requiredData,
     expectedSaves,
@@ -822,6 +859,34 @@ function normalizeSuppliedContract(
       ),
     },
   };
+}
+
+function normalizeApprovedDataModel(
+  spec: AppSpec,
+  dataModel: WorkflowContractArchitecture["dataModel"],
+): WorkflowContractArchitecture["dataModel"] {
+  const approvedByKey = new Map(
+    spec.dataEntities.map((entity) => [normalizeEntityKey(entity.name), entity]),
+  );
+  const seen = new Set<string>();
+
+  return dataModel.flatMap((planned) => {
+    const key = normalizeEntityKey(planned.name);
+    const approved = approvedByKey.get(key);
+    if (!approved || seen.has(key)) return [];
+    seen.add(key);
+    return [
+      {
+        ...planned,
+        name: approved.name,
+        fields: approved.fields.map((field) => `${field.name}:${field.type}`),
+        relationships: approved.relationships.map(
+          (relationship) =>
+            `${relationship.type} ${relationship.targetEntity}: ${relationship.description}`,
+        ),
+      },
+    ];
+  });
 }
 
 function normalizeContractInteractionSemantics(
@@ -845,11 +910,27 @@ function normalizeContractInteractionSemantics(
   const producedReferences = new Set(
     expectedSaves.map((save) => save.producedReference),
   );
+  let lastGestureControlId = "";
   let steps = contract.steps.map((step) => {
     const writes = step.writes.filter((entityKey) =>
       persistentEntityKeys.has(entityKey),
     );
-    const kind = normalizedStepKind({ ...step, writes });
+    let kind = normalizedStepKind({ ...step, writes });
+    const repeatsPriorGesture =
+      Boolean(step.controlId) &&
+      step.controlId === lastGestureControlId &&
+      !isExplicitRepeatedGestureDescription(step.description);
+    if (repeatsPriorGesture && (kind === "action" || kind === "save")) {
+      kind = "automatic";
+    } else if (
+      step.controlId &&
+      (kind === "navigate" ||
+        kind === "input" ||
+        kind === "action" ||
+        kind === "save")
+    ) {
+      lastGestureControlId = step.controlId;
+    }
     return {
       ...step,
       kind,
@@ -964,6 +1045,17 @@ function normalizeContractInteractionSemantics(
       ),
     },
   };
+}
+
+function isExplicitRepeatedGestureDescription(value: string): boolean {
+  return (
+    /^\s*(?:the\s+)?(?:user|player|rider|member|owner|editor|child|parent|guest|visitor|customer|student|teacher|participant|person)\s+(?:clicks?|taps?|presses?|chooses?|selects?|requests?|saves?|submits?)\b/i.test(
+      value,
+    ) ||
+    /\b(?:click|tap|press|choose|select|request|save|submit)\b[\s\S]{0,40}\bagain\b/i.test(
+      value,
+    )
+  );
 }
 
 function normalizedStepKind(

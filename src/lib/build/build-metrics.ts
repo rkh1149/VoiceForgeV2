@@ -53,6 +53,7 @@ export type BuildMetrics = {
   debugRounds: BuildDebugRoundMetric[];
   debugRoundsByStep: Record<string, number>;
   acceptanceJourneyCoverage: AcceptanceJourneyCoverageMetric | null;
+  humanCompletenessCoverage: HumanCompletenessCoverageMetric | null;
   failureCategory: BuildFailureCategory | null;
 };
 
@@ -69,6 +70,14 @@ export type AcceptanceJourneyCoverageMetric = {
   refreshChecksVerified: number;
   handoffsRequired: number;
   handoffsVerified: number;
+};
+
+export type HumanCompletenessCoverageMetric = {
+  promisesReviewed: number;
+  supported: number;
+  partiallySupported: number;
+  missing: number;
+  unclear: number;
 };
 
 type PhaseLike = {
@@ -95,6 +104,7 @@ export function createBuildMetrics(): BuildMetrics {
     debugRounds: [],
     debugRoundsByStep: {},
     acceptanceJourneyCoverage: null,
+    humanCompletenessCoverage: null,
     failureCategory: null,
   };
 }
@@ -142,6 +152,18 @@ export function recordReviewMetrics(
           refreshChecksVerified: numberValue(summary.refreshChecksVerified),
           handoffsRequired: numberValue(summary.handoffsRequired),
           handoffsVerified: numberValue(summary.handoffsVerified),
+        };
+      }
+    }
+    if (review.agentKey === "product_completeness_reviewer") {
+      const summary = recordValue(review.payload?.summary);
+      if (summary) {
+        metrics.humanCompletenessCoverage = {
+          promisesReviewed: numberValue(summary.promisesReviewed),
+          supported: numberValue(summary.supported),
+          partiallySupported: numberValue(summary.partiallySupported),
+          missing: numberValue(summary.missing),
+          unclear: numberValue(summary.unclear),
         };
       }
     }
@@ -223,6 +245,7 @@ export function buildMetricsPayload(metrics: BuildMetrics): Record<string, unkno
     debugRoundsByStep: metrics.debugRoundsByStep,
     debugRounds: metrics.debugRounds,
     acceptanceJourneyCoverage: metrics.acceptanceJourneyCoverage,
+    humanCompletenessCoverage: metrics.humanCompletenessCoverage,
     failureCategory: metrics.failureCategory,
     totals: {
       generatedFileChanges: metrics.generatedFilesByPhase.reduce(
@@ -264,6 +287,7 @@ export function categorizeBuildFailure(message: string): BuildFailureCategory {
   }
   if (text.includes("platform capabilities")) return "architecture_capability";
   if (text.includes("acceptance_test:")) return "integration_review_gate";
+  if (text.includes("human_completeness:")) return "integration_review_gate";
   if (
     text.includes("dependencies") ||
     text.includes("dependency") ||

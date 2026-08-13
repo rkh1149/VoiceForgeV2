@@ -201,12 +201,18 @@ export const requirements = pgTable(
     version: integer("version").notNull().default(1),
     spec: jsonb("spec").notNull(), // structured requirements
     plainSummary: text("plain_summary"), // plain-English build summary shown to user
+    sourceConversationId: uuid("source_conversation_id").references(
+      () => conversations.id,
+    ),
     createdBy: uuid("created_by").references(() => users.id),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
-  (t) => [uniqueIndex("requirements_app_version_idx").on(t.appId, t.version)],
+  (t) => [
+    uniqueIndex("requirements_app_version_idx").on(t.appId, t.version),
+    index("requirements_source_conversation_idx").on(t.sourceConversationId),
+  ],
 );
 
 /** What the user approved, and when. Nothing builds without one. */

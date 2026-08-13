@@ -43,6 +43,11 @@ describe("build resume status filter", () => {
     expect(pipeline).toContain("best saved source checkpoint");
     expect(pipeline).toContain("refreshResumedTemplateFiles");
     expect(pipeline).toContain("options?.resetDebugBudget");
+    expect(pipeline).toContain("recheckTestingCheckpoint");
+    expect(pipeline).toContain("includeCompleteness: !recheckTestingCheckpoint");
+    expect(pipeline).toContain(
+      "latest deterministic workflow and acceptance rules",
+    );
     expect(pipeline).toContain("preserved the checkpoint and will retry");
     expect(pipeline).not.toContain("Debug agent could not produce a fix");
     expect(rebuildRoute).toContain("isBuildCheckpointCompatible");

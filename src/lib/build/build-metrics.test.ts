@@ -60,6 +60,21 @@ describe("build metrics", () => {
           },
         },
       },
+      {
+        agentKey: "product_completeness_reviewer",
+        phaseKey: "human-language-completeness-review",
+        warnings: [],
+        blockingIssues: [],
+        payload: {
+          summary: {
+            promisesReviewed: 7,
+            supported: 6,
+            partiallySupported: 0,
+            missing: 0,
+            unclear: 1,
+          },
+        },
+      },
     ]);
     recordDebugRoundMetric(metrics, {
       step: "test",
@@ -83,6 +98,13 @@ describe("build metrics", () => {
       journeysVerified: 2,
       handoffsVerified: 2,
     });
+    expect(metrics.humanCompletenessCoverage).toEqual({
+      promisesReviewed: 7,
+      supported: 6,
+      partiallySupported: 0,
+      missing: 0,
+      unclear: 1,
+    });
   });
 
   it("marks metrics failed when a failure category is recorded", () => {
@@ -104,6 +126,11 @@ describe("build metrics", () => {
     );
     expect(
       categorizeBuildFailure("acceptance_test:handoff Route not available"),
+    ).toBe("integration_review_gate");
+    expect(
+      categorizeBuildFailure(
+        "human_completeness:workflow:save-route Saved route is unavailable",
+      ),
     ).toBe("integration_review_gate");
     expect(
       categorizeBuildFailure(

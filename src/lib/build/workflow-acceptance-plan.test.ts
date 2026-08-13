@@ -291,6 +291,9 @@ describe("workflow acceptance plan", () => {
     expect(plan.journeys[1].dependsOnJourneyIds).toEqual([
       plan.journeys[0].id,
     ]);
+    expect(plan.journeys[1].preconditions.join(" ")).toContain(
+      "Playwright tests do not share localStorage or sessionStorage",
+    );
     expect(validateWorkflowAcceptancePlan(architecture, plan).blockingIssues).toEqual(
       [],
     );

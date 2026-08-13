@@ -374,6 +374,31 @@ describe("post-generation repair policy", () => {
     expect(assessment.regressedDomains).toEqual(["interface"]);
     expect(assessment.reason).toContain("increased findings in interface");
   });
+
+  it("accepts product-completeness progress only when earlier gates stay clean", () => {
+    const improved = assessPostGenerationRepair({
+      domain: "completeness",
+      previousIssues: [
+        "human_completeness:workflow:save-route Saved routes never reach GPS.",
+        "human_completeness:feature:route-tracking GPS cannot select a route.",
+      ],
+      currentIssues: [
+        "human_completeness:feature:route-tracking GPS cannot select a route.",
+      ],
+    });
+    const regressed = assessPostGenerationRepair({
+      domain: "completeness",
+      previousIssues: [
+        "human_completeness:workflow:save-route Saved routes never reach GPS.",
+      ],
+      currentIssues: ["ui_affordance: GPS is no longer reachable."],
+    });
+
+    expect(improved.accepted).toBe(true);
+    expect(improved.currentCounts.completeness).toBe(1);
+    expect(regressed.accepted).toBe(false);
+    expect(regressed.regressedDomains).toContain("interface");
+  });
 });
 
 describe("post-generation reviews", () => {

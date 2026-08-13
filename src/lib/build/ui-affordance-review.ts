@@ -1001,6 +1001,21 @@ function controlLabel(
           dynamicKey: null,
         };
   }
+  const tagName = opening.tagName.getText(sourceFile).toLowerCase();
+  if (
+    tagName === "input" ||
+    tagName === "select" ||
+    tagName === "textarea"
+  ) {
+    const wrappingLabel = wrappingLabelText(node, sourceFile);
+    if (wrappingLabel) {
+      return {
+        label: wrappingLabel,
+        confidence: "resolved",
+        dynamicKey: null,
+      };
+    }
+  }
   const ownText = jsxElementText(node, sourceFile);
   const ownDynamic = jsxElementDynamicKey(node, sourceFile);
   if (ownDynamic) {
@@ -1040,6 +1055,48 @@ function controlLabel(
     parent = parent.parent;
   }
   return { label: "", confidence: "missing", dynamicKey: null };
+}
+
+function wrappingLabelText(
+  node: ts.JsxElement | ts.JsxSelfClosingElement,
+  sourceFile: ts.SourceFile,
+): string {
+  let parent: ts.Node | undefined = node.parent;
+  while (parent && parent !== sourceFile) {
+    if (ts.isJsxElement(parent)) {
+      const tag = parent.openingElement.tagName.getText(sourceFile).toLowerCase();
+      if (tag === "label") {
+        return jsxTextOutsideNode(parent, node, sourceFile);
+      }
+      if (tag === "form" || tag === "section" || tag === "main") break;
+    }
+    parent = parent.parent;
+  }
+  return "";
+}
+
+function jsxTextOutsideNode(
+  root: ts.JsxElement,
+  excluded: ts.Node,
+  sourceFile: ts.SourceFile,
+): string {
+  const values: string[] = [];
+  const collect = (child: ts.Node) => {
+    if (child === excluded || nodeContains(child, excluded)) return;
+    if (ts.isJsxText(child)) {
+      values.push(child.text);
+      return;
+    }
+    if (ts.isJsxExpression(child) && child.expression) {
+      values.push(expressionText(child.expression, sourceFile));
+      return;
+    }
+    if (ts.isJsxElement(child)) {
+      child.children.forEach(collect);
+    }
+  };
+  root.children.forEach(collect);
+  return normalizeVisibleText(values.join(" "));
 }
 
 function elementValueNamesControl(

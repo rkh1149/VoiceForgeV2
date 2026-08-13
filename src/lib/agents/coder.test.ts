@@ -120,6 +120,10 @@ describe("coder shared rules", () => {
     expect(source).toContain("expectPersistedAfterReload");
     expect(source).toContain("test.describe.serial");
     expect(source).toContain("dependsOnJourneyIds");
+    expect(source).toContain("fresh browser context");
+    expect(source).toContain("replay the necessary prerequisite workflows");
+    expect(source).toContain("Before a state-clearing action");
+    expect(source).toContain("stable visible navigation link");
     expect(source).toContain("acceptanceRunSuffix");
     expect(source).toContain("Native select option elements are hidden");
     expect(source).toContain("toHaveCount(1), never toBeVisible()");

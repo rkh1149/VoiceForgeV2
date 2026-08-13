@@ -640,6 +640,57 @@ export default function RecipesPage() {
     expect(result.summary.reloadPathsVerified).toBe(1);
   });
 
+  it("recognizes collection deletes and selects the handoff's originating save", () => {
+    const localArchitecture = structuredClone(architecture());
+    const producer = localArchitecture.workflowContracts[0];
+    producer.expectedSaves[0].storage = "localStorage";
+    producer.steps.push({
+      id: "delete-recipe-record",
+      description: "Delete recipe",
+      kind: "save",
+      route: "/recipes",
+      controlId: "save-recipe",
+      reads: ["recipe"],
+      writes: ["recipe"],
+      visibleResult: "The recipe is removed.",
+    });
+    producer.expectedSaves.push({
+      stepId: "delete-recipe-record",
+      operation: "delete",
+      entityName: "Recipe",
+      entityKey: "recipe",
+      fieldKeys: [],
+      storage: "localStorage",
+      producedReference: "recipe.id",
+    });
+    producer.handoffs[0].fromStepId = "save-recipe-record";
+
+    const result = analyzePersistenceHandoffs({
+      spec,
+      architecture: localArchitecture,
+      files: {
+        "src/app/recipes/page.tsx": `"use client";
+import { useEffect, useState } from "react";
+export default function RecipesPage() {
+  const [recipes, setRecipes] = useState([]);
+  useEffect(() => { setRecipes(JSON.parse(localStorage.getItem("recipe") ?? "[]")); }, []);
+  function createRecipe() { const savedRecipe = { id: "recipe-1", recipe_title: "Soup", ingredients: "Stock" }; const next = [...recipes, savedRecipe]; localStorage.setItem("recipe", JSON.stringify(next)); setRecipes(next); }
+  function deleteRecipe() { const next = recipes.filter((recipe) => recipe.id !== "recipe-1"); localStorage.setItem("recipe", JSON.stringify(next)); setRecipes(next); }
+  return <main><button onClick={createRecipe}>Save recipe</button><button onClick={deleteRecipe}>Delete recipe</button></main>;
+}`,
+        "src/app/weekly-plan/page.tsx": `"use client";
+import { useEffect, useState } from "react";
+export default function WeeklyPlanPage() { const [recipes, setRecipes] = useState([]); useEffect(() => { setRecipes(JSON.parse(localStorage.getItem("recipe") ?? "[]")); }, []); return <select aria-label="Choose saved recipe">{recipes.map((recipe) => <option key={recipe.id} value={recipe.id}>{recipe.recipe_title}</option>)}</select>; }`,
+        "src/components/recipe-local.test.tsx": `describe("Create and save a recipe then Plan saved recipe", () => { it("creates, reloads, selects, and deletes recipe records", () => { createRecipe(); expect(localStorage.setItem).toHaveBeenCalledWith("recipe", expect.stringContaining("recipe_title")); expect(ingredients).toEqual("Stock"); unmount(); remountRecipes(); expect(localStorage.getItem).toHaveBeenCalledWith("recipe"); openWeeklyPlan(); selectRecipe("recipe-1"); expect(screen.getByRole("option", { name: "Soup" })).toHaveValue("recipe-1"); deleteRecipe(); expect(localStorage.setItem).toHaveBeenCalled(); }); });`,
+      },
+    });
+
+    expect(
+      result.saves.find((save) => save.operation === "delete"),
+    ).toMatchObject({ writeFound: true });
+    expect(result.handoffs[0]).toMatchObject({ producerSaveFound: true });
+  });
+
   it("verifies platform file uploads and fresh file-list loading", () => {
     const fileArchitecture = architecture();
     fileArchitecture.workflowContracts = [

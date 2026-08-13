@@ -160,6 +160,47 @@ describe("debug progress", () => {
     expect(compareFailureFingerprints(before, advanced).status).toBe("changed");
   });
 
+  it("treats reaching a later serial acceptance journey as improvement", () => {
+    const before = createFailureFingerprint(
+      "e2e",
+      [
+        "1) e2e/generated/movie.spec.ts:20:3 › movie suite › [voiceforge-journey:journey-1-1-manage-suggestions] Manage suggestions",
+        "Error: expect(locator).toBeVisible() failed",
+        "Locator: getByText('Comedy')",
+      ].join("\n"),
+    );
+    const advanced = createFailureFingerprint(
+      "e2e",
+      [
+        "1) e2e/generated/movie.spec.ts:80:3 › movie suite › [voiceforge-journey:journey-1-2-pick-a-movie] Pick a movie",
+        "TimeoutError: locator.selectOption: Timeout 12000ms exceeded.",
+        "Call log:",
+        "  - waiting for getByRole('combobox', { name: 'Genre' })",
+      ].join("\n"),
+    );
+
+    expect(compareFailureFingerprints(before, advanced)).toMatchObject({
+      status: "improved",
+      previousCount: 1,
+      currentCount: 1,
+    });
+  });
+
+  it("still rejects a newly failing unrelated acceptance journey", () => {
+    const before = createFailureFingerprint(
+      "e2e",
+      "1) e2e/generated/movie.spec.ts:20:3 › [voiceforge-journey:journey-1-1-manage] Manage\nError: failed",
+    );
+    const unrelated = createFailureFingerprint(
+      "e2e",
+      "1) e2e/generated/trip.spec.ts:20:3 › [voiceforge-journey:journey-2-1-plan] Plan\nError: failed",
+    );
+
+    expect(compareFailureFingerprints(before, unrelated).status).toBe(
+      "regressed",
+    );
+  });
+
   it("ignores dynamic acceptance-run suffixes when the actual failure is unchanged", () => {
     const before = createFailureFingerprint(
       "e2e",

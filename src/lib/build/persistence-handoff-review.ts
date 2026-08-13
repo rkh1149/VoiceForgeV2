@@ -120,7 +120,7 @@ export function analyzePersistenceHandoffs(input: {
   const testText = generatedTestText(input.files);
   const saves: PersistenceSaveEvidence[] = [];
   const reloads: PersistenceReloadEvidence[] = [];
-  const saveByReference = new Map<string, PersistenceSaveEvidence>();
+  const savesByReference = new Map<string, PersistenceSaveEvidence[]>();
 
   for (const contract of input.architecture.workflowContracts) {
     for (const save of contract.expectedSaves) {
@@ -140,7 +140,11 @@ export function analyzePersistenceHandoffs(input: {
         testText,
       });
       saves.push(saveEvidence);
-      saveByReference.set(`${contract.id}:${save.producedReference}`, saveEvidence);
+      const referenceKey = `${contract.id}:${save.producedReference}`;
+      savesByReference.set(referenceKey, [
+        ...(savesByReference.get(referenceKey) ?? []),
+        saveEvidence,
+      ]);
 
       const reloadSource = sourceForRoutes(
         [contract.success.route],
@@ -174,8 +178,9 @@ export function analyzePersistenceHandoffs(input: {
         producer,
         consumer,
         handoff,
-        producerSave: saveByReference.get(
-          `${producer.id}:${handoff.produces}`,
+        producerSave: selectProducerSave(
+          savesByReference.get(`${producer.id}:${handoff.produces}`) ?? [],
+          handoff.fromStepId,
         ),
         consumerSource: consumerSource.source,
         consumerFiles: consumerSource.files,
@@ -222,6 +227,17 @@ export function analyzePersistenceHandoffs(input: {
     warnings,
     blockingIssues,
   };
+}
+
+function selectProducerSave(
+  candidates: PersistenceSaveEvidence[],
+  fromStepId: string,
+): PersistenceSaveEvidence | undefined {
+  return (
+    candidates.find((candidate) => candidate.stepId === fromStepId) ??
+    candidates.find((candidate) => candidate.status === "verified") ??
+    candidates[0]
+  );
 }
 
 function reviewSave(input: {
@@ -563,11 +579,11 @@ function hasWriteOperation(source: string, save: SaveContract): boolean {
       ? /\bdeletePlatformFile\s*\(/.test(source)
       : /\buploadPlatformFile(?:Data)?\s*\(/.test(source);
   }
-  const method = save.operation === "delete" ? "removeItem" : "setItem";
-  return (
-    new RegExp(`\\blocalStorage\\.${method}\\s*\\(`).test(source) &&
-    sourceMentionsEntity(source, save)
-  );
+  const durableWrite =
+    save.operation === "delete"
+      ? /\blocalStorage\.(?:removeItem|setItem)\s*\(/.test(source)
+      : /\blocalStorage\.setItem\s*\(/.test(source);
+  return durableWrite && sourceMentionsEntity(source, save);
 }
 
 function platformWriteIncludesRawBinary(source: string): boolean {

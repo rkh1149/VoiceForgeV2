@@ -63,6 +63,14 @@ describe("code generation specialist phases", () => {
     expect(browserTests?.objective).toContain("downstream handoffs");
     expect(browserTests?.objective).toContain("voiceforge-acceptance.ts");
     expect(browserTests?.objective).toContain("test.describe.serial");
+    expect(browserTests?.objective).toContain("fresh browser context");
+    expect(browserTests?.objective).toContain(
+      "recreate localStorage/sessionStorage prerequisites",
+    );
+    expect(browserTests?.objective).toContain(
+      "Capture selected result identity before completion/delete/status actions",
+    );
+    expect(browserTests?.objective).toContain("stable visible link");
   });
 
   it("keeps change mode diagnostic, implementation, test, and final review phases separate", () => {

@@ -77,7 +77,7 @@ type SourceEntry = {
 };
 
 const ASSERTION_PATTERN =
-  /\bexpect\s*\([\s\S]{0,700}?\)\s*\.(?:not\.)?(?:toBeVisible|toBeHidden|toBeEnabled|toBeDisabled|toContainText|toHaveText|toHaveValue|toHaveCount|toHaveAttribute|toHaveURL|toMatch|toEqual|toContain)\s*\(/;
+  /\bexpect\s*\([\s\S]{0,700}?\)\s*\.(?:not\.)?(?:toBe|toBeVisible|toBeHidden|toBeEnabled|toBeDisabled|toContainText|toHaveText|toHaveValue|toHaveCount|toHaveAttribute|toHaveURL|toMatch|toEqual|toContain)\s*\(/;
 const INTERACTION_PATTERN =
   /\.(?:click|fill|press|selectOption|check|uncheck|setInputFiles|dragTo|dispatchEvent)\s*\(/;
 const INPUT_INTERACTION_PATTERN =
@@ -107,7 +107,7 @@ export function analyzeGeneratedAcceptanceTests(input: {
     ...reviewGlobalTestQuality(testEntries),
   ];
   const journeyReviews = plan.journeys.map((journey) =>
-    reviewJourney(journey, testEntries),
+    reviewJourney(journey, testEntries, plan),
   );
   const blockingIssues = uniqueStrings([
     ...globalBlockingIssues,
@@ -164,6 +164,7 @@ export function analyzeGeneratedAcceptanceTests(input: {
 function reviewJourney(
   journey: WorkflowAcceptanceJourney,
   allEntries: SourceEntry[],
+  plan: WorkflowAcceptancePlan,
 ): AcceptanceJourneyReview {
   const entries = allEntries.filter((entry) =>
     hasHelperMarker(entry.traceCalls, "workflowJourneyTitle", [journey.id]),
@@ -189,7 +190,29 @@ function reviewJourney(
     );
     if (sharedFiles.length === 0 || !/\btest\.describe\.serial\s*\(/.test(source)) {
       issues.push(
-        `acceptance_test:journey Dependent journey ${journey.id} must run after ${journey.dependsOnJourneyIds.join(", ")} in the same test.describe.serial suite so UI-created records are preserved.`,
+        `acceptance_test:journey Dependent journey ${journey.id} must run after ${journey.dependsOnJourneyIds.join(", ")} in the same test.describe.serial suite.`,
+      );
+    }
+
+    const browserLocalDependencies = dependentJourneys(plan, journey).filter(
+      (dependency) =>
+        dependency.saves.some((save) => save.storage === "localStorage") ||
+        dependency.handoffs.some(
+          (handoff) => handoff.storage === "localStorage",
+        ),
+    );
+    const journeyPrelude = helperMarkerWindow(
+      source,
+      traceCalls,
+      "workflowJourneyTitle",
+      [journey.id],
+    );
+    if (
+      browserLocalDependencies.length > 0 &&
+      !hasFreshContextPrerequisiteSetup(journeyPrelude)
+    ) {
+      issues.push(
+        `acceptance_test:journey Dependent journey ${journey.id} consumes browser-local records from ${browserLocalDependencies.map((dependency) => dependency.id).join(", ")}, but it does not recreate those prerequisites through visible UI before its first contract step. Playwright gives every test a fresh browser context, so test.describe.serial does not preserve localStorage or sessionStorage.`,
       );
     }
   }
@@ -290,7 +313,11 @@ function reviewJourney(
         typeof candidate.value === "string" &&
         !candidate.value.startsWith("@"),
     );
-    if (fixture && !source.includes(fixture.value as string)) {
+    if (
+      fixture &&
+      !source.includes(fixture.value as string) &&
+      !hasRunScopedFixture(source)
+    ) {
       issues.push(
         `acceptance_test:save Journey ${journey.id} does not use its unique ${save.entityKey} fixture value when proving persistence.`,
       );
@@ -312,10 +339,17 @@ function reviewJourney(
       );
       return false;
     }
-    const reachesConsumer =
+    const reachesConsumerInMarker =
       containsRouteNavigation(window, handoff.consumerRoute) ||
       (handoff.consumerAccessibleName &&
         containsLooseText(window, handoff.consumerAccessibleName));
+    const reachesConsumerEarlierInJourney =
+      containsRouteNavigation(source, handoff.consumerRoute) ||
+      (handoff.consumerAccessibleName &&
+        containsLooseText(source, handoff.consumerAccessibleName));
+    const reachesConsumer =
+      reachesConsumerInMarker ||
+      (/\bpage\.reload\s*\(/.test(window) && reachesConsumerEarlierInJourney);
     if (!reachesConsumer || !ASSERTION_PATTERN.test(window)) {
       if (hasOpaqueBrowserHelperCall(window)) {
         warnings.push(
@@ -436,6 +470,57 @@ function reviewJourney(
     blockingIssues: uniqueStrings(issues),
     warnings: uniqueStrings(warnings),
   };
+}
+
+function hasRunScopedFixture(source: string): boolean {
+  const suffixVariables = [...source.matchAll(
+    /\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*acceptanceRunSuffix\s*\(\s*\)/g,
+  )].map((match) => match[1]);
+  return suffixVariables.some((suffix) => {
+    const escaped = escapeRegExp(suffix);
+    const fixtureDeclaration = new RegExp(
+      `\\b(?:const|let)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*[^;\\n]*\\$\\{${escaped}\\}`,
+    ).exec(source);
+    if (!fixtureDeclaration?.[1]) return false;
+    const fixtureName = escapeRegExp(fixtureDeclaration[1]);
+    return (
+      new RegExp(`\\.(?:fill|selectOption)\\s*\\(\\s*${fixtureName}\\s*\\)`).test(
+        source,
+      ) &&
+      new RegExp(
+        `\\bexpect\\s*\\([\\s\\S]{0,500}\\b${fixtureName}\\b[\\s\\S]{0,500}\\)\\s*\\.`,
+      ).test(source)
+    );
+  });
+}
+
+function dependentJourneys(
+  plan: WorkflowAcceptancePlan,
+  journey: WorkflowAcceptanceJourney,
+): WorkflowAcceptanceJourney[] {
+  const byId = new Map(plan.journeys.map((candidate) => [candidate.id, candidate]));
+  const found = new Map<string, WorkflowAcceptanceJourney>();
+  const pending = [...journey.dependsOnJourneyIds];
+  while (pending.length > 0) {
+    const id = pending.shift();
+    if (!id || found.has(id)) continue;
+    const dependency = byId.get(id);
+    if (!dependency) continue;
+    found.set(id, dependency);
+    pending.push(...dependency.dependsOnJourneyIds);
+  }
+  return [...found.values()];
+}
+
+function hasFreshContextPrerequisiteSetup(source: string): boolean {
+  if (!source) return false;
+  const directVisibleSetup =
+    INPUT_INTERACTION_PATTERN.test(source) && /\.click\s*\(/.test(source);
+  const uiSetupHelper =
+    /\bawait\s+(?!test\.|expect\b|page\.)[A-Za-z_$][\w$]*\s*\(\s*page\b/.test(
+      source,
+    );
+  return directVisibleSetup || uiSetupHelper;
 }
 
 function reviewGlobalTestQuality(entries: SourceEntry[]): string[] {

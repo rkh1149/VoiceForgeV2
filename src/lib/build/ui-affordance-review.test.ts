@@ -200,6 +200,56 @@ export default function Home() { return <main><h1>Ride Helper</h1><Link href="/g
     });
   });
 
+  it("uses a wrapping label for a select instead of its option text", () => {
+    const contract = rideContract(["owner"]);
+    contract.controls = [
+      {
+        id: "age-rating",
+        kind: "combobox",
+        accessibleName: "Age rating",
+        route: "/gps",
+        roles: ["owner"],
+        action: "Choose an age rating",
+      },
+    ];
+    contract.steps = [
+      {
+        id: "choose-age-rating",
+        description: "Choose an age rating",
+        kind: "input",
+        route: "/gps",
+        controlId: "age-rating",
+        reads: [],
+        writes: [],
+        visibleResult: "The chosen age rating is visible.",
+      },
+    ];
+    contract.requiredData = [];
+    contract.expectedSaves = [];
+    contract.handoffs = [];
+    const appArchitecture = architecture(contract);
+    appArchitecture.dataModel = [];
+    const result = review(
+      {
+        "src/app/page.tsx": `import Link from "next/link"; export default function Home() { return <Link href="/gps">Open picker</Link>; }`,
+        "src/app/gps/page.tsx": `import { RatingForm } from "@/components/rating-form"; export default function Picker() { const showForm = true; return <main>{showForm && <RatingForm />}</main>; }`,
+        "src/components/rating-form.tsx": `export function RatingForm() { return <label>Age rating<select><option>Choose a rating</option><option>PG</option></select></label>; }`,
+      },
+      appArchitecture,
+      { ...spec, dataEntities: [] },
+    );
+
+    expect(result.workflows[0]).toMatchObject({
+      status: "discoverable",
+      missingControls: [],
+    });
+    expect(
+      result.routes
+        .find((route) => route.route === "/gps")
+        ?.controls.find((control) => control.kind === "combobox")?.label,
+    ).toBe("Age rating");
+  });
+
   it("follows navigation rendered by an imported shared component", () => {
     const result = review({
       "src/app/page.tsx": `import { AppNav } from "@/components/app-nav";

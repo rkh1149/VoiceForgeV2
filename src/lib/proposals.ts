@@ -105,6 +105,7 @@ export async function persistProposal(opts: {
       version,
       spec,
       plainSummary,
+      sourceConversationId: conversationId,
       createdBy: user.id,
     })
     .returning();
