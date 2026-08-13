@@ -17,6 +17,7 @@ import InterfaceReadinessReport from "@/components/InterfaceReadinessReport";
 import PersistenceHandoffReport from "@/components/PersistenceHandoffReport";
 import AcceptanceJourneysReport from "@/components/AcceptanceJourneysReport";
 import HumanCompletenessReport from "@/components/HumanCompletenessReport";
+import WorkflowRepairReport from "@/components/WorkflowRepairReport";
 
 export const dynamic = "force-dynamic";
 
@@ -118,6 +119,9 @@ export default async function BuildRunPage({
       .find(
         (artifact) => artifact.artifactType === "human_completeness_review",
       ) ?? null;
+  const workflowRepairArtifacts = agentArtifacts.filter(
+    (artifact) => artifact.artifactType === "workflow_repair",
+  );
   const browserResult =
     [...results].reverse().find((result) => result.suite === "e2e") ?? null;
   const otherAgentArtifacts = agentArtifacts.filter(
@@ -125,7 +129,8 @@ export default async function BuildRunPage({
       artifact.artifactType !== "ui_affordance_review" &&
       artifact.artifactType !== "persistence_handoff_review" &&
       artifact.artifactType !== "acceptance_test_review" &&
-      artifact.artifactType !== "human_completeness_review",
+      artifact.artifactType !== "human_completeness_review" &&
+      artifact.artifactType !== "workflow_repair",
   );
 
   return (
@@ -217,6 +222,10 @@ export default async function BuildRunPage({
 
       <div className="mt-4">
         <HumanCompletenessReport artifact={humanCompletenessArtifact} />
+      </div>
+
+      <div className="mt-4">
+        <WorkflowRepairReport artifacts={workflowRepairArtifacts} />
       </div>
 
       {otherAgentArtifacts.length > 0 && (

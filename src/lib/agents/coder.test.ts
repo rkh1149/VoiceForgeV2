@@ -117,6 +117,9 @@ describe("coder shared rules", () => {
     expect(source).toContain("workflowStepTitle");
     expect(source).toContain("workflowSaveTitle");
     expect(source).toContain("workflowHandoffTitle");
+    expect(source).toContain("Every navigate trace block must itself");
+    expect(source).toContain("nest the workflowStepTitle block");
+    expect(source).toContain("every supplied saveId still needs its own reload");
     expect(source).toContain("expectPersistedAfterReload");
     expect(source).toContain("test.describe.serial");
     expect(source).toContain("dependsOnJourneyIds");
@@ -125,6 +128,11 @@ describe("coder shared rules", () => {
     expect(source).toContain("Before a state-clearing action");
     expect(source).toContain("stable visible navigation link");
     expect(source).toContain("acceptanceRunSuffix");
+    expect(source).toContain("substring-based by default");
+    expect(source).toContain("strict-mode locator failure");
+    expect(source).toContain("exact: true");
+    expect(source).toContain("scope the locator to the named form or dialog");
+    expect(source).toContain("audit the rest of that journey");
     expect(source).toContain("Native select option elements are hidden");
     expect(source).toContain("toHaveCount(1), never toBeVisible()");
     expect(source).toContain("never click a Next.js link and immediately reload");
@@ -145,5 +153,17 @@ describe("coder shared rules", () => {
 
     expect(source).toContain("MUST apply it with patch_file or write_file");
     expect(source).toContain("do not stop after merely describing the edit");
+  });
+
+  it("keeps Stage 14F repairs inside the classified workflow graph", () => {
+    const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("WORKFLOW-AWARE REPAIR RULES");
+    expect(source).toContain("producer, save, consumer, and targeted journey");
+    expect(source).toContain('targetSurface "generated_test"');
+    expect(source).toContain('targetSurface "application_source"');
+    expect(source).toContain("Never disguise a failure");
+    expect(source).toContain("allowedMutationPaths");
+    expect(source).toContain("WORKFLOW REPAIR PACKAGE");
   });
 });

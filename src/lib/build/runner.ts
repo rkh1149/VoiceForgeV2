@@ -43,11 +43,37 @@ export type RunStepOptions = {
   onProgress?: (progress: StepProgress) => void | Promise<void>;
 };
 
+export type FocusedRun =
+  | { kind: "unit"; testFiles: string[] }
+  | { kind: "e2e"; grep: string };
+
+export function focusedRunCommand(focus: FocusedRun): {
+  step: StepName;
+  cmd: string;
+  args: string[];
+} {
+  return focus.kind === "unit"
+    ? {
+        step: "test",
+        cmd: "npx",
+        args: ["vitest", "run", ...focus.testFiles],
+      }
+    : {
+        step: "e2e",
+        cmd: "npx",
+        args: ["playwright", "test", "--grep", focus.grep],
+      };
+}
+
 export type Runner = {
   kind: "local" | "sandbox";
   writeFiles(files: FileMap): Promise<void>;
   deleteFiles(paths: string[]): Promise<void>;
   run(step: StepName, options?: RunStepOptions): Promise<StepResult>;
+  runFocused(
+    focus: FocusedRun,
+    options?: RunStepOptions,
+  ): Promise<StepResult>;
   dispose(): Promise<void>;
 };
 
@@ -206,6 +232,78 @@ async function createLocalRunner(
     path.join(os.tmpdir(), "voiceforge-v2-builds");
   const dir = path.join(base, buildRunId);
 
+  const runCommand = (
+    step: StepName,
+    cmd: string,
+    args: string[],
+    timeoutMs: number,
+    runOptions: RunStepOptions = {},
+  ): Promise<StepResult> => {
+    const started = Date.now();
+    const progress = createStepProgressTracker({
+      step,
+      startedAt: started,
+      onProgress: runOptions.onProgress,
+    });
+    if (step === "e2e") progress.note("Preparing the browser test runtime.");
+
+    return new Promise((resolve) => {
+      const child = spawn(cmd, args, {
+        cwd: dir,
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          CI: "true",
+          NEXT_TELEMETRY_DISABLED: "1",
+          VOICEFORGE_DATA_LOCAL_FALLBACK: "1",
+          ...options.env,
+        } as unknown as NodeJS.ProcessEnv,
+        shell: false,
+      });
+
+      let output = "";
+      const append = (chunk: Buffer) => {
+        const text = chunk.toString();
+        output = (output + text).slice(-DIAGNOSTIC_CAPTURE_LIMIT);
+        progress.observe(text);
+      };
+      child.stdout.on("data", append);
+      child.stderr.on("data", append);
+
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        output += `\n[voiceforge-v2] step "${step}" timed out after ${timeoutMs / 1000}s`;
+      }, timeoutMs);
+
+      child.on("close", async (code) => {
+        clearTimeout(timer);
+        await progress.stop();
+        const ok = code === 0;
+        resolve({
+          step,
+          ok,
+          output: output.slice(-OUTPUT_TAIL),
+          durationMs: Date.now() - started,
+          failureFingerprint: ok
+            ? undefined
+            : createFailureFingerprint(step, output),
+        });
+      });
+      child.on("error", async (err) => {
+        clearTimeout(timer);
+        await progress.stop();
+        const output = `Failed to start ${cmd}: ${err.message}`;
+        resolve({
+          step,
+          ok: false,
+          output,
+          durationMs: Date.now() - started,
+          failureFingerprint: createFailureFingerprint(step, output),
+        });
+      });
+    });
+  };
+
   return {
     kind: "local",
     async writeFiles(files: FileMap) {
@@ -222,73 +320,37 @@ async function createLocalRunner(
     },
     run(step: StepName, runOptions: RunStepOptions = {}): Promise<StepResult> {
       const { cmd, args, timeoutMs } = STEPS[step];
-      const started = Date.now();
-      const progress = createStepProgressTracker({
-        step,
-        startedAt: started,
-        onProgress: runOptions.onProgress,
-      });
-      if (step === "e2e") progress.note("Preparing the browser test runtime.");
-
-      return new Promise((resolve) => {
-        const child = spawn(cmd, args, {
-          cwd: dir,
-          // Deliberately no NODE_ENV: "development" breaks `next build`
-          // with a misleading prerender/<Html> error.
-          env: {
-            PATH: process.env.PATH,
-            HOME: process.env.HOME,
-            CI: "true",
-            NEXT_TELEMETRY_DISABLED: "1",
-            VOICEFORGE_DATA_LOCAL_FALLBACK: "1",
-            ...options.env,
-          } as unknown as NodeJS.ProcessEnv,
-          shell: false,
-        });
-
-        let output = "";
-        const append = (chunk: Buffer) => {
-          const text = chunk.toString();
-          output = (output + text).slice(-DIAGNOSTIC_CAPTURE_LIMIT);
-          progress.observe(text);
-        };
-        child.stdout.on("data", append);
-        child.stderr.on("data", append);
-
-        const timer = setTimeout(() => {
-          child.kill("SIGKILL");
-          output += `\n[voiceforge-v2] step "${step}" timed out after ${timeoutMs / 1000}s`;
-        }, timeoutMs);
-
-        child.on("close", async (code) => {
-          clearTimeout(timer);
-          await progress.stop();
-          const ok = code === 0;
-          resolve({
-            step,
-            ok,
-            output: output.slice(-OUTPUT_TAIL),
-            durationMs: Date.now() - started,
-            failureFingerprint: ok
-              ? undefined
-              : createFailureFingerprint(step, output),
-          });
-        });
-        child.on("error", async (err) => {
-          clearTimeout(timer);
-          await progress.stop();
-          resolve({
-            step,
-            ok: false,
-            output: `Failed to start ${cmd}: ${err.message}`,
-            durationMs: Date.now() - started,
-            failureFingerprint: createFailureFingerprint(
-              step,
-              `Failed to start ${cmd}: ${err.message}`,
-            ),
-          });
-        });
-      });
+      return runCommand(step, cmd, args, timeoutMs, runOptions);
+    },
+    async runFocused(
+      focus: FocusedRun,
+      runOptions: RunStepOptions = {},
+    ): Promise<StepResult> {
+      if (focus.kind === "unit") {
+        const command = focusedRunCommand(focus);
+        return runCommand(
+          command.step,
+          command.cmd,
+          command.args,
+          STEPS.test.timeoutMs,
+          runOptions,
+        );
+      }
+      const browserInstall = await runCommand(
+        "e2e",
+        "npx",
+        ["playwright", "install", "chromium"],
+        5 * 60_000,
+      );
+      if (!browserInstall.ok) return browserInstall;
+      const command = focusedRunCommand(focus);
+      return runCommand(
+        command.step,
+        command.cmd,
+        command.args,
+        STEPS.e2e.timeoutMs,
+        runOptions,
+      );
     },
     async dispose() {
       // Leave the workspace on disk for debugging; OS tmp cleanup handles it.
@@ -464,6 +526,99 @@ async function createSandboxRunner(options: RunnerOptions): Promise<Runner> {
       } catch (err) {
         await progress.stop();
         const output = `Sandbox command failed: ${err instanceof Error ? err.message : String(err)}`;
+        return {
+          step,
+          ok: false,
+          output,
+          durationMs: Date.now() - started,
+          failureFingerprint: createFailureFingerprint(step, output),
+        };
+      }
+    },
+    async runFocused(
+      focus: FocusedRun,
+      runOptions: RunStepOptions = {},
+    ): Promise<StepResult> {
+      const { step, cmd, args } = focusedRunCommand(focus);
+      const timeoutMs = STEPS[step].timeoutMs;
+      const started = Date.now();
+      const progress = createStepProgressTracker({
+        step,
+        startedAt: started,
+        onProgress: runOptions.onProgress,
+      });
+      if (step === "e2e") {
+        progress.note("Preparing the hosted browser test runtime.");
+      }
+      try {
+        const browserSetup =
+          step === "e2e"
+            ? await prepareBrowser()
+            : { ok: true, output: "" };
+        if (!browserSetup.ok) {
+          await progress.stop();
+          return {
+            step,
+            ok: false,
+            output: browserSetup.output.slice(-OUTPUT_TAIL),
+            durationMs: Date.now() - started,
+            failureFingerprint: createFailureFingerprint(
+              step,
+              browserSetup.output,
+            ),
+          };
+        }
+        let streamedOutput = "";
+        const outputStream = () =>
+          new Writable({
+            write(chunk, _encoding, callback) {
+              const text = chunk.toString();
+              streamedOutput = (streamedOutput + text).slice(
+                -DIAGNOSTIC_CAPTURE_LIMIT,
+              );
+              progress.observe(text);
+              callback();
+            },
+          });
+        const result = await sandbox.runCommand({
+          cmd: "env",
+          args: [
+            "CI=true",
+            "NEXT_TELEMETRY_DISABLED=1",
+            "VOICEFORGE_DATA_LOCAL_FALLBACK=1",
+            ...Object.entries(options.env ?? {}).map(
+              ([key, value]) => `${key}=${value}`,
+            ),
+            cmd,
+            ...args,
+          ],
+          stdout: outputStream(),
+          stderr: outputStream(),
+          timeoutMs,
+        });
+        if (!streamedOutput) {
+          streamedOutput = [await result.stdout(), await result.stderr()]
+            .filter(Boolean)
+            .join("\n");
+          progress.observe(streamedOutput);
+        }
+        await progress.stop();
+        const output = [browserSetup.output, streamedOutput]
+          .filter(Boolean)
+          .join("\n");
+        const ok = result.exitCode === 0;
+        return {
+          step,
+          ok,
+          output: output.slice(-OUTPUT_TAIL),
+          durationMs: Date.now() - started,
+          failureFingerprint: ok
+            ? undefined
+            : createFailureFingerprint(step, output),
+        };
+      } catch (error) {
+        await progress.stop();
+        const output = `Sandbox command failed: ${error instanceof Error ? error.message : String(error)}`;
         return {
           step,
           ok: false,

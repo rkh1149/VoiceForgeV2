@@ -476,7 +476,7 @@ function hasRunScopedFixture(source: string): boolean {
   const suffixVariables = [...source.matchAll(
     /\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*acceptanceRunSuffix\s*\(\s*\)/g,
   )].map((match) => match[1]);
-  return suffixVariables.some((suffix) => {
+  const hasDirectFixture = suffixVariables.some((suffix) => {
     const escaped = escapeRegExp(suffix);
     const fixtureDeclaration = new RegExp(
       `\\b(?:const|let)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*[^;\\n]*\\$\\{${escaped}\\}`,
@@ -490,6 +490,59 @@ function hasRunScopedFixture(source: string): boolean {
       new RegExp(
         `\\bexpect\\s*\\([\\s\\S]{0,500}\\b${fixtureName}\\b[\\s\\S]{0,500}\\)\\s*\\.`,
       ).test(source)
+    );
+  });
+  if (hasDirectFixture) return true;
+
+  const factoryDeclarations = [
+    ...source.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/g),
+  ];
+  return factoryDeclarations.some((factory) => {
+    const factoryName = factory[1];
+    const factoryWindow = source.slice(
+      factory.index,
+      Math.min(source.length, factory.index + 3_000),
+    );
+    const factorySuffixes = suffixVariables.filter((suffix) =>
+      new RegExp(
+        `\\b(?:const|let)\\s+${escapeRegExp(suffix)}\\s*=\\s*acceptanceRunSuffix\\s*\\(\\s*\\)`,
+      ).test(factoryWindow),
+    );
+    if (factorySuffixes.length === 0) return false;
+
+    const runScopedProperties = uniqueStrings(
+      factorySuffixes.flatMap((suffix) =>
+        [...factoryWindow.matchAll(
+          new RegExp(
+            "\\b([A-Za-z_$][\\w$]*)\\s*:\\s*`[^`]*\\$\\{" +
+              escapeRegExp(suffix) +
+              "\\}[^`]*`",
+            "g",
+          ),
+        )].map((match) => match[1]),
+      ),
+    );
+    if (runScopedProperties.length === 0) return false;
+
+    const resultVariables = [
+      ...source.matchAll(
+        new RegExp(
+          `\\b(?:const|let)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${escapeRegExp(factoryName)}\\s*\\(`,
+          "g",
+        ),
+      ),
+    ].map((match) => match[1]);
+    return resultVariables.some((resultVariable) =>
+      runScopedProperties.some((property) => {
+        const reference = `${escapeRegExp(resultVariable)}\\.${escapeRegExp(property)}`;
+        const usedAsInput = new RegExp(
+          `\\.(?:fill|selectOption)\\s*\\(\\s*${reference}\\b`,
+        ).test(source);
+        const visiblyAsserted = new RegExp(
+          `(?:getByText|toContainText|toHaveText|toHaveValue)\\s*\\(\\s*${reference}\\b`,
+        ).test(source);
+        return usedAsInput && visiblyAsserted;
+      }),
     );
   });
 }
@@ -593,8 +646,25 @@ function containsRouteNavigation(source: string, route: string): boolean {
     new RegExp(`\\.toHaveURL\\s*\\(\\s*${routeArgument}`).test(source) ||
     new RegExp(
       `\\b(?:href|getAttribute)\\b[\\s\\S]{0,180}${routeArgument}`,
-    ).test(source)
+    ).test(source) || containsRouteRegexAssertion(source, route)
   );
+}
+
+function containsRouteRegexAssertion(source: string, route: string): boolean {
+  const assertions = [
+    ...source.matchAll(
+      /(?:\.toHaveURL|\bpage\.waitForURL)\s*\(\s*\/((?:\\.|[^/\n])+)\/[dgimsuvy]*/g,
+    ),
+  ];
+  return assertions.some((assertion) => {
+    const normalized = assertion[1]
+      .replaceAll("\\/", "/")
+      .replaceAll("\\-", "-");
+    if (route === "/") {
+      return normalized.replace(/^\^|\$$/g, "") === "/";
+    }
+    return normalized.includes(route);
+  });
 }
 
 function helperMarkerWindow(

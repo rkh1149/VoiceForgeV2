@@ -45,6 +45,7 @@ export type AgentFileToolsOptions = {
   inspectionLog?: FileInspection[];
   diagnostics?: DiagnosticsContext;
   allowMutations?: boolean;
+  allowedMutationPaths?: readonly string[];
 };
 
 type OperationResult = {
@@ -56,6 +57,15 @@ type OperationResult = {
 
 function normalizeAgentPath(p: string): string {
   return path.posix.normalize(p.replaceAll("\\", "/"));
+}
+
+export function isAgentMutationAllowed(
+  filePath: string,
+  allowedMutationPaths?: readonly string[],
+): boolean {
+  if (!allowedMutationPaths) return true;
+  const allowed = new Set(allowedMutationPaths.map(normalizeAgentPath));
+  return allowed.has(normalizeAgentPath(filePath));
 }
 
 function sortedReadablePaths(files: FileMap): string[] {
@@ -370,11 +380,24 @@ export function createAgentFileTools(
   const mutationLog = options.mutationLog;
   const inspectionLog = options.inspectionLog;
   const mutationsAllowed = options.allowMutations ?? true;
+  const allowedMutationPaths = options.allowedMutationPaths
+    ? new Set(options.allowedMutationPaths.map(normalizeAgentPath))
+    : null;
   const recordInspection = (inspection: FileInspection) => {
     inspectionLog?.push(inspection);
   };
   const rejectMutation = () =>
     "REJECTED: this phase is inspect-only; use list_files, read_file, or search_code.";
+  const rejectOutOfScopeMutation = (paths: string[]) => {
+    if (!allowedMutationPaths) return null;
+    const normalized = paths.map(normalizeAgentPath);
+    const rejected = normalized.filter(
+      (filePath) => !allowedMutationPaths.has(filePath),
+    );
+    return rejected.length > 0
+      ? `REJECTED: workflow repair scope protects ${rejected.join(", ")}. Only the supplied mutation paths may change.`
+      : null;
+  };
 
   const readOnlyTools = [
     tool({
@@ -491,10 +514,11 @@ export function createAgentFileTools(
         path: z.string().describe("Repo-relative path, e.g. src/app/page.tsx"),
         content: z.string().describe("Complete file content"),
       }),
-      execute: async ({ path: p, content }) =>
-        mutationsAllowed
-          ? writeAgentFile(files, mutationLog, p, content).message
-          : rejectMutation(),
+      execute: async ({ path: p, content }) => {
+        if (!mutationsAllowed) return rejectMutation();
+        const scopeRejection = rejectOutOfScopeMutation([p]);
+        return scopeRejection ?? writeAgentFile(files, mutationLog, p, content).message;
+      },
     }),
     tool({
       name: "patch_file",
@@ -506,10 +530,11 @@ export function createAgentFileTools(
         replace: z.string().describe("Replacement text"),
         replaceAll: z.boolean().optional(),
       }),
-      execute: async (input) =>
-        mutationsAllowed
-          ? patchAgentFile(files, mutationLog, input).message
-          : rejectMutation(),
+      execute: async (input) => {
+        if (!mutationsAllowed) return rejectMutation();
+        const scopeRejection = rejectOutOfScopeMutation([input.path]);
+        return scopeRejection ?? patchAgentFile(files, mutationLog, input).message;
+      },
     }),
     tool({
       name: "delete_file",
@@ -517,10 +542,11 @@ export function createAgentFileTools(
       parameters: z.object({
         path: z.string().describe("Repo-relative file path to delete"),
       }),
-      execute: async ({ path: p }) =>
-        mutationsAllowed
-          ? deleteAgentFile(files, mutationLog, p).message
-          : rejectMutation(),
+      execute: async ({ path: p }) => {
+        if (!mutationsAllowed) return rejectMutation();
+        const scopeRejection = rejectOutOfScopeMutation([p]);
+        return scopeRejection ?? deleteAgentFile(files, mutationLog, p).message;
+      },
     }),
     tool({
       name: "rename_file",
@@ -529,10 +555,14 @@ export function createAgentFileTools(
         fromPath: z.string().describe("Current repo-relative file path"),
         toPath: z.string().describe("New repo-relative file path"),
       }),
-      execute: async (input) =>
-        mutationsAllowed
-          ? renameAgentFile(files, mutationLog, input).message
-          : rejectMutation(),
+      execute: async (input) => {
+        if (!mutationsAllowed) return rejectMutation();
+        const scopeRejection = rejectOutOfScopeMutation([
+          input.fromPath,
+          input.toPath,
+        ]);
+        return scopeRejection ?? renameAgentFile(files, mutationLog, input).message;
+      },
     }),
   ];
 

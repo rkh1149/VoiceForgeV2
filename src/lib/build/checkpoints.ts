@@ -138,7 +138,7 @@ export async function saveBuildCheckpoint(input: {
   stage: BuildCheckpointStage;
   files: FileMap;
   metadata?: Record<string, unknown>;
-}): Promise<void> {
+}): Promise<string> {
   const db = getDb();
   const archive = encodeFileMapForCheckpoint(input.files);
   const payload: BuildCheckpointPayload = {
@@ -152,21 +152,65 @@ export async function saveBuildCheckpoint(input: {
     savedAt: new Date().toISOString(),
   };
 
-  await db.insert(buildAgentArtifacts).values({
-    appId: input.appId,
-    buildRunId: input.buildRunId,
-    agentKey: BUILD_CHECKPOINT_AGENT_KEY,
-    phaseKey: input.stage,
-    artifactType: BUILD_CHECKPOINT_ARTIFACT_TYPE,
-    status: "passed",
-    summary:
-      input.stage === "publish_pending"
-        ? `Saved durable source checkpoint for publishing (${archive.fileCount} files).`
-        : input.stage === "reviewing"
-          ? `Saved durable source checkpoint for workflow review (${archive.fileCount} files).`
-          : `Saved durable source checkpoint for testing (${archive.fileCount} files).`,
-    payload: payload as unknown as Record<string, unknown>,
-  });
+  const [saved] = await db
+    .insert(buildAgentArtifacts)
+    .values({
+      appId: input.appId,
+      buildRunId: input.buildRunId,
+      agentKey: BUILD_CHECKPOINT_AGENT_KEY,
+      phaseKey: input.stage,
+      artifactType: BUILD_CHECKPOINT_ARTIFACT_TYPE,
+      status: "passed",
+      summary:
+        input.stage === "publish_pending"
+          ? `Saved durable source checkpoint for publishing (${archive.fileCount} files).`
+          : input.stage === "reviewing"
+            ? `Saved durable source checkpoint for workflow review (${archive.fileCount} files).`
+            : `Saved durable source checkpoint for testing (${archive.fileCount} files).`,
+      payload: payload as unknown as Record<string, unknown>,
+    })
+    .returning({ id: buildAgentArtifacts.id });
+  if (!saved) throw new Error("Build checkpoint could not be persisted.");
+  return saved.id;
+}
+
+export async function loadBuildCheckpointById<
+  TMetadata = Record<string, unknown>,
+>(
+  checkpointId: string,
+  buildRunId: string,
+): Promise<LoadedBuildCheckpoint<TMetadata> | null> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      id: buildAgentArtifacts.id,
+      phaseKey: buildAgentArtifacts.phaseKey,
+      payload: buildAgentArtifacts.payload,
+      createdAt: buildAgentArtifacts.createdAt,
+    })
+    .from(buildAgentArtifacts)
+    .where(
+      and(
+        eq(buildAgentArtifacts.id, checkpointId),
+        eq(buildAgentArtifacts.buildRunId, buildRunId),
+        eq(buildAgentArtifacts.agentKey, BUILD_CHECKPOINT_AGENT_KEY),
+        eq(buildAgentArtifacts.artifactType, BUILD_CHECKPOINT_ARTIFACT_TYPE),
+      ),
+    )
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  const payload = row.payload as unknown;
+  if (!isCheckpointPayload(payload)) {
+    throw new Error("Build checkpoint payload is invalid.");
+  }
+  return {
+    id: row.id,
+    stage: payload.stage,
+    files: decodeFileMapFromCheckpoint(payload.archive),
+    metadata: payload.metadata as TMetadata,
+    createdAt: row.createdAt,
+  };
 }
 
 export async function loadLatestBuildCheckpoint<TMetadata = Record<string, unknown>>(

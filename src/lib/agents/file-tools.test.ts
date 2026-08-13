@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   deleteAgentFile,
   inspectAgentAppMap,
+  isAgentMutationAllowed,
   patchAgentFile,
   readAgentFile,
   renameAgentFile,
@@ -17,6 +18,18 @@ describe("agent file tool path policy", () => {
     expect(isAgentWritablePath("src/components/Timer.tsx").ok).toBe(true);
     expect(isAgentWritablePath("src/lib/storage.ts").ok).toBe(true);
     expect(isAgentWritablePath("e2e/generated/acceptance.spec.ts").ok).toBe(true);
+  });
+
+  it("enforces a workflow repair mutation allowlist", () => {
+    const allowed = ["e2e/generated/movie.spec.ts"];
+
+    expect(isAgentMutationAllowed("e2e/generated/movie.spec.ts", allowed)).toBe(
+      true,
+    );
+    expect(isAgentMutationAllowed("src/app/history/page.tsx", allowed)).toBe(
+      false,
+    );
+    expect(isAgentMutationAllowed("src/app/history/page.tsx")).toBe(true);
   });
 
   it("rejects protected files, API routes, configs, and unsafe paths", () => {

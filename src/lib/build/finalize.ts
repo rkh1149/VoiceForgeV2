@@ -128,7 +128,7 @@ export async function finalizePendingDeployment(appId: string): Promise<void> {
       .where(eq(apps.id, appId));
     await db
       .update(buildRuns)
-      .set({ status: "awaiting_user_test" })
+      .set({ status: "awaiting_user_test", errorMessage: null })
       .where(eq(buildRuns.id, run.id));
     if (run.requirementId) {
       await db
@@ -167,7 +167,7 @@ export async function finalizePendingDeployment(appId: string): Promise<void> {
     .where(eq(apps.id, appId));
   await db
     .update(buildRuns)
-    .set({ status: "complete", finishedAt: new Date() })
+    .set({ status: "complete", errorMessage: null, finishedAt: new Date() })
     .where(eq(buildRuns.id, run.id));
   await audit({
     userId: app.ownerId,

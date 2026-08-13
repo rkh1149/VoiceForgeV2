@@ -284,6 +284,36 @@ describe("generated acceptance test review", () => {
     );
   });
 
+  it("accepts visible navigation proven with a regular-expression URL assertion", () => {
+    const { spec, architecture } = sharedApp();
+    const journey = synthesizeWorkflowAcceptancePlan(
+      spec,
+      architecture,
+    ).journeys[0];
+    let source = compliantTest(journey);
+    for (const handoff of journey.handoffs) {
+      const routePattern = handoff.consumerRoute
+        .replaceAll("/", "\\/")
+        .replaceAll("-", "\\-");
+      source = source.replaceAll(
+        `await page.goto(${JSON.stringify(handoff.consumerRoute)});`,
+        `await page.getByRole("link", { name: "Open destination" }).click();\n  await expect(page).toHaveURL(/${routePattern}$/);`,
+      );
+    }
+    const review = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: { "e2e/generated/regex-route.spec.ts": source },
+    });
+
+    expect(review.blockingIssues.join(" ")).not.toContain(
+      "does not reach",
+    );
+    expect(review.summary.handoffsVerified).toBe(
+      review.summary.handoffsRequired,
+    );
+  });
+
   it("accepts run-scoped fixtures and ordinary toBe result assertions", () => {
     const { spec, architecture } = sharedApp();
     const journey = synthesizeWorkflowAcceptancePlan(spec, architecture).journeys[0];
@@ -314,6 +344,36 @@ describe("generated acceptance test review", () => {
     );
     expect(review.blockingIssues.join(" ")).not.toContain(
       "does not perform its result action",
+    );
+  });
+
+  it("accepts run-scoped values returned by a fixture factory", () => {
+    const { spec, architecture } = sharedApp();
+    const journey = synthesizeWorkflowAcceptancePlan(spec, architecture).journeys[0];
+    const fixture = journey.fixtures.find(
+      (candidate) =>
+        typeof candidate.value === "string" &&
+        !String(candidate.value).startsWith("@"),
+    );
+    const fixtureValue = String(fixture?.value ?? "VoiceForge acceptance record");
+    const source = compliantTest(journey)
+      .replace(
+        `const fixture = ${JSON.stringify(fixtureValue)};\n  void fixture;`,
+        `function fixtures() {
+    const suffix = acceptanceRunSuffix();
+    return { title: \`VF errand \${suffix}\` };
+  }
+  const values = fixtures();`,
+      )
+      .replaceAll(JSON.stringify(fixtureValue), "values.title");
+    const review = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: { "e2e/generated/fixture-factory.spec.ts": source },
+    });
+
+    expect(review.blockingIssues.join(" ")).not.toContain(
+      "does not use its unique",
     );
   });
 

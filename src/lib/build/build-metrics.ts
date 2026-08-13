@@ -46,6 +46,14 @@ export type BuildDebugRoundMetric = {
   responsibleAgentKey?: string;
 };
 
+export type WorkflowRepairMetric = {
+  repairId: string;
+  classification: string;
+  targetSurface: string;
+  outcome: string;
+  filesChanged: string[];
+};
+
 export type BuildMetrics = {
   generatedFilesByPhase: BuildPhaseMetric[];
   reviewWarnings: BuildReviewWarningMetric[];
@@ -54,6 +62,7 @@ export type BuildMetrics = {
   debugRoundsByStep: Record<string, number>;
   acceptanceJourneyCoverage: AcceptanceJourneyCoverageMetric | null;
   humanCompletenessCoverage: HumanCompletenessCoverageMetric | null;
+  workflowRepairs: WorkflowRepairMetric[];
   failureCategory: BuildFailureCategory | null;
 };
 
@@ -105,6 +114,7 @@ export function createBuildMetrics(): BuildMetrics {
     debugRoundsByStep: {},
     acceptanceJourneyCoverage: null,
     humanCompletenessCoverage: null,
+    workflowRepairs: [],
     failureCategory: null,
   };
 }
@@ -193,6 +203,17 @@ export function recordDebugRoundMetric(
     (metrics.debugRoundsByStep[input.step] ?? 0) + 1;
 }
 
+export function recordWorkflowRepairMetric(
+  metrics: BuildMetrics,
+  repair: WorkflowRepairMetric,
+): void {
+  const existing = metrics.workflowRepairs.find(
+    (candidate) => candidate.repairId === repair.repairId,
+  );
+  if (existing) Object.assign(existing, repair);
+  else metrics.workflowRepairs.push(repair);
+}
+
 export function setBuildFailureCategory(
   metrics: BuildMetrics,
   category: BuildFailureCategory,
@@ -234,7 +255,7 @@ export function summarizeBuildMetrics(metrics: BuildMetrics): string {
     metrics.generatedFilesByPhase.length === 1 ? "" : "s"
   }, ${debugRounds} debug round${
     debugRounds === 1 ? "" : "s"
-  }, ${warningCount} review warning${warningCount === 1 ? "" : "s"}.${failure}`;
+  }, ${warningCount} review warning${warningCount === 1 ? "" : "s"}, and ${metrics.workflowRepairs.length} workflow repair${metrics.workflowRepairs.length === 1 ? "" : "s"}.${failure}`;
 }
 
 export function buildMetricsPayload(metrics: BuildMetrics): Record<string, unknown> {
@@ -246,6 +267,7 @@ export function buildMetricsPayload(metrics: BuildMetrics): Record<string, unkno
     debugRounds: metrics.debugRounds,
     acceptanceJourneyCoverage: metrics.acceptanceJourneyCoverage,
     humanCompletenessCoverage: metrics.humanCompletenessCoverage,
+    workflowRepairs: metrics.workflowRepairs,
     failureCategory: metrics.failureCategory,
     totals: {
       generatedFileChanges: metrics.generatedFilesByPhase.reduce(
@@ -265,6 +287,7 @@ export function buildMetricsPayload(metrics: BuildMetrics): Record<string, unkno
         0,
       ),
       debugRounds: metrics.debugRounds.length,
+      workflowRepairs: metrics.workflowRepairs.length,
     },
   };
 }

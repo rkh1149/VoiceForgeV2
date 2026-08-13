@@ -70,6 +70,7 @@ import {
   recordDebugRoundMetric,
   recordGeneratedPhaseMetrics,
   recordReviewMetrics,
+  recordWorkflowRepairMetric,
   setBuildFailureCategory,
   summarizeBuildMetrics,
   type BuildMetrics,
@@ -100,10 +101,12 @@ import {
 import { validateGeneratedAppDependencies } from "./dependencies";
 import {
   isBuildCheckpointCompatible,
+  loadBuildCheckpointById,
   loadLatestBuildCheckpoint,
   saveBuildCheckpoint,
 } from "./checkpoints";
 import {
+  isAgentWritablePath,
   loadTemplate,
   refreshResumedTemplateFiles,
   type FileMap,
@@ -119,6 +122,15 @@ import {
   type HumanCompletenessSourceContext,
 } from "./human-completeness-review";
 import { loadHumanCompletenessSourceContext } from "./human-completeness-source";
+import {
+  assessWorkflowRepairCandidate,
+  createWorkflowRepairPackage,
+  isWorkflowLinkedFailure,
+  restoreWorkflowRepairPackages,
+  selectWorkflowRepairIssueCluster,
+  validateWorkflowRepairMutationScope,
+  type WorkflowRepairPackage,
+} from "./workflow-repair";
 
 /**
  * Build pipeline (Stage 2): approved spec -> generated code -> local test
@@ -154,6 +166,7 @@ type DurableBuildMetadata = {
   reviewProgress?: SerializedReviewProgress;
   metrics: BuildMetrics;
   seededPlatformEntities: unknown[];
+  workflowRepairs?: WorkflowRepairPackage[];
 };
 
 type SerializedReviewProgress = {
@@ -228,6 +241,7 @@ function durableMetadata(input: {
   reviewProgress?: SerializedReviewProgress;
   metrics: BuildMetrics;
   seededPlatformEntities: unknown[];
+  workflowRepairs?: WorkflowRepairPackage[];
 }): Record<string, unknown> {
   const metadata: DurableBuildMetadata = {
     generated: {
@@ -241,6 +255,7 @@ function durableMetadata(input: {
     reviewProgress: input.reviewProgress,
     metrics: input.metrics,
     seededPlatformEntities: input.seededPlatformEntities,
+    workflowRepairs: input.workflowRepairs ?? [],
   };
   return metadata as unknown as Record<string, unknown>;
 }
@@ -284,6 +299,9 @@ function restoreBuildMetrics(value: unknown): BuildMetrics {
     humanCompletenessCoverage: isRecord(value.humanCompletenessCoverage)
       ? (value.humanCompletenessCoverage as BuildMetrics["humanCompletenessCoverage"])
       : base.humanCompletenessCoverage,
+    workflowRepairs: Array.isArray(value.workflowRepairs)
+      ? (value.workflowRepairs as BuildMetrics["workflowRepairs"])
+      : base.workflowRepairs,
     failureCategory:
       typeof value.failureCategory === "string"
         ? (value.failureCategory as BuildMetrics["failureCategory"])
@@ -340,8 +358,20 @@ function restoreReviewProgress(
         ),
       )
     : {};
+  const originallyGeneratedPaths = new Set([
+    ...generated.filesWritten,
+    ...generated.deletedFiles,
+  ]);
+  const changedFilePaths = stringArray(value.changedFilePaths).filter(
+    (path) =>
+      originallyGeneratedPaths.has(path) || isAgentWritablePath(path).ok,
+  );
   return {
-    changedFilePaths: stringArray(value.changedFilePaths),
+    // Older resumable checkpoints briefly recorded the complete template as
+    // changed. Remove protected/template-only paths unless the generator
+    // actually reported touching them, so a resume cannot manufacture review
+    // findings from unchanged platform files.
+    changedFilePaths,
     deletedFilePaths: stringArray(value.deletedFilePaths),
     unchangedRoundsByDomain,
     changeMode:
@@ -423,7 +453,7 @@ async function setStatus(
     | "failed"
     | "needs_input",
   extra: Partial<{
-    errorMessage: string;
+    errorMessage: string | null;
     commitSha: string;
     branch: string;
     startedAt: Date;
@@ -431,9 +461,13 @@ async function setStatus(
   }> = {},
 ): Promise<void> {
   const db = getDb();
+  const errorMessage =
+    status === "failed" || status === "needs_input"
+      ? extra.errorMessage
+      : null;
   await db
     .update(buildRuns)
-    .set({ status, ...extra })
+    .set({ status, errorMessage, ...extra })
     .where(eq(buildRuns.id, buildRunId));
 }
 
@@ -517,6 +551,116 @@ async function recordBuildMetricsArtifact(input: {
     status: buildMetricsArtifactStatus(input.metrics),
     summary: summarizeBuildMetrics(input.metrics),
     payload: buildMetricsPayload(input.metrics),
+  });
+}
+
+function upsertWorkflowRepair(
+  repairs: WorkflowRepairPackage[],
+  repair: WorkflowRepairPackage,
+): void {
+  const index = repairs.findIndex((candidate) => candidate.id === repair.id);
+  if (index >= 0) repairs[index] = repair;
+  else repairs.push(repair);
+}
+
+function workflowRepairVisibleFiles(
+  files: FileMap,
+  repair: WorkflowRepairPackage,
+): FileMap {
+  const visible = new Set([
+    ...repair.scope.inspectionPaths,
+    ...repair.scope.mutationPaths,
+  ]);
+  return Object.fromEntries(
+    Object.entries(files).filter(([path]) => visible.has(path)),
+  );
+}
+
+function workflowRepairOwnsFailure(
+  repair: WorkflowRepairPackage,
+  fingerprint: FailureFingerprint,
+): boolean {
+  const latestAttempt = repair.attempts.at(-1);
+  const changedPaths = new Set([
+    ...(latestAttempt?.filesWritten ?? []),
+    ...(latestAttempt?.filesDeleted ?? []),
+  ]);
+  const sourcePaths = fingerprint.sourceLocations.map((location) =>
+    location.replace(/:\d+(?::\d+)?$/, ""),
+  );
+  if (sourcePaths.some((path) => changedPaths.has(path))) return true;
+
+  const failureText = [
+    ...fingerprint.failedTests,
+    ...fingerprint.stableKeys,
+  ].join("\n");
+  if (
+    repair.target.journeyId &&
+    failureText.includes(repair.target.journeyId)
+  ) {
+    return true;
+  }
+  return [...changedPaths].some(
+    (path) =>
+      path.startsWith("e2e/generated/") && failureText.includes(path),
+  );
+}
+
+function workflowFocusedFailureFingerprint(
+  fingerprint: FailureFingerprint,
+  journeyId: string,
+): FailureFingerprint {
+  if (!journeyId) return fingerprint;
+  const failedTests = fingerprint.failedTests.filter((test) =>
+    test.includes(journeyId),
+  );
+  const cases = fingerprint.cases.filter((failureCase) =>
+    failureCase.id.includes(journeyId),
+  );
+  if (failedTests.length === 0 && cases.length === 0) return fingerprint;
+  const stableKeys =
+    failedTests.length > 0 ? failedTests : cases.map((item) => item.id);
+  return {
+    ...fingerprint,
+    failedTests,
+    cases,
+    stableKeys,
+    summary: `${stableKeys.length} focused failure key(s): ${stableKeys.join(" | ")}`,
+  };
+}
+
+async function recordWorkflowRepairArtifact(input: {
+  appId: string;
+  buildRunId: string;
+  repair: WorkflowRepairPackage;
+  metrics: BuildMetrics;
+  summary: string;
+}): Promise<void> {
+  const latestAttempt = input.repair.attempts.at(-1);
+  recordWorkflowRepairMetric(input.metrics, {
+    repairId: input.repair.id,
+    classification: input.repair.classification.category,
+    targetSurface: input.repair.classification.targetSurface,
+    outcome: input.repair.status,
+    filesChanged: uniqueStrings([
+      ...(latestAttempt?.filesWritten ?? []),
+      ...(latestAttempt?.filesDeleted ?? []),
+    ]),
+  });
+  await recordBuildAgentArtifact({
+    appId: input.appId,
+    buildRunId: input.buildRunId,
+    agentKey: "workflow_repair_agent",
+    phaseKey: input.repair.id,
+    artifactType: "workflow_repair",
+    status:
+      input.repair.status === "accepted"
+        ? "passed"
+        : input.repair.status === "rolled_back"
+          ? "failed"
+          : "warning",
+    summary: input.summary,
+    payload: input.repair as unknown as Record<string, unknown>,
   });
 }
 
@@ -1057,6 +1201,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       maxRoundsPerStep: MAX_DEBUG_ROUNDS_PER_STEP,
       maxTotalRounds: MAX_TOTAL_DEBUG_ROUNDS,
     });
+    const workflowRepairs: WorkflowRepairPackage[] = [];
     const reviewProgress: SerializedReviewProgress = {
       changedFilePaths: [...generated.filesWritten],
       deletedFilePaths: [...generated.deletedFiles],
@@ -1074,6 +1219,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         reviewProgress,
         metrics,
         seededPlatformEntities,
+        workflowRepairs,
       }),
     });
     await log(
@@ -1085,13 +1231,14 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       buildRunId,
       spec,
       architecture: architectureForStorage,
+      completenessSource,
       files,
       generated,
       debugBudget,
       metrics,
       seededPlatformEntities,
       reviewProgress,
-      completenessSource,
+      workflowRepairs,
     });
 
     await saveBuildCheckpoint({
@@ -1102,8 +1249,10 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       metadata: durableMetadata({
         generated,
         debugBudget,
+        reviewProgress,
         metrics,
         seededPlatformEntities,
+        workflowRepairs,
       }),
     });
     await log(
@@ -1115,11 +1264,15 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       app,
       buildRunId,
       spec,
+      architecture: architectureForStorage,
+      completenessSource,
       files,
       generated,
       debugBudget,
       metrics,
       seededPlatformEntities,
+      workflowRepairs,
+      reviewProgress,
     });
 
     await saveBuildCheckpoint({
@@ -1130,8 +1283,10 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       metadata: durableMetadata({
         generated,
         debugBudget,
+        reviewProgress,
         metrics,
         seededPlatformEntities,
+        workflowRepairs,
       }),
     });
     await log(
@@ -1224,12 +1379,16 @@ async function runTestGauntlet(input: {
   app: App;
   buildRunId: string;
   spec: AppSpec;
+  architecture: ArchitecturePlan;
+  completenessSource: HumanCompletenessSourceContext;
   files: FileMap;
   generated: CodegenResult;
   debugBudget: DebugBudget;
   debugProgress?: SerializedDebugProgress;
   metrics: BuildMetrics;
   seededPlatformEntities: unknown[];
+  workflowRepairs: WorkflowRepairPackage[];
+  reviewProgress: SerializedReviewProgress;
 }): Promise<void> {
   const db = getDb();
   let runner: Runner | null = null;
@@ -1268,10 +1427,11 @@ async function runTestGauntlet(input: {
       ][],
     );
     let pendingFix: PendingDebugFix | null = null;
+    const workflowRepairSnapshots = new Map<string, FileMap>();
     const getPendingFix = (): PendingDebugFix | null => pendingFix;
 
     const saveTestingCheckpoint = async () => {
-      await saveBuildCheckpoint({
+      return saveBuildCheckpoint({
         appId: input.app.id,
         buildRunId: input.buildRunId,
         stage: "testing",
@@ -1287,8 +1447,258 @@ async function runTestGauntlet(input: {
           },
           metrics: input.metrics,
           seededPlatformEntities: input.seededPlatformEntities,
+          workflowRepairs: input.workflowRepairs,
+          reviewProgress: input.reviewProgress,
         }),
       });
+    };
+
+    const currentWorkflowReviews = () => {
+      const changedFilePaths = [...input.reviewProgress.changedFilePaths];
+      const changedFiles = Object.fromEntries(
+        changedFilePaths.flatMap((path) =>
+          path in input.files ? [[path, input.files[path]]] : [],
+        ),
+      );
+      return runPostGenerationReviews({
+        spec: input.spec,
+        architecture: input.architecture,
+        allFiles: agentVisibleFiles(input.files),
+        changedFiles,
+        changedFilePaths,
+        deletedFilePaths: [...input.reviewProgress.deletedFilePaths],
+        changeMode: input.reviewProgress.changeMode,
+      });
+    };
+
+    const recordFocusedResult = async (
+      label: string,
+      result: Awaited<ReturnType<Runner["runFocused"]>>,
+    ) => {
+      await db.insert(testResults).values({
+        buildRunId: input.buildRunId,
+        suite: SUITE_FOR_STEP[result.step],
+        status: result.ok ? "passed" : "failed",
+        summary: `${label} (${Math.round(result.durationMs / 1000)}s)`,
+        details: {
+          focused: true,
+          output: result.output,
+          failureFingerprint: result.failureFingerprint,
+        },
+      });
+    };
+
+    const validateFocusedWorkflowRepair = async (
+      repair: WorkflowRepairPackage,
+    ): Promise<{
+      ok: boolean;
+      reason: string;
+      failedStep?: PipelineStepName;
+      failureFingerprint?: FailureFingerprint;
+    }> => {
+      const candidateReviews = currentWorkflowReviews();
+      const candidateIssues = getPostGenerationBlockingIssues(candidateReviews);
+      const staticAssessment = assessWorkflowRepairCandidate({
+        repair,
+        currentBlockingIssues: candidateIssues,
+      });
+      repair.validation.staticReview = staticAssessment.accepted
+        ? "passed"
+        : "failed";
+      repair.validation.targetResolved = staticAssessment.targetResolved;
+      repair.validation.unrelatedFindingsAdded =
+        staticAssessment.unrelatedFindingsAdded;
+      if (!staticAssessment.accepted) {
+        return { ok: false, reason: staticAssessment.reason };
+      }
+
+      if (repair.classification.targetSurface === "application_source") {
+        const typecheck = await activeRunner.run("typecheck");
+        await db.insert(testResults).values({
+          buildRunId: input.buildRunId,
+          suite: "typecheck",
+          status: typecheck.ok ? "passed" : "failed",
+          summary: `focused workflow typecheck (${Math.round(typecheck.durationMs / 1000)}s)`,
+          details: { focused: true, output: typecheck.output },
+        });
+        if (!typecheck.ok) {
+          return {
+            ok: false,
+            reason: "The workflow candidate failed focused typecheck.",
+            failedStep: "typecheck",
+            failureFingerprint:
+              typecheck.failureFingerprint ??
+              createFailureFingerprint("typecheck", typecheck.output),
+          };
+        }
+      }
+
+      const unitFiles = repair.focusedValidation.unitTestFiles.filter(
+        (path) => path in input.files,
+      );
+      if (unitFiles.length > 0) {
+        const unit = await activeRunner.runFocused({
+          kind: "unit",
+          testFiles: unitFiles,
+        });
+        await recordFocusedResult("focused workflow unit tests", unit);
+        repair.validation.unit = unit.ok ? "passed" : "failed";
+        if (!unit.ok) {
+          return {
+            ok: false,
+            reason: `Focused unit validation failed in ${unitFiles.join(", ")}.`,
+            failedStep: "test",
+            failureFingerprint:
+              unit.failureFingerprint ??
+              createFailureFingerprint("test", unit.output),
+          };
+        }
+      } else {
+        repair.validation.unit = "not_applicable";
+      }
+
+      if (repair.focusedValidation.e2eGrep) {
+        if (
+          repair.classification.targetSurface === "application_source" ||
+          !passedSteps.has("build")
+        ) {
+          const build = await activeRunner.run("build");
+          await db.insert(testResults).values({
+            buildRunId: input.buildRunId,
+            suite: "build",
+            status: build.ok ? "passed" : "failed",
+            summary: `focused workflow build (${Math.round(build.durationMs / 1000)}s)`,
+            details: { focused: true, output: build.output },
+          });
+          if (!build.ok) {
+            return {
+              ok: false,
+              reason:
+                "The workflow candidate could not prepare its focused production build.",
+              failedStep: "build",
+              failureFingerprint:
+                build.failureFingerprint ??
+                createFailureFingerprint("build", build.output),
+            };
+          }
+        }
+        const browser = await activeRunner.runFocused(
+          { kind: "e2e", grep: repair.focusedValidation.e2eGrep },
+          {
+            onProgress: (progress) =>
+              log(input.buildRunId, `Focused ${progress.message}`),
+          },
+        );
+        await recordFocusedResult("focused workflow browser journey", browser);
+        repair.validation.browserJourney = browser.ok ? "passed" : "failed";
+        if (!browser.ok) {
+          return {
+            ok: false,
+            reason: `Targeted Playwright journey ${repair.focusedValidation.journeyId} still fails.`,
+            failedStep: "e2e",
+            failureFingerprint:
+              browser.failureFingerprint ??
+              createFailureFingerprint("e2e", browser.output),
+          };
+        }
+      } else {
+        repair.validation.browserJourney = "not_applicable";
+      }
+
+      repair.validation.targetResolved = true;
+      return {
+        ok: true,
+        reason:
+          "The named workflow finding, affected focused tests, and targeted browser journey passed without adding unrelated findings.",
+      };
+    };
+
+    const rollbackWorkflowRepairAndRereview = async (inputFailure: {
+      repair: WorkflowRepairPackage;
+      failedStep: PipelineStepName;
+      failureFingerprint: FailureFingerprint;
+      reason: string;
+      fullGauntlet?: boolean;
+    }) => {
+      const repair = inputFailure.repair;
+      let snapshot = workflowRepairSnapshots.get(repair.id);
+      if (!snapshot && repair.rollback?.checkpointId) {
+        const checkpoint = await loadBuildCheckpointById(
+          repair.rollback.checkpointId,
+          input.buildRunId,
+        );
+        snapshot =
+          checkpoint && isBuildCheckpointCompatible(checkpoint.metadata)
+            ? checkpoint.files
+            : undefined;
+      }
+      if (!snapshot) {
+        await recordWorkflowRepairArtifact({
+          appId: input.app.id,
+          buildRunId: input.buildRunId,
+          repair,
+          metrics: input.metrics,
+          summary: `Could not load the proven rollback checkpoint for ${repair.target.workflowName}; the candidate source was not published.`,
+        });
+        throw new Error(
+          "A workflow repair failed validation and its durable rollback checkpoint could not be loaded. The candidate source was not published.",
+        );
+      }
+
+      const removedPaths = restoreFileMap(input.files, snapshot);
+      await activeRunner.deleteFiles(removedPaths);
+      await activeRunner.writeFiles(input.files);
+      workflowRepairSnapshots.delete(repair.id);
+      repair.status = "rolled_back";
+      if (inputFailure.fullGauntlet) {
+        repair.validation.fullGauntlet = "failed";
+      }
+      const lastAttempt = repair.attempts.at(-1);
+      if (lastAttempt) {
+        lastAttempt.outcome = "rolled_back";
+        lastAttempt.reason = inputFailure.reason;
+      }
+      upsertWorkflowRepair(input.workflowRepairs, repair);
+      await recordWorkflowRepairArtifact({
+        appId: input.app.id,
+        buildRunId: input.buildRunId,
+        repair,
+        metrics: input.metrics,
+        summary: `Rolled back ${repair.target.workflowName} repair because validation failed at ${inputFailure.failedStep}.`,
+      });
+      await saveTestingCheckpoint();
+      await log(
+        input.buildRunId,
+        `Workflow repair was rolled back because validation failed at ${inputFailure.failedStep}; the prior proven source is active again and the named workflow will be reviewed before testing resumes.`,
+      );
+      recordDebugAttempt(
+        input.debugBudget,
+        `review_gate:${repair.repairDomain}`,
+        `The prior scoped repair failed ${inputFailure.failedStep} validation: ${inputFailure.failureFingerprint.summary}`,
+      );
+
+      const beforeRereview = { ...input.files };
+      input.reviewProgress.unchangedRoundsByDomain = {};
+      await runCheckpointReviewGate({
+        app: input.app,
+        buildRunId: input.buildRunId,
+        spec: input.spec,
+        architecture: input.architecture,
+        files: input.files,
+        generated: input.generated,
+        debugBudget: input.debugBudget,
+        metrics: input.metrics,
+        seededPlatformEntities: input.seededPlatformEntities,
+        reviewProgress: input.reviewProgress,
+        completenessSource: input.completenessSource,
+        workflowRepairs: input.workflowRepairs,
+        includeCompleteness: true,
+      });
+      const rereviewDeletedPaths = Object.keys(beforeRereview).filter(
+        (path) => !(path in input.files),
+      );
+      await activeRunner.deleteFiles(rereviewDeletedPaths);
+      await activeRunner.writeFiles(input.files);
     };
 
     const rollbackPendingFix = async (
@@ -1375,6 +1785,94 @@ async function runTestGauntlet(input: {
       }
 
       if (result.ok) {
+        if (step === "install") {
+          let rereviewed = false;
+          for (const repair of input.workflowRepairs.filter(
+            (candidate) =>
+              candidate.status === "focused_validated" &&
+              (candidate.validation.unit === "pending" ||
+                candidate.validation.browserJourney === "pending"),
+          )) {
+            const focused = await validateFocusedWorkflowRepair(repair);
+            if (!focused.ok) {
+              if (focused.failedStep === "e2e") {
+                await recordWorkflowRepairArtifact({
+                  appId: input.app.id,
+                  buildRunId: input.buildRunId,
+                  repair,
+                  metrics: input.metrics,
+                  summary: `Focused static validation passed for ${repair.target.workflowName}, and the browser journey exposed a concrete test failure. Preserved the improving candidate for workflow-aware E2E repair.`,
+                });
+                await log(
+                  input.buildRunId,
+                  "Focused browser validation exposed a concrete journey failure; VoiceForge preserved the static-improving candidate and will repair it from the Playwright evidence.",
+                );
+                await saveTestingCheckpoint();
+                continue;
+              }
+              await rollbackWorkflowRepairAndRereview({
+                repair,
+                failedStep: focused.failedStep ?? "e2e",
+                failureFingerprint:
+                  focused.failureFingerprint ??
+                  createFailureFingerprint("e2e", focused.reason),
+                reason: focused.reason,
+              });
+              rereviewed = true;
+              break;
+            }
+            upsertWorkflowRepair(input.workflowRepairs, repair);
+            await recordWorkflowRepairArtifact({
+              appId: input.app.id,
+              buildRunId: input.buildRunId,
+              repair,
+              metrics: input.metrics,
+              summary: `Focused validation passed for ${repair.target.workflowName}; continuing through the complete gauntlet.`,
+            });
+            await saveTestingCheckpoint();
+          }
+          if (rereviewed) {
+            passedSteps.clear();
+            stepIdx = 0;
+            continue;
+          }
+        }
+        if (step === "test") {
+          input.workflowRepairs
+            .filter((repair) => repair.status === "focused_validated")
+            .forEach((repair) => {
+              if (repair.validation.unit === "pending") {
+                repair.validation.unit = "passed";
+              }
+            });
+        }
+        if (step === "e2e") {
+          for (const repair of input.workflowRepairs.filter(
+            (candidate) => candidate.status === "focused_validated",
+          )) {
+            repair.status = "accepted";
+            repair.validation.fullGauntlet = "passed";
+            if (repair.validation.browserJourney === "pending") {
+              repair.validation.browserJourney = "passed";
+            }
+            const lastAttempt = repair.attempts.at(-1);
+            if (lastAttempt?.outcome === "candidate") {
+              lastAttempt.outcome = "accepted";
+              lastAttempt.reason =
+                "Focused workflow validation and the complete test gauntlet passed.";
+            }
+            upsertWorkflowRepair(input.workflowRepairs, repair);
+            workflowRepairSnapshots.delete(repair.id);
+            await recordWorkflowRepairArtifact({
+              appId: input.app.id,
+              buildRunId: input.buildRunId,
+              repair,
+              metrics: input.metrics,
+              summary: `Accepted ${repair.target.workflowName} repair after focused checks and the complete test gauntlet.`,
+            });
+          }
+          await saveTestingCheckpoint();
+        }
         const successfulPendingFix = getPendingFix();
         if (successfulPendingFix?.step === step) {
           const validatedFix = successfulPendingFix;
@@ -1418,6 +1916,27 @@ async function runTestGauntlet(input: {
       const failureFingerprint =
         result.failureFingerprint ??
         createFailureFingerprint(step, result.output);
+      const workflowCandidate = [...input.workflowRepairs]
+        .reverse()
+        .find(
+          (repair) =>
+            repair.status === "focused_validated" &&
+            workflowRepairOwnsFailure(repair, failureFingerprint) &&
+            (workflowRepairSnapshots.has(repair.id) ||
+              Boolean(repair.rollback?.checkpointId)),
+        );
+      if (workflowCandidate && step !== "e2e") {
+        await rollbackWorkflowRepairAndRereview({
+          repair: workflowCandidate,
+          failedStep: step,
+          failureFingerprint,
+          reason: `The candidate introduced or exposed a related failure during full ${step} validation.`,
+          fullGauntlet: true,
+        });
+        passedSteps.clear();
+        stepIdx = 0;
+        continue;
+      }
       const failedPendingFix = getPendingFix();
 
       if (
@@ -1501,17 +2020,91 @@ async function runTestGauntlet(input: {
         .filter(Boolean)
         .join("\n\n");
 
+      let workflowRepair: WorkflowRepairPackage | null = null;
+      if (
+        step === "e2e" &&
+        (isWorkflowLinkedFailure(debugErrorOutput) ||
+          /e2e\/generated\/.+\.spec\.[tj]s/i.test(debugErrorOutput))
+      ) {
+        const workflowReviews = currentWorkflowReviews();
+        workflowRepair = createWorkflowRepairPackage({
+          spec: input.spec,
+          architecture: input.architecture,
+          files: agentVisibleFiles(input.files),
+          failedStep: step,
+          errorOutput: debugErrorOutput,
+          repairDomain: "acceptance",
+          blockingIssues: [],
+          reviews: workflowReviews,
+          previousAttempts: [],
+          failureFingerprint,
+          source: input.completenessSource,
+        });
+        const priorRepair = input.workflowRepairs.find(
+          (candidate) => candidate.id === workflowRepair?.id,
+        );
+        if (priorRepair) {
+          workflowRepair.attempts = [...priorRepair.attempts];
+        }
+      }
+      const debugBudgetStep = workflowRepair
+        ? `${step}:${workflowRepair.id}`
+        : step;
       const { stepRound, previousAttempts } = reserveDebugRound(
         input.debugBudget,
-        step,
+        debugBudgetStep,
       );
+      if (workflowRepair) {
+        workflowRepair.evidence.previousAttempts = [...previousAttempts];
+        upsertWorkflowRepair(input.workflowRepairs, workflowRepair);
+        await recordWorkflowRepairArtifact({
+          appId: input.app.id,
+          buildRunId: input.buildRunId,
+          repair: workflowRepair,
+          metrics: input.metrics,
+          summary: `Classified browser failure in ${workflowRepair.target.workflowName}: ${workflowRepair.classification.category.replaceAll("_", " ")} / ${workflowRepair.classification.subtype.replaceAll("_", " ")}.`,
+        });
+        if (
+          workflowRepair.classification.targetSurface ===
+          "external_environment"
+        ) {
+          workflowRepair.attempts.push({
+            round: stepRound,
+            strategy: "Preserve generated source and retry the provider later.",
+            suspectedRootCause:
+              workflowRepair.classification.reasons.join(" "),
+            filesInspected: [],
+            filesWritten: [],
+            filesDeleted: [],
+            outcome: "external_retry",
+            reason:
+              "The failure came from an external service; source editing was deliberately skipped.",
+          });
+          upsertWorkflowRepair(input.workflowRepairs, workflowRepair);
+          await saveTestingCheckpoint();
+          await recordWorkflowRepairArtifact({
+            appId: input.app.id,
+            buildRunId: input.buildRunId,
+            repair: workflowRepair,
+            metrics: input.metrics,
+            summary:
+              "External service failure preserved generated source; retry when the provider is available.",
+          });
+          throw new Error(
+            "An external service failed during the workflow journey. VoiceForge preserved the generated app without speculative rewrites; try building again when the provider is available.",
+          );
+        }
+      }
+      const debugFiles = workflowRepair
+        ? workflowRepairVisibleFiles(input.files, workflowRepair)
+        : agentVisibleFiles(input.files);
       const debugPlan = createPhaseAwareDebugPlan({
         spec: input.spec,
-        files: agentVisibleFiles(input.files),
+        files: debugFiles,
         failedStep: step,
         errorOutput: debugErrorOutput,
         generatedPhases: input.generated.phases,
-        forceFullScope,
+        forceFullScope: workflowRepair ? false : forceFullScope,
         escalationReason,
       });
       recordDebugRoundMetric(input.metrics, {
@@ -1522,30 +2115,40 @@ async function runTestGauntlet(input: {
         responsibleAgentKey: debugPlan.responsiblePhase.agentKey,
       });
       // Keep the last proven source durable while this AI repair is in flight.
-      await saveTestingCheckpoint();
+      const rollbackCheckpointId = await saveTestingCheckpoint();
+      if (workflowRepair) {
+        workflowRepair.rollback = {
+          checkpointId: rollbackCheckpointId,
+          checkpointStage: "testing",
+        };
+        upsertWorkflowRepair(input.workflowRepairs, workflowRepair);
+      }
 
       await setStatus(input.buildRunId, "debugging");
       await log(
         input.buildRunId,
-        `${step} failed — phase-aware debug round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP} for ${debugPlan.classification.domainLabel} (${input.debugBudget.totalRounds}/${MAX_TOTAL_DEBUG_ROUNDS} total). Responsible phase: ${debugPlan.responsiblePhase.label}. Scope: ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} files${forceFullScope ? " (escalated after repeated ineffective repairs)" : ""}.`,
+        workflowRepair
+          ? `${step} failed — workflow-aware repair round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP}: ${workflowRepair.classification.category.replaceAll("_", " ")} in ${workflowRepair.target.workflowName}. Scope: ${workflowRepair.scope.mutationPaths.length} mutable and ${workflowRepair.scope.protectedPaths.length} protected files.`
+          : `${step} failed — phase-aware debug round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP} for ${debugPlan.classification.domainLabel} (${input.debugBudget.totalRounds}/${MAX_TOTAL_DEBUG_ROUNDS} total). Responsible phase: ${debugPlan.responsiblePhase.label}. Scope: ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} files${forceFullScope ? " (escalated after repeated ineffective repairs)" : ""}.`,
       );
       const beforeFiles = { ...input.files };
       const fix = await runDebugAgent({
         spec: input.spec,
-        currentFiles: debugPlan.scope.scopedFiles,
+        currentFiles: debugFiles,
         failedStep: step,
         errorOutput: debugErrorOutput,
         previousAttempts,
         debugContext: debugPlan.context,
+        workflowRepair: workflowRepair ?? undefined,
       });
       recordDebugAttempt(
         input.debugBudget,
-        step,
+        debugBudgetStep,
         fix.debugDiagnostics.suspectedRootCause ||
           fix.notes ||
           `(rewrote ${fix.filesWritten.join(", ")})`,
       );
-      if (fix.filesWritten.length === 0) {
+      if (fix.filesWritten.length === 0 && fix.deletedFiles.length === 0) {
         const progress = compareFailureFingerprints(
           failureFingerprint,
           failureFingerprint,
@@ -1554,6 +2157,28 @@ async function runTestGauntlet(input: {
           (ineffectiveRoundsByStep.get(step) ?? 0) + 1;
         ineffectiveRoundsByStep.set(step, ineffectiveRounds);
         lastProgressByStep.set(step, progress);
+        if (workflowRepair) {
+          workflowRepair.status = "rolled_back";
+          workflowRepair.attempts.push({
+            round: stepRound,
+            strategy: fix.notes || "Diagnosis only",
+            suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+            filesInspected: fix.debugDiagnostics.filesInspected,
+            filesWritten: [],
+            filesDeleted: [],
+            outcome: "rolled_back",
+            reason:
+              "The workflow diagnosis produced no actionable scoped patch.",
+          });
+          upsertWorkflowRepair(input.workflowRepairs, workflowRepair);
+          await recordWorkflowRepairArtifact({
+            appId: input.app.id,
+            buildRunId: input.buildRunId,
+            repair: workflowRepair,
+            metrics: input.metrics,
+            summary: `No workflow patch was accepted for ${workflowRepair.target.workflowName}; the proven checkpoint remains active.`,
+          });
+        }
         await recordBuildAgentArtifact({
           appId: input.app.id,
           buildRunId: input.buildRunId,
@@ -1594,6 +2219,138 @@ async function runTestGauntlet(input: {
         );
         await saveTestingCheckpoint();
         await setStatus(input.buildRunId, "testing");
+        continue;
+      }
+      if (workflowRepair) {
+        const scopeAssessment = validateWorkflowRepairMutationScope({
+          repair: workflowRepair,
+          filesWritten: fix.filesWritten,
+          filesDeleted: fix.deletedFiles,
+        });
+        if (!scopeAssessment.ok) {
+          workflowRepair.status = "rolled_back";
+          workflowRepair.attempts.push({
+            round: stepRound,
+            strategy: fix.notes,
+            suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+            filesInspected: fix.debugDiagnostics.filesInspected,
+            filesWritten: fix.filesWritten,
+            filesDeleted: fix.deletedFiles,
+            outcome: "rolled_back",
+            reason: scopeAssessment.reason,
+          });
+          upsertWorkflowRepair(input.workflowRepairs, workflowRepair);
+          ineffectiveRoundsByStep.set(step, ineffectiveRounds + 1);
+          await recordWorkflowRepairArtifact({
+            appId: input.app.id,
+            buildRunId: input.buildRunId,
+            repair: workflowRepair,
+            metrics: input.metrics,
+            summary: `Rejected out-of-scope repair for ${workflowRepair.target.workflowName}: ${scopeAssessment.reason}`,
+          });
+          await saveTestingCheckpoint();
+          await setStatus(input.buildRunId, "testing");
+          continue;
+        }
+
+        await saveTestingCheckpoint();
+        applyCodegenResult(input.files, fix);
+        await activeRunner.deleteFiles(fix.deletedFiles);
+        await activeRunner.writeFiles(fix.files);
+        const focused = await validateFocusedWorkflowRepair(workflowRepair);
+        const focusedProgress =
+          !focused.ok &&
+          focused.failedStep === "e2e" &&
+          focused.failureFingerprint
+            ? compareFailureFingerprints(
+                workflowFocusedFailureFingerprint(
+                  failureFingerprint,
+                  workflowRepair.target.journeyId,
+                ),
+                focused.failureFingerprint,
+              )
+            : null;
+        const focusedImproved =
+          focusedProgress?.status === "improved" ||
+          focusedProgress?.status === "changed";
+        workflowRepair.attempts.push({
+          round: stepRound,
+          strategy: fix.notes,
+          suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+          filesInspected: fix.debugDiagnostics.filesInspected,
+          filesWritten: fix.filesWritten,
+          filesDeleted: fix.deletedFiles,
+          outcome: focused.ok || focusedImproved ? "candidate" : "rolled_back",
+          reason: focusedImproved && focusedProgress
+            ? `${focused.reason} ${focusedProgress.summary}`
+            : focused.reason,
+        });
+
+        if (!focused.ok) {
+          if (focusedImproved && focusedProgress) {
+            workflowRepair.status = "candidate";
+            workflowRepair.validation.fullGauntlet = "pending";
+            ineffectiveRoundsByStep.set(step, 0);
+            lastProgressByStep.set(step, focusedProgress);
+            upsertWorkflowRepair(input.workflowRepairs, workflowRepair);
+            await recordWorkflowRepairArtifact({
+              appId: input.app.id,
+              buildRunId: input.buildRunId,
+              repair: workflowRepair,
+              metrics: input.metrics,
+              summary: `Checkpointed improving browser repair for ${workflowRepair.target.workflowName}: ${focusedProgress.summary}`,
+            });
+            await log(
+              input.buildRunId,
+              `Focused browser repair made progress and was checkpointed: ${focusedProgress.summary}. VoiceForge will continue from the new failure evidence.`,
+            );
+            await saveTestingCheckpoint();
+            await setStatus(input.buildRunId, "testing");
+            continue;
+          }
+          const removedPaths = restoreFileMap(input.files, beforeFiles);
+          await activeRunner.deleteFiles(removedPaths);
+          await activeRunner.writeFiles(input.files);
+          workflowRepair.status = "rolled_back";
+          workflowRepair.validation.fullGauntlet = "pending";
+          ineffectiveRoundsByStep.set(step, ineffectiveRounds + 1);
+          upsertWorkflowRepair(input.workflowRepairs, workflowRepair);
+          await recordWorkflowRepairArtifact({
+            appId: input.app.id,
+            buildRunId: input.buildRunId,
+            repair: workflowRepair,
+            metrics: input.metrics,
+            summary: `Rolled back ${workflowRepair.target.workflowName} repair after focused validation: ${focused.reason}`,
+          });
+          await log(
+            input.buildRunId,
+            `Workflow repair was rolled back before the full gauntlet: ${focused.reason}`,
+          );
+          await saveTestingCheckpoint();
+          await setStatus(input.buildRunId, "testing");
+          continue;
+        }
+
+        workflowRepair.status = "focused_validated";
+        workflowRepair.validation.fullGauntlet = "pending";
+        ineffectiveRoundsByStep.set(step, 0);
+        workflowRepairSnapshots.set(workflowRepair.id, beforeFiles);
+        upsertWorkflowRepair(input.workflowRepairs, workflowRepair);
+        await recordWorkflowRepairArtifact({
+          appId: input.app.id,
+          buildRunId: input.buildRunId,
+          repair: workflowRepair,
+          metrics: input.metrics,
+          summary: `Focused validation passed for ${workflowRepair.target.workflowName}; starting the complete gauntlet from the proven candidate checkpoint.`,
+        });
+        await log(
+          input.buildRunId,
+          `Focused workflow validation passed: ${focused.reason}`,
+        );
+        await saveTestingCheckpoint();
+        await setStatus(input.buildRunId, "testing");
+        passedSteps.clear();
+        stepIdx = 0;
         continue;
       }
       await saveTestingCheckpoint();
@@ -1850,6 +2607,7 @@ async function runCheckpointReviewGate(input: {
   seededPlatformEntities: unknown[];
   reviewProgress: SerializedReviewProgress;
   completenessSource: HumanCompletenessSourceContext;
+  workflowRepairs: WorkflowRepairPackage[];
   includeCompleteness?: boolean;
 }): Promise<void> {
   let changedFilePaths = [...input.reviewProgress.changedFilePaths];
@@ -1868,8 +2626,17 @@ async function runCheckpointReviewGate(input: {
     unchangedRoundsByDomain: Object.fromEntries(unchangedRounds),
     changeMode: input.reviewProgress.changeMode,
   });
+  const syncReviewProgress = (): SerializedReviewProgress => {
+    const current = reviewProgress();
+    input.reviewProgress.changedFilePaths = current.changedFilePaths;
+    input.reviewProgress.deletedFilePaths = current.deletedFilePaths;
+    input.reviewProgress.unchangedRoundsByDomain =
+      current.unchangedRoundsByDomain;
+    input.reviewProgress.changeMode = current.changeMode;
+    return current;
+  };
   const saveReviewCheckpoint = async () => {
-    await saveBuildCheckpoint({
+    return saveBuildCheckpoint({
       appId: input.app.id,
       buildRunId: input.buildRunId,
       stage: "reviewing",
@@ -1877,9 +2644,10 @@ async function runCheckpointReviewGate(input: {
       metadata: durableMetadata({
         generated: input.generated,
         debugBudget: input.debugBudget,
-        reviewProgress: reviewProgress(),
+        reviewProgress: syncReviewProgress(),
         metrics: input.metrics,
         seededPlatformEntities: input.seededPlatformEntities,
+        workflowRepairs: input.workflowRepairs,
       }),
     });
   };
@@ -1913,6 +2681,7 @@ async function runCheckpointReviewGate(input: {
   while (blockingIssues.length > 0) {
     const repairBatch = selectPostGenerationRepairBatch(blockingIssues);
     if (!repairBatch) break;
+    const repairIssues = selectWorkflowRepairIssueCluster(repairBatch.issues);
     const budgetStep = `review_gate:${repairBatch.domain}`;
     const priorUnchanged = unchangedRounds.get(repairBatch.domain) ?? 0;
     const { stepRound, previousAttempts } = reserveDebugRound(
@@ -1921,21 +2690,57 @@ async function runCheckpointReviewGate(input: {
     );
     const evidence = createPostGenerationRepairEvidence({
       domain: repairBatch.domain,
-      issues: repairBatch.issues,
+      issues: repairIssues,
       reviews,
     });
-    const errorOutput = `${repairBatch.issues.join("\n")}\n\nSTRUCTURED REVIEW EVIDENCE:\n${serializeReviewEvidence(evidence)}`;
+    const errorOutput = `${repairIssues.join("\n")}\n\nSTRUCTURED REVIEW EVIDENCE:\n${serializeReviewEvidence(evidence)}`;
+    const repair = createWorkflowRepairPackage({
+      spec: input.spec,
+      architecture: input.architecture,
+      files: agentVisibleFiles(input.files),
+      failedStep: "review_gate",
+      errorOutput,
+      repairDomain: repairBatch.domain,
+      blockingIssues: repairIssues,
+      reviews,
+      previousAttempts,
+      source: input.completenessSource,
+    });
+    const priorRepair = input.workflowRepairs.find(
+      (candidate) => candidate.id === repair.id,
+    );
+    if (priorRepair) repair.attempts = [...priorRepair.attempts];
+    upsertWorkflowRepair(input.workflowRepairs, repair);
+    await recordWorkflowRepairArtifact({
+      appId: input.app.id,
+      buildRunId: input.buildRunId,
+      repair,
+      metrics: input.metrics,
+      summary: `Classified ${repair.target.workflowName}: ${repair.classification.category.replaceAll("_", " ")} (${repair.classification.confidence} confidence).`,
+    });
+    if (repair.classification.targetSurface === "external_environment") {
+      await saveReviewCheckpoint();
+      throw new Error(
+        "A workflow review depends on an external service that is currently unavailable. Generated source was preserved; retry when the provider is available.",
+      );
+    }
+    repair.rollback = {
+      checkpointId: await saveReviewCheckpoint(),
+      checkpointStage: "reviewing",
+    };
+    upsertWorkflowRepair(input.workflowRepairs, repair);
+    const repairFiles = workflowRepairVisibleFiles(input.files, repair);
     const debugPlan = createPhaseAwareDebugPlan({
       spec: input.spec,
-      files: agentVisibleFiles(input.files),
+      files: repairFiles,
       failedStep: "review_gate",
       errorOutput,
       generatedPhases: input.generated.phases,
       changedFilePaths,
-      forceFullScope: priorUnchanged > 0,
+      forceFullScope: false,
       escalationReason:
         priorUnchanged > 0
-          ? "A prior candidate did not improve the static review. Inspect the exact evidence and source construct; do not repeat the same rewrite or change unrelated workflow code."
+          ? "A prior workflow-scoped candidate did not improve the named finding. Change strategy inside the same producer-consumer graph; unrelated files remain protected."
           : undefined,
     });
     recordDebugRoundMetric(input.metrics, {
@@ -1948,15 +2753,16 @@ async function runCheckpointReviewGate(input: {
     await setStatus(input.buildRunId, "debugging");
     await log(
       input.buildRunId,
-      `Resumed ${repairBatch.domain} review repair round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP}; using ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} relevant files.`,
+      `Workflow repair round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP}: ${repair.classification.category.replaceAll("_", " ")} in ${repair.target.workflowName}. Scope: ${repair.scope.mutationPaths.length} mutable and ${repair.scope.protectedPaths.length} protected files.`,
     );
     const fix = await runDebugAgent({
       spec: input.spec,
-      currentFiles: debugPlan.scope.scopedFiles,
+      currentFiles: repairFiles,
       failedStep: "review_gate",
       errorOutput,
       previousAttempts,
       debugContext: debugPlan.context,
+      workflowRepair: repair,
     });
     recordDebugAttempt(
       input.debugBudget,
@@ -1966,26 +2772,38 @@ async function runCheckpointReviewGate(input: {
         "The resumed review repair produced no useful source change.",
     );
 
-    if (fix.filesWritten.length === 0 && fix.deletedFiles.length === 0) {
+    const scopeAssessment = validateWorkflowRepairMutationScope({
+      repair,
+      filesWritten: fix.filesWritten,
+      filesDeleted: fix.deletedFiles,
+    });
+    if (
+      (fix.filesWritten.length === 0 && fix.deletedFiles.length === 0) ||
+      !scopeAssessment.ok
+    ) {
       const rounds = priorUnchanged + 1;
       unchangedRounds.set(repairBatch.domain, rounds);
+      repair.status = "rolled_back";
+      repair.attempts.push({
+        round: stepRound,
+        strategy: fix.notes || "No source patch was produced.",
+        suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+        filesInspected: fix.debugDiagnostics.filesInspected,
+        filesWritten: fix.filesWritten,
+        filesDeleted: fix.deletedFiles,
+        outcome: "rolled_back",
+        reason: scopeAssessment.ok
+          ? "The workflow diagnosis produced no actionable source change."
+          : scopeAssessment.reason,
+      });
+      upsertWorkflowRepair(input.workflowRepairs, repair);
       await saveReviewCheckpoint();
-      await recordBuildAgentArtifact({
+      await recordWorkflowRepairArtifact({
         appId: input.app.id,
         buildRunId: input.buildRunId,
-        agentKey: "pipeline_observer",
-        phaseKey: `review-repair-${repairBatch.domain}`,
-        artifactType: "review_gate",
-        status: rounds >= 2 ? "failed" : "warning",
-        summary: `Resumed ${repairBatch.domain} repair produced no source changes; the best checkpoint remains active.`,
-        payload: {
-          outcome: "possible_reviewer_limitation",
-          stepRound,
-          unchangedRounds: rounds,
-          evidence,
-          suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
-          filesInspected: fix.debugDiagnostics.filesInspected,
-        },
+        repair,
+        metrics: input.metrics,
+        summary: `Rolled back ${repair.target.workflowName} repair: ${repair.attempts.at(-1)?.reason}`,
       });
       if (rounds >= 2) {
         throw new Error(
@@ -2020,15 +2838,22 @@ async function runCheckpointReviewGate(input: {
       changeMode: input.reviewProgress.changeMode,
     });
     const candidateIssues = getPostGenerationBlockingIssues(candidateReviews);
-    const assessment = assessPostGenerationRepair({
-      domain: repairBatch.domain,
-      previousIssues: blockingIssues,
-      currentIssues: candidateIssues,
+    const assessment = assessWorkflowRepairCandidate({
+      repair,
+      currentBlockingIssues: candidateIssues,
     });
-    const rounds = assessment.accepted ? 0 : priorUnchanged + 1;
+    const candidateProgressed = assessment.accepted || assessment.improved;
+    const rounds = candidateProgressed ? 0 : priorUnchanged + 1;
     unchangedRounds.set(repairBatch.domain, rounds);
 
-    if (assessment.accepted) {
+    if (candidateProgressed) {
+      repair.status = assessment.accepted ? "focused_validated" : "candidate";
+      repair.validation.staticReview = assessment.accepted
+        ? "passed"
+        : "pending";
+      repair.validation.targetResolved = assessment.targetResolved;
+      repair.validation.unrelatedFindingsAdded =
+        assessment.unrelatedFindingsAdded;
       reviews = candidateReviews;
       blockingIssues = candidateIssues;
       await recordPostGenerationReviewArtifacts({
@@ -2048,40 +2873,47 @@ async function runCheckpointReviewGate(input: {
         );
       }
     } else {
+      repair.status = "rolled_back";
+      repair.validation.staticReview = "failed";
+      repair.validation.targetResolved = assessment.targetResolved;
+      repair.validation.unrelatedFindingsAdded =
+        assessment.unrelatedFindingsAdded;
       restoreFileMap(input.files, beforeFiles);
       restoreFileMap(changedFiles, beforeChangedFiles);
       changedFilePaths = beforeChangedPaths;
       deletedFilePaths = beforeDeletedPaths;
     }
-    await saveReviewCheckpoint();
-    await recordBuildAgentArtifact({
+    repair.attempts.push({
+      round: stepRound,
+      strategy: fix.notes,
+      suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+      filesInspected: fix.debugDiagnostics.filesInspected,
+      filesWritten: fix.filesWritten,
+      filesDeleted: fix.deletedFiles,
+      outcome: candidateProgressed ? "candidate" : "rolled_back",
+      reason: assessment.reason,
+    });
+    upsertWorkflowRepair(input.workflowRepairs, repair);
+    await recordWorkflowRepairArtifact({
       appId: input.app.id,
       buildRunId: input.buildRunId,
-      agentKey: "pipeline_observer",
-      phaseKey: `review-repair-${repairBatch.domain}`,
-      artifactType: "review_gate",
-      status: assessment.accepted ? "passed" : rounds >= 2 ? "failed" : "warning",
+      repair,
+      metrics: input.metrics,
       summary: assessment.accepted
-        ? `Accepted resumed ${repairBatch.domain} repair: ${assessment.reason}`
-        : `Rolled back resumed ${repairBatch.domain} repair: ${assessment.reason}`,
-      payload: {
-        outcome: assessment.accepted ? "accepted" : "rolled_back",
-        stepRound,
-        assessment,
-        evidence,
-        suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
-        filesInspected: fix.debugDiagnostics.filesInspected,
-        filesWritten: fix.filesWritten,
-        filesDeleted: fix.deletedFiles,
-      },
+        ? `Focused static validation passed for ${repair.target.workflowName}; the candidate remains subject to targeted tests and the full gauntlet.`
+        : assessment.improved
+          ? `Checkpointed improving ${repair.target.workflowName} repair: ${assessment.reason}`
+          : `Rolled back ${repair.target.workflowName} repair: ${assessment.reason}`,
     });
     await log(
       input.buildRunId,
       assessment.accepted
         ? `Accepted and checkpointed resumed ${repairBatch.domain} repair: ${assessment.reason}`
-        : `Rolled back resumed ${repairBatch.domain} repair: ${assessment.reason}`,
+        : assessment.improved
+          ? `Checkpointed partial ${repairBatch.domain} progress and will continue from it: ${assessment.reason}`
+          : `Rolled back resumed ${repairBatch.domain} repair: ${assessment.reason}`,
     );
-    if (!assessment.accepted && rounds >= 2) {
+    if (!candidateProgressed && rounds >= 2) {
       throw new Error(
         `${repairBatch.domain} static review could not validate an improving repair after two resumed attempts. VoiceForge preserved the best generated source; this may be a reviewer limitation.`,
       );
@@ -2105,6 +2937,7 @@ async function runCheckpointReviewGate(input: {
       input.buildRunId,
       "Updated deterministic workflow reviews passed before resumed checks.",
     );
+    syncReviewProgress();
     return;
   }
 
@@ -2148,20 +2981,48 @@ async function runCheckpointReviewGate(input: {
       budgetStep,
     );
     const allReviews = [...reviews, completenessReview];
+    const repairIssues = selectWorkflowRepairIssueCluster(
+      completenessReview.blockingIssues,
+    );
     const evidence = createPostGenerationRepairEvidence({
       domain,
-      issues: completenessReview.blockingIssues,
+      issues: repairIssues,
       reviews: allReviews,
     });
-    const errorOutput = `${completenessReview.blockingIssues.join("\n")}\n\nSTRUCTURED PRODUCT COMPLETENESS EVIDENCE:\n${serializeReviewEvidence(evidence)}`;
+    const errorOutput = `${repairIssues.join("\n")}\n\nSTRUCTURED PRODUCT COMPLETENESS EVIDENCE:\n${serializeReviewEvidence(evidence)}`;
+    const repair = createWorkflowRepairPackage({
+      spec: input.spec,
+      architecture: input.architecture,
+      files: agentVisibleFiles(input.files),
+      failedStep: "review_gate",
+      errorOutput,
+      repairDomain: domain,
+      blockingIssues: repairIssues,
+      reviews: allReviews,
+      previousAttempts,
+      source: input.completenessSource,
+    });
+    const priorRepair = input.workflowRepairs.find(
+      (candidate) => candidate.id === repair.id,
+    );
+    if (priorRepair) repair.attempts = [...priorRepair.attempts];
+    upsertWorkflowRepair(input.workflowRepairs, repair);
+    await recordWorkflowRepairArtifact({
+      appId: input.app.id,
+      buildRunId: input.buildRunId,
+      repair,
+      metrics: input.metrics,
+      summary: `Classified product-promise repair for ${repair.target.workflowName}: ${repair.classification.category.replaceAll("_", " ")}.`,
+    });
+    const repairFiles = workflowRepairVisibleFiles(input.files, repair);
     const debugPlan = createPhaseAwareDebugPlan({
       spec: input.spec,
-      files: agentVisibleFiles(input.files),
+      files: repairFiles,
       failedStep: "review_gate",
       errorOutput,
       generatedPhases: input.generated.phases,
       changedFilePaths,
-      forceFullScope: priorUnchanged > 0,
+      forceFullScope: false,
       escalationReason:
         priorUnchanged > 0
           ? "A prior product-completeness repair did not improve the promised user outcome. Trace the named workflow through its route, components, persistence path, and generated acceptance journey before changing strategy."
@@ -2174,19 +3035,24 @@ async function runCheckpointReviewGate(input: {
       responsiblePhaseId: debugPlan.responsiblePhase.id,
       responsibleAgentKey: debugPlan.responsiblePhase.agentKey,
     });
-    await saveReviewCheckpoint();
+    repair.rollback = {
+      checkpointId: await saveReviewCheckpoint(),
+      checkpointStage: "reviewing",
+    };
+    upsertWorkflowRepair(input.workflowRepairs, repair);
     await setStatus(input.buildRunId, "debugging");
     await log(
       input.buildRunId,
-      `Product completeness repair round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP}; inspecting ${debugPlan.scope.visibleFileCount}/${debugPlan.scope.fullFileCount} relevant files.`,
+      `Product workflow repair round ${stepRound}/${MAX_DEBUG_ROUNDS_PER_STEP}; ${repair.scope.mutationPaths.length} files may change and ${repair.scope.protectedPaths.length} remain protected.`,
     );
     const fix = await runDebugAgent({
       spec: input.spec,
-      currentFiles: debugPlan.scope.scopedFiles,
+      currentFiles: repairFiles,
       failedStep: "review_gate",
       errorOutput,
       previousAttempts,
       debugContext: debugPlan.context,
+      workflowRepair: repair,
     });
     recordDebugAttempt(
       input.debugBudget,
@@ -2196,10 +3062,39 @@ async function runCheckpointReviewGate(input: {
         "The product-completeness repair produced no useful source change.",
     );
 
-    if (fix.filesWritten.length === 0 && fix.deletedFiles.length === 0) {
+    const scopeAssessment = validateWorkflowRepairMutationScope({
+      repair,
+      filesWritten: fix.filesWritten,
+      filesDeleted: fix.deletedFiles,
+    });
+    if (
+      (fix.filesWritten.length === 0 && fix.deletedFiles.length === 0) ||
+      !scopeAssessment.ok
+    ) {
       const rounds = priorUnchanged + 1;
       unchangedRounds.set(domain, rounds);
+      repair.status = "rolled_back";
+      repair.attempts.push({
+        round: stepRound,
+        strategy: fix.notes || "No source patch was produced.",
+        suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+        filesInspected: fix.debugDiagnostics.filesInspected,
+        filesWritten: fix.filesWritten,
+        filesDeleted: fix.deletedFiles,
+        outcome: "rolled_back",
+        reason: scopeAssessment.ok
+          ? "The product workflow diagnosis produced no source change."
+          : scopeAssessment.reason,
+      });
+      upsertWorkflowRepair(input.workflowRepairs, repair);
       await saveReviewCheckpoint();
+      await recordWorkflowRepairArtifact({
+        appId: input.app.id,
+        buildRunId: input.buildRunId,
+        repair,
+        metrics: input.metrics,
+        summary: `Rolled back product workflow repair: ${repair.attempts.at(-1)?.reason}`,
+      });
       await recordBuildAgentArtifact({
         appId: input.app.id,
         buildRunId: input.buildRunId,
@@ -2275,6 +3170,9 @@ async function runCheckpointReviewGate(input: {
     unchangedRounds.set(domain, rounds);
 
     if (assessment.accepted) {
+      repair.status = "focused_validated";
+      repair.validation.staticReview = "passed";
+      repair.validation.targetResolved = true;
       reviews = candidateReviews;
       blockingIssues = candidateStaticIssues;
       completenessReport = candidateCompletenessReport;
@@ -2287,12 +3185,34 @@ async function runCheckpointReviewGate(input: {
       });
       recordReviewMetrics(input.metrics, [...reviews, completenessReview]);
     } else {
+      repair.status = "rolled_back";
+      repair.validation.staticReview = "failed";
       restoreFileMap(input.files, beforeFiles);
       restoreFileMap(changedFiles, beforeChangedFiles);
       changedFilePaths = beforeChangedPaths;
       deletedFilePaths = beforeDeletedPaths;
     }
+    repair.attempts.push({
+      round: stepRound,
+      strategy: fix.notes,
+      suspectedRootCause: fix.debugDiagnostics.suspectedRootCause,
+      filesInspected: fix.debugDiagnostics.filesInspected,
+      filesWritten: fix.filesWritten,
+      filesDeleted: fix.deletedFiles,
+      outcome: assessment.accepted ? "candidate" : "rolled_back",
+      reason: assessment.reason,
+    });
+    upsertWorkflowRepair(input.workflowRepairs, repair);
     await saveReviewCheckpoint();
+    await recordWorkflowRepairArtifact({
+      appId: input.app.id,
+      buildRunId: input.buildRunId,
+      repair,
+      metrics: input.metrics,
+      summary: assessment.accepted
+        ? `Focused product-workflow review passed for ${repair.target.workflowName}; tests remain pending.`
+        : `Rolled back product-workflow repair: ${assessment.reason}`,
+    });
     await recordBuildAgentArtifact({
       appId: input.app.id,
       buildRunId: input.buildRunId,
@@ -2339,6 +3259,7 @@ async function runCheckpointReviewGate(input: {
       "Static acceptance review deferred helper-based evidence to the generated Playwright journeys; the e2e result will arbitrate it.",
     );
   }
+  syncReviewProgress();
   await log(input.buildRunId, "Generated app workflow reviews passed.");
 }
 
@@ -2496,15 +3417,18 @@ export async function resumeBuildPipelineContinuation(
     const seededPlatformEntities = restoreSeededPlatformEntities(
       metadata.seededPlatformEntities,
     );
+    const workflowRepairs = restoreWorkflowRepairPackages(
+      metadata.workflowRepairs,
+    );
+    const changeMode = Boolean(app.githubRepoUrl && requirement.version > 1);
+    const reviewProgress = restoreReviewProgress(
+      metadata.reviewProgress,
+      generated,
+      changeMode,
+    );
     const recheckTestingCheckpoint =
       checkpoint.stage === "testing" && options?.resetDebugBudget === true;
     if (checkpoint.stage === "reviewing" || recheckTestingCheckpoint) {
-      const changeMode = Boolean(app.githubRepoUrl && requirement.version > 1);
-      const reviewProgress = restoreReviewProgress(
-        metadata.reviewProgress,
-        generated,
-        changeMode,
-      );
       if (recheckTestingCheckpoint) {
         await log(
           run.id,
@@ -2523,6 +3447,7 @@ export async function resumeBuildPipelineContinuation(
         seededPlatformEntities,
         reviewProgress,
         completenessSource,
+        workflowRepairs,
         includeCompleteness: !recheckTestingCheckpoint,
       });
       await saveBuildCheckpoint({
@@ -2533,8 +3458,10 @@ export async function resumeBuildPipelineContinuation(
         metadata: durableMetadata({
           generated,
           debugBudget,
+          reviewProgress,
           metrics,
           seededPlatformEntities,
+          workflowRepairs,
         }),
       });
       await log(
@@ -2547,12 +3474,16 @@ export async function resumeBuildPipelineContinuation(
       app,
       buildRunId: run.id,
       spec,
+      architecture,
+      completenessSource,
       files: checkpoint.files,
       generated,
       debugBudget,
       debugProgress,
       metrics,
       seededPlatformEntities,
+      workflowRepairs,
+      reviewProgress,
     });
     await saveBuildCheckpoint({
       appId: app.id,
@@ -2562,8 +3493,10 @@ export async function resumeBuildPipelineContinuation(
       metadata: durableMetadata({
         generated,
         debugBudget,
+        reviewProgress,
         metrics,
         seededPlatformEntities,
+        workflowRepairs,
       }),
     });
     await log(

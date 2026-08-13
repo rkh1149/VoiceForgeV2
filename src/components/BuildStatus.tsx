@@ -9,6 +9,7 @@ import InterfaceReadinessReport from "@/components/InterfaceReadinessReport";
 import PersistenceHandoffReport from "@/components/PersistenceHandoffReport";
 import AcceptanceJourneysReport from "@/components/AcceptanceJourneysReport";
 import HumanCompletenessReport from "@/components/HumanCompletenessReport";
+import WorkflowRepairReport from "@/components/WorkflowRepairReport";
 import type { WorkflowContract } from "@/lib/workflow-contract";
 
 type LogEntry = { ts: string; message: string };
@@ -208,6 +209,9 @@ export default function BuildStatus({ appId }: { appId: string }) {
       .find(
         (artifact) => artifact.artifactType === "human_completeness_review",
       ) ?? null;
+  const workflowRepairArtifacts = data.agentArtifacts.filter(
+    (artifact) => artifact.artifactType === "workflow_repair",
+  );
   const browserResult =
     [...testResults].reverse().find((result) => result.suite === "e2e") ?? null;
   const otherAgentArtifacts = data.agentArtifacts.filter(
@@ -215,7 +219,8 @@ export default function BuildStatus({ appId }: { appId: string }) {
       artifact.artifactType !== "ui_affordance_review" &&
       artifact.artifactType !== "persistence_handoff_review" &&
       artifact.artifactType !== "acceptance_test_review" &&
-      artifact.artifactType !== "human_completeness_review",
+      artifact.artifactType !== "human_completeness_review" &&
+      artifact.artifactType !== "workflow_repair",
   );
 
   return (
@@ -360,6 +365,8 @@ export default function BuildStatus({ appId }: { appId: string }) {
       />
 
       <HumanCompletenessReport artifact={humanCompletenessArtifact} />
+
+      <WorkflowRepairReport artifacts={workflowRepairArtifacts} />
 
       {otherAgentArtifacts.length > 0 && (
         <AgentArtifactsList artifacts={otherAgentArtifacts} />

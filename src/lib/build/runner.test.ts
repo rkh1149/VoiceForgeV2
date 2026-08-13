@@ -3,10 +3,39 @@ import { readFileSync } from "node:fs";
 import {
   E2E_PROGRESS_HEARTBEAT_MS,
   SANDBOX_BROWSER_PACKAGES,
+  focusedRunCommand,
   sandboxBrowserSetupPlan,
 } from "./runner";
 
 describe("sandbox browser setup", () => {
+  it("targets one workflow journey or affected unit-test file", () => {
+    expect(
+      focusedRunCommand({
+        kind: "e2e",
+        grep: "voiceforge-journey:journey-save-route-to-track-route",
+      }),
+    ).toEqual({
+      step: "e2e",
+      cmd: "npx",
+      args: [
+        "playwright",
+        "test",
+        "--grep",
+        "voiceforge-journey:journey-save-route-to-track-route",
+      ],
+    });
+    expect(
+      focusedRunCommand({
+        kind: "unit",
+        testFiles: ["src/lib/routes.test.ts"],
+      }),
+    ).toEqual({
+      step: "test",
+      cmd: "npx",
+      args: ["vitest", "run", "src/lib/routes.test.ts"],
+    });
+  });
+
   it("installs the verified Chromium runtime before hosted browser tests", () => {
     const plan = sandboxBrowserSetupPlan();
 
