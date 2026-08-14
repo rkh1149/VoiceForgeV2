@@ -8,7 +8,7 @@ import type {
 } from "../workflow-contract";
 import type { FileMap } from "./template";
 
-export const UI_AFFORDANCE_REVIEW_VERSION = 1 as const;
+export const UI_AFFORDANCE_REVIEW_VERSION = 2 as const;
 
 const ALL_ROLES: WorkflowContractRole[] = [
   "owner",
@@ -66,6 +66,15 @@ export type UiAffordanceControlEvidence = {
   line: number;
   roles: WorkflowContractRole[];
   targetRoute: string | null;
+  workflowId?: string | null;
+  controlId?: string | null;
+  entityKey?: string | null;
+  recordScoped?: boolean;
+  recordKey?: string | null;
+  repeated?: boolean;
+  tagName?: string;
+  exclusiveGroup?: string | null;
+  exclusiveBranch?: "true" | "false" | null;
 };
 
 export type UiAffordanceRouteEvidence = {
@@ -123,6 +132,12 @@ export type UiAffordanceReview = {
     placeholderPages: number;
     vagueControls: number;
     uncertainControls: number;
+    stableControlsRequired: number;
+    stableControlsBound: number;
+    legacyControlFallbacks: number;
+    duplicateControlBindings: number;
+    misplacedControlBindings: number;
+    repeatedControlsScoped: number;
   };
   routes: UiAffordanceRouteEvidence[];
   workflows: UiAffordanceWorkflowEvidence[];
@@ -131,8 +146,22 @@ export type UiAffordanceReview = {
   placeholderRoutes: string[];
   vagueControls: UiAffordanceControlEvidence[];
   uncertainControls: UiAffordanceControlEvidence[];
+  stableControlBindings: StableControlBindingEvidence[];
   warnings: string[];
   blockingIssues: string[];
+};
+
+export type StableControlBindingEvidence = {
+  workflowId: string;
+  workflowName: string;
+  controlId: string;
+  accessibleName: string;
+  route: string;
+  status: "bound" | "legacy_fallback" | "needs_repair";
+  filePath: string;
+  line: number;
+  repeated: boolean;
+  recordScoped: boolean;
 };
 
 type ModuleControl = Omit<UiAffordanceControlEvidence, "route"> & {
@@ -186,15 +215,24 @@ export function analyzeUiAffordances(input: {
   spec: AppSpec;
   architecture: ArchitecturePlan;
   files: FileMap;
+  requireStableControlBindings?: boolean;
 }): UiAffordanceReview {
+  const requireStableControlBindings =
+    input.requireStableControlBindings ?? false;
   const modules = analyzeModules(input.files);
   const routeMap = buildRouteEvidence(modules, input.files);
   const brokenNavigationIssues = findBrokenNavigationIssues(routeMap);
   populateReachability(routeMap);
 
   const workflowResults = input.architecture.workflowContracts.map((contract) =>
-    reviewWorkflow(contract, routeMap),
+    reviewWorkflow(contract, routeMap, requireStableControlBindings),
   );
+  const stableControlReview = reviewStableControlBindings({
+    architecture: input.architecture,
+    files: input.files,
+    routeMap,
+    required: requireStableControlBindings,
+  });
   const workflowById = new Map(
     workflowResults.map((workflow) => [workflow.contractId, workflow]),
   );
@@ -280,6 +318,7 @@ export function analyzeUiAffordances(input: {
         ? `ui_affordance: ${control.filePath}:${control.line} uses the vague ${control.kind} label "${control.label}" on ${control.route}; name the action and object clearly.`
         : `ui_affordance: ${control.filePath}:${control.line} has an unlabeled ${control.kind} on ${control.route}; add visible text or an aria-label that names the action.`,
     ),
+    ...stableControlReview.blockingIssues,
   ]);
 
   const warnings = uniqueStrings([
@@ -298,6 +337,7 @@ export function analyzeUiAffordances(input: {
       (control) =>
         `ui_affordance: ${control.filePath}:${control.line} uses a runtime-provided ${control.kind} label on ${control.route}. Static review could not resolve the text, so browser accessibility tests must verify its accessible name.`,
     ),
+    ...stableControlReview.warnings,
   ]);
 
   const routes = [...routeMap.values()]
@@ -315,6 +355,13 @@ export function analyzeUiAffordances(input: {
         line: control.line,
         roles: control.roles,
         targetRoute: control.targetRoute,
+        workflowId: control.workflowId ?? null,
+        controlId: control.controlId ?? null,
+        entityKey: control.entityKey ?? null,
+        recordScoped: control.recordScoped ?? false,
+        recordKey: control.recordKey ?? null,
+        repeated: control.repeated ?? false,
+        tagName: control.tagName ?? "",
       })),
       placeholder: route.placeholder,
     }))
@@ -355,6 +402,12 @@ export function analyzeUiAffordances(input: {
       placeholderPages: placeholderRoutes.length,
       vagueControls: vagueControls.length,
       uncertainControls: uncertainControls.length,
+      stableControlsRequired: stableControlReview.expected,
+      stableControlsBound: stableControlReview.bound,
+      legacyControlFallbacks: stableControlReview.legacyFallbacks,
+      duplicateControlBindings: stableControlReview.duplicateBindings,
+      misplacedControlBindings: stableControlReview.misplacedBindings,
+      repeatedControlsScoped: stableControlReview.repeatedControlsScoped,
     },
     routes,
     workflows: workflowResults,
@@ -363,9 +416,341 @@ export function analyzeUiAffordances(input: {
     placeholderRoutes,
     vagueControls,
     uncertainControls,
+    stableControlBindings: stableControlReview.evidence,
     warnings,
     blockingIssues,
   };
+}
+
+type StableControlReview = {
+  expected: number;
+  bound: number;
+  legacyFallbacks: number;
+  duplicateBindings: number;
+  misplacedBindings: number;
+  repeatedControlsScoped: number;
+  evidence: StableControlBindingEvidence[];
+  warnings: string[];
+  blockingIssues: string[];
+};
+
+function reviewStableControlBindings(input: {
+  architecture: ArchitecturePlan;
+  files: FileMap;
+  routeMap: Map<string, RouteWorkingEvidence>;
+  required: boolean;
+}): StableControlReview {
+  const expectedControls = input.architecture.workflowContracts.flatMap(
+    (contract) =>
+      contract.trigger === "user_action"
+        ? contract.controls.map((control) => ({ contract, control }))
+        : [],
+  );
+  const actualControls = [...input.routeMap.values()].flatMap((route) =>
+    route.controls.map((control) => ({ ...control, route: route.route })),
+  );
+  const sourceBindings = uniqueControlsBySource(
+    actualControls.filter(
+      (control) => Boolean(control.workflowId) || Boolean(control.controlId),
+    ),
+  );
+  const validPairs = new Set(
+    expectedControls.map(
+      ({ contract, control }) => `${contract.id}:${control.id}`,
+    ),
+  );
+  const blockingIssues: string[] = [];
+  const warnings: string[] = [];
+  const evidence: StableControlBindingEvidence[] = [];
+  let bound = 0;
+  let legacyFallbacks = 0;
+  let repeatedControlsScoped = 0;
+
+  const placementReview = reviewBindingPlacements(input.files);
+  if (input.required) blockingIssues.push(...placementReview.issues);
+  else warnings.push(...placementReview.issues.map(asLegacyBindingWarning));
+
+  for (const actual of sourceBindings) {
+    if (!actual.workflowId || !actual.controlId) {
+      const issue = `contract_control: ${actual.filePath}:${actual.line} must place data-vf-workflow and data-vf-control together on the same interactive control.`;
+      if (input.required) blockingIssues.push(issue);
+      else warnings.push(asLegacyBindingWarning(issue));
+      continue;
+    }
+    const pair = `${actual.workflowId}:${actual.controlId}`;
+    if (
+      !validPairs.has(pair) &&
+      !isKnownSharedControlBinding(actual, expectedControls)
+    ) {
+      const issue = `contract_control: ${actual.filePath}:${actual.line} uses unknown binding [voiceforge-workflow:${actual.workflowId}][voiceforge-control:${actual.controlId}]. Use the exact ids from the workflow contract.`;
+      if (input.required) blockingIssues.push(issue);
+      else warnings.push(asLegacyBindingWarning(issue));
+    }
+  }
+
+  const duplicateGroups = groupBy(
+    sourceBindings.filter(
+      (control) => control.workflowId && control.controlId && !control.repeated,
+    ),
+    (control) => `${control.workflowId}:${control.controlId}`,
+  );
+  const conflictingDuplicateGroups = [...duplicateGroups.values()].filter(
+    hasCoexistingDuplicateControls,
+  );
+  const duplicateBindings = conflictingDuplicateGroups.length;
+  for (const controls of duplicateGroups.values()) {
+    if (!hasCoexistingDuplicateControls(controls)) continue;
+    const first = controls[0];
+    const issue = `contract_control: Binding [voiceforge-workflow:${first.workflowId}][voiceforge-control:${first.controlId}] appears on ${controls.length} unscoped controls (${controls.map((control) => `${control.filePath}:${control.line}`).join(", ")}). Keep one semantic control or scope repeated actions to records.`;
+    if (input.required) blockingIssues.push(issue);
+    else warnings.push(asLegacyBindingWarning(issue));
+  }
+
+  for (const { contract, control } of expectedControls) {
+    const route = findPlannedRoute(control.route, input.routeMap);
+    const pairMatches = route?.controls.filter(
+      (actual) =>
+        actual.workflowId === contract.id && actual.controlId === control.id,
+    ) ?? [];
+    const compatible = pairMatches.find((actual) =>
+      compatibleControlKind(control.kind, actual.kind),
+    );
+    const fallbackCandidates = route?.controls.filter(
+      (actual) =>
+        compatibleControlKind(control.kind, actual.kind) &&
+        labelsEquivalent(control.accessibleName, actual.label),
+    ) ?? [];
+    const sharedBinding = route?.controls.find(
+      (actual) =>
+        compatibleControlKind(control.kind, actual.kind) &&
+        isSharedStableBinding({
+          actual,
+          expectedContract: contract,
+          expectedControl: control,
+          expectedControls,
+        }),
+    ) ?? null;
+    const fallback = sharedBinding ?? fallbackCandidates[0];
+    const actual = compatible ?? sharedBinding ?? fallback;
+    const baseEvidence = {
+      workflowId: contract.id,
+      workflowName: contract.name,
+      controlId: control.id,
+      accessibleName: control.accessibleName,
+      route: control.route,
+      filePath: actual?.filePath ?? route?.filePath ?? "",
+      line: actual?.line ?? 0,
+      repeated: actual?.repeated ?? false,
+      recordScoped: actual?.recordScoped ?? false,
+    };
+
+    if (compatible) {
+      bound += 1;
+      if (compatible.repeated && compatible.recordScoped) {
+        repeatedControlsScoped += 1;
+      }
+      evidence.push({ ...baseEvidence, status: "bound" });
+      if (compatible.repeated && !compatible.recordScoped) {
+        const issue = `contract_control: ${compatible.filePath}:${compatible.line} repeats [voiceforge-workflow:${contract.id}][voiceforge-control:${control.id}] without a nearest data-vf-entity/data-vf-record record container.`;
+        if (input.required) blockingIssues.push(issue);
+        else warnings.push(asLegacyBindingWarning(issue));
+      }
+      continue;
+    }
+
+    if (sharedBinding) {
+      bound += 1;
+      if (sharedBinding.repeated && sharedBinding.recordScoped) {
+        repeatedControlsScoped += 1;
+      }
+      evidence.push({ ...baseEvidence, status: "bound" });
+      if (sharedBinding.repeated && !sharedBinding.recordScoped) {
+        const issue = `contract_control: ${sharedBinding.filePath}:${sharedBinding.line} repeats the shared stable binding for ${contract.id}/${control.id} without a nearest data-vf-entity/data-vf-record record container.`;
+        if (input.required) blockingIssues.push(issue);
+        else warnings.push(asLegacyBindingWarning(issue));
+      }
+      continue;
+    }
+
+    if (fallback) {
+      legacyFallbacks += 1;
+      evidence.push({ ...baseEvidence, status: "legacy_fallback" });
+      const issue = `contract_control: Workflow "${contract.name}" (${contract.id}) control ${control.id} is currently found by accessible name "${fallback.label}" at ${fallback.filePath}:${fallback.line}, but it is missing data-vf-workflow="${contract.id}" and data-vf-control="${control.id}" on the interactive element.`;
+      if (input.required) blockingIssues.push(issue);
+      else warnings.push(asLegacyBindingWarning(issue));
+      continue;
+    }
+
+    const elsewhere = actualControls.find(
+      (actual) =>
+        actual.workflowId === contract.id && actual.controlId === control.id,
+    );
+    evidence.push({ ...baseEvidence, status: "needs_repair" });
+    const issue = elsewhere
+      ? `contract_control: [voiceforge-workflow:${contract.id}][voiceforge-control:${control.id}] is rendered on ${elsewhere.route} as ${elsewhere.kind}, but the contract requires a ${control.kind} on ${control.route}.`
+      : `contract_control: Workflow "${contract.name}" (${contract.id}) has no rendered binding for control ${control.id} on ${control.route}.`;
+    if (input.required) blockingIssues.push(issue);
+    else warnings.push(asLegacyBindingWarning(issue));
+  }
+
+  return {
+    expected: expectedControls.length,
+    bound,
+    legacyFallbacks,
+    duplicateBindings,
+    misplacedBindings: placementReview.issues.length,
+    repeatedControlsScoped,
+    evidence,
+    warnings: uniqueStrings(warnings),
+    blockingIssues: uniqueStrings(blockingIssues),
+  };
+}
+
+function isKnownSharedControlBinding(
+  actual: UiAffordanceControlEvidence,
+  expectedControls: Array<{
+    contract: WorkflowContract;
+    control: WorkflowContract["controls"][number];
+  }>,
+): boolean {
+  if (!actual.workflowId || !actual.controlId) return false;
+  const workflowExistsOnRoute = expectedControls.some(
+    ({ contract, control }) =>
+      contract.id === actual.workflowId &&
+      routePatternsOverlap(control.route, actual.route),
+  );
+  if (!workflowExistsOnRoute) return false;
+  return expectedControls.some(
+    ({ control }) =>
+      control.id === actual.controlId &&
+      routePatternsOverlap(control.route, actual.route) &&
+      compatibleControlKind(control.kind, actual.kind),
+  );
+}
+
+function isSharedStableBinding(input: {
+  actual: UiAffordanceControlEvidence;
+  expectedContract: WorkflowContract;
+  expectedControl: WorkflowContract["controls"][number];
+  expectedControls: Array<{
+    contract: WorkflowContract;
+    control: WorkflowContract["controls"][number];
+  }>;
+}): boolean {
+  if (!input.actual.workflowId || !input.actual.controlId) return false;
+  return input.expectedControls.some(
+    ({ contract, control }) =>
+      contract.id === input.actual.workflowId &&
+      control.id === input.actual.controlId &&
+      routePatternsOverlap(control.route, input.expectedControl.route) &&
+      compatibleControlKind(control.kind, input.expectedControl.kind) &&
+      labelsEquivalent(
+        control.accessibleName,
+        input.expectedControl.accessibleName,
+      ),
+  );
+}
+
+function hasCoexistingDuplicateControls(
+  controls: UiAffordanceControlEvidence[],
+): boolean {
+  for (let leftIndex = 0; leftIndex < controls.length; leftIndex += 1) {
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < controls.length;
+      rightIndex += 1
+    ) {
+      const left = controls[leftIndex];
+      const right = controls[rightIndex];
+      const mutuallyExclusive =
+        Boolean(left.exclusiveGroup) &&
+        left.exclusiveGroup === right.exclusiveGroup &&
+        Boolean(left.exclusiveBranch) &&
+        Boolean(right.exclusiveBranch) &&
+        left.exclusiveBranch !== right.exclusiveBranch;
+      if (!mutuallyExclusive) return true;
+    }
+  }
+  return false;
+}
+
+function reviewBindingPlacements(files: FileMap): { issues: string[] } {
+  const issues: string[] = [];
+  for (const [path, source] of Object.entries(files)) {
+    if (!path.endsWith(".tsx") || !path.startsWith("src/")) continue;
+    const sourceFile = ts.createSourceFile(
+      path,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    const visit = (node: ts.Node) => {
+      if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
+        const opening = ts.isJsxElement(node) ? node.openingElement : node;
+        const workflowAttribute = jsxAttribute(opening, "data-vf-workflow");
+        const controlAttribute = jsxAttribute(opening, "data-vf-control");
+        const spreadBinding = jsxSpreadHasContractBinding(opening, sourceFile);
+        const recordAttribute = jsxAttribute(opening, "data-vf-record");
+        const entityAttribute = jsxAttribute(opening, "data-vf-entity");
+        const line = lineOf(sourceFile, opening);
+        if (workflowAttribute || controlAttribute || spreadBinding) {
+          const bindings = jsxStableBindingPairs(opening, sourceFile);
+          if (
+            bindings.length === 0 ||
+            bindings.some(
+              (binding) => !binding.workflowId || !binding.controlId,
+            )
+          ) {
+            issues.push(
+              `contract_control: ${path}:${line} must use data-vf-workflow and data-vf-control values that resolve to a finite set of literal contract ids; labels and arbitrary runtime text must not generate permanent ids.`,
+            );
+          }
+          if (!controlKind(opening.tagName.getText(sourceFile), opening, sourceFile)) {
+            issues.push(
+              `contract_control: ${path}:${line} places a workflow/control binding on non-interactive <${opening.tagName.getText(sourceFile)}> markup. Move it to the button, link, form field, or other actual control.`,
+            );
+          }
+        }
+        if (recordAttribute && !entityAttribute) {
+          issues.push(
+            `contract_control: ${path}:${line} uses data-vf-record without data-vf-entity on the same repeated-record container.`,
+          );
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+  return { issues: uniqueStrings(issues) };
+}
+
+function asLegacyBindingWarning(issue: string): string {
+  return `${issue} Legacy Change an App compatibility will use accessible-name fallback for this build.`;
+}
+
+function uniqueControlsBySource(
+  controls: UiAffordanceControlEvidence[],
+): UiAffordanceControlEvidence[] {
+  const seen = new Set<string>();
+  return controls.filter((control) => {
+    const sourcePosition = (
+      control as UiAffordanceControlEvidence & { sourcePosition?: number }
+    ).sourcePosition ?? control.line;
+    const key = `${control.filePath}:${sourcePosition}:${control.workflowId ?? ""}:${control.controlId ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function groupBy<T>(values: readonly T[], keyFor: (value: T) => string) {
+  const groups = new Map<string, T[]>();
+  for (const value of values) {
+    const key = keyFor(value);
+    groups.set(key, [...(groups.get(key) ?? []), value]);
+  }
+  return groups;
 }
 
 function findDefaultComponent(sourceFile: ts.SourceFile): string | null {
@@ -856,8 +1241,34 @@ function controlsForElement(input: {
     jsxAttributeValue(input.opening, "href", input.sourceFile) ??
     jsxAttributeValue(input.opening, "to", input.sourceFile) ??
     routeFromHandler(input.opening, input.sourceFile);
+  const recordScope = nearestRecordScope(input.node, input.sourceFile);
+  const sourceBindings = jsxStableBindingPairs(
+    input.opening,
+    input.sourceFile,
+  );
+  const componentBinding =
+    input.tagName === "GooglePlaceAutocomplete"
+      ? jsxContractBinding(
+          input.opening,
+          "inputContract",
+          input.sourceFile,
+        )
+      : { workflowId: null, controlId: null, entityKey: null };
+  const bindings =
+    sourceBindings.length > 0
+      ? sourceBindings
+      : [
+          {
+            workflowId: componentBinding.workflowId,
+            controlId: componentBinding.controlId,
+          },
+        ];
+  const exclusiveBranch = nearestExclusiveBranch(
+    input.node,
+    input.sourceFile,
+  );
   return [
-    {
+    ...bindings.map((binding) => ({
       kind,
       label: labelResult.label,
       labelConfidence: labelResult.confidence,
@@ -868,9 +1279,362 @@ function controlsForElement(input: {
       roles: rolesForNode(input.node, input.sourceFile),
       targetRoute,
       ownerComponent: input.ownerComponent,
-    },
+      workflowId: binding.workflowId,
+      controlId: binding.controlId,
+      entityKey:
+        jsxAttributeValue(input.opening, "data-vf-entity", input.sourceFile) ??
+        componentBinding.entityKey ??
+        recordScope.entityKey,
+      recordScoped: recordScope.scoped,
+      recordKey: recordScope.recordKey,
+      repeated: isInsideRepeatedRender(input.node, input.sourceFile),
+      tagName: input.tagName,
+      exclusiveGroup: exclusiveBranch.group,
+      exclusiveBranch: exclusiveBranch.branch,
+    })),
     ...composite,
   ];
+}
+
+type StableBindingPair = {
+  workflowId: string | null;
+  controlId: string | null;
+};
+
+function jsxStableBindingPairs(
+  opening: ts.JsxOpeningLikeElement,
+  sourceFile: ts.SourceFile,
+): StableBindingPair[] {
+  const pairs: StableBindingPair[] = [];
+  const workflowAttribute = jsxAttribute(opening, "data-vf-workflow");
+  const controlAttribute = jsxAttribute(opening, "data-vf-control");
+  if (workflowAttribute || controlAttribute) {
+    const workflowIds = jsxAttributeLiteralAlternatives(
+      opening,
+      "data-vf-workflow",
+      sourceFile,
+    );
+    const controlIds = jsxAttributeLiteralAlternatives(
+      opening,
+      "data-vf-control",
+      sourceFile,
+    );
+    if (workflowIds.length > 0 && controlIds.length > 0) {
+      for (const workflowId of workflowIds) {
+        for (const controlId of controlIds) {
+          pairs.push({ workflowId, controlId });
+        }
+      }
+    } else {
+      pairs.push({
+        workflowId: workflowIds[0] ?? null,
+        controlId: controlIds[0] ?? null,
+      });
+    }
+  }
+
+  for (const property of opening.attributes.properties) {
+    if (!ts.isJsxSpreadAttribute(property)) continue;
+    for (const object of objectLiteralAlternatives(property.expression)) {
+      const workflowIds = objectPropertyLiteralAlternatives(
+        object,
+        "data-vf-workflow",
+        sourceFile,
+      );
+      const controlIds = objectPropertyLiteralAlternatives(
+        object,
+        "data-vf-control",
+        sourceFile,
+      );
+      if (workflowIds.length === 0 && controlIds.length === 0) continue;
+      if (workflowIds.length > 0 && controlIds.length > 0) {
+        for (const workflowId of workflowIds) {
+          for (const controlId of controlIds) {
+            pairs.push({ workflowId, controlId });
+          }
+        }
+      } else {
+        pairs.push({
+          workflowId: workflowIds[0] ?? null,
+          controlId: controlIds[0] ?? null,
+        });
+      }
+    }
+  }
+
+  const seen = new Set<string>();
+  return pairs.filter((pair) => {
+    const key = `${pair.workflowId ?? ""}:${pair.controlId ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function jsxSpreadHasContractBinding(
+  opening: ts.JsxOpeningLikeElement,
+  sourceFile: ts.SourceFile,
+): boolean {
+  return opening.attributes.properties.some((property) => {
+    if (!ts.isJsxSpreadAttribute(property)) return false;
+    return objectLiteralAlternatives(property.expression).some((object) =>
+      object.properties.some((candidate) => {
+        if (!ts.isPropertyAssignment(candidate)) return false;
+        const name = candidate.name
+          .getText(sourceFile)
+          .replace(/["']/g, "");
+        return name === "data-vf-workflow" || name === "data-vf-control";
+      }),
+    );
+  });
+}
+
+function objectLiteralAlternatives(
+  expression: ts.Expression,
+): ts.ObjectLiteralExpression[] {
+  if (ts.isObjectLiteralExpression(expression)) return [expression];
+  if (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
+  ) {
+    return objectLiteralAlternatives(expression.expression);
+  }
+  if (ts.isConditionalExpression(expression)) {
+    return [
+      ...objectLiteralAlternatives(expression.whenTrue),
+      ...objectLiteralAlternatives(expression.whenFalse),
+    ];
+  }
+  if (
+    ts.isBinaryExpression(expression) &&
+    (expression.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+  ) {
+    return [
+      ...objectLiteralAlternatives(expression.left),
+      ...objectLiteralAlternatives(expression.right),
+    ];
+  }
+  return [];
+}
+
+function objectPropertyLiteralAlternatives(
+  object: ts.ObjectLiteralExpression,
+  propertyName: string,
+  sourceFile: ts.SourceFile,
+): string[] {
+  for (const property of object.properties) {
+    if (!ts.isPropertyAssignment(property)) continue;
+    const name = property.name.getText(sourceFile).replace(/["']/g, "");
+    if (name !== propertyName) continue;
+    return expressionLiteralAlternatives(property.initializer, sourceFile);
+  }
+  return [];
+}
+
+function jsxAttributeLiteralAlternatives(
+  opening: ts.JsxOpeningLikeElement,
+  name: string,
+  sourceFile: ts.SourceFile,
+): string[] {
+  const attribute = jsxAttribute(opening, name);
+  if (!attribute?.initializer) return [];
+  if (ts.isStringLiteral(attribute.initializer)) {
+    return [normalizeTemplateTarget(attribute.initializer.text)];
+  }
+  if (
+    ts.isJsxExpression(attribute.initializer) &&
+    attribute.initializer.expression
+  ) {
+    return expressionLiteralAlternatives(
+      attribute.initializer.expression,
+      sourceFile,
+    );
+  }
+  return [];
+}
+
+function expressionLiteralAlternatives(
+  expression: ts.Expression,
+  sourceFile: ts.SourceFile,
+  seen = new Set<string>(),
+): string[] {
+  if (
+    ts.isStringLiteral(expression) ||
+    ts.isNoSubstitutionTemplateLiteral(expression)
+  ) {
+    return [normalizeTemplateTarget(expression.text)];
+  }
+  if (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
+  ) {
+    return expressionLiteralAlternatives(expression.expression, sourceFile, seen);
+  }
+  if (ts.isConditionalExpression(expression)) {
+    return uniqueStrings([
+      ...expressionLiteralAlternatives(expression.whenTrue, sourceFile, seen),
+      ...expressionLiteralAlternatives(expression.whenFalse, sourceFile, seen),
+    ]);
+  }
+  if (
+    ts.isBinaryExpression(expression) &&
+    (expression.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+  ) {
+    return uniqueStrings([
+      ...expressionLiteralAlternatives(expression.left, sourceFile, seen),
+      ...expressionLiteralAlternatives(expression.right, sourceFile, seen),
+    ]);
+  }
+  if (!ts.isIdentifier(expression)) return [];
+
+  const variableKey = `variable:${expression.text}:${expression.getStart(sourceFile)}`;
+  if (!seen.has(variableKey)) {
+    const initializer = nearestVariableInitializer(
+      expression,
+      sourceFile,
+    );
+    if (initializer) {
+      const nextSeen = new Set(seen).add(variableKey);
+      const values = expressionLiteralAlternatives(
+        initializer,
+        sourceFile,
+        nextSeen,
+      );
+      if (values.length > 0) return values;
+    }
+  }
+
+  return parameterArgumentLiteralAlternatives(expression, sourceFile, seen);
+}
+
+function nearestVariableInitializer(
+  identifier: ts.Identifier,
+  sourceFile: ts.SourceFile,
+): ts.Expression | null {
+  let best: ts.VariableDeclaration | null = null;
+  const visit = (node: ts.Node) => {
+    if (node.getStart(sourceFile) >= identifier.getStart(sourceFile)) return;
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === identifier.text &&
+      node.initializer &&
+      (!best || node.getStart(sourceFile) > best.getStart(sourceFile))
+    ) {
+      best = node;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return (best as ts.VariableDeclaration | null)?.initializer ?? null;
+}
+
+function parameterArgumentLiteralAlternatives(
+  identifier: ts.Identifier,
+  sourceFile: ts.SourceFile,
+  seen: Set<string>,
+): string[] {
+  let current: ts.Node | undefined = identifier;
+  while (current && current !== sourceFile) {
+    if (isFunctionLike(current)) {
+      const parameterIndex = current.parameters.findIndex(
+        (parameter) =>
+          ts.isIdentifier(parameter.name) &&
+          parameter.name.text === identifier.text,
+      );
+      if (parameterIndex < 0) return [];
+      const callableName = callableFunctionName(current);
+      if (!callableName) return [];
+      const callKey = `parameter:${callableName}:${parameterIndex}`;
+      if (seen.has(callKey)) return [];
+      const nextSeen = new Set(seen).add(callKey);
+      const values: string[] = [];
+      const visit = (node: ts.Node) => {
+        if (
+          ts.isCallExpression(node) &&
+          ts.isIdentifier(node.expression) &&
+          node.expression.text === callableName
+        ) {
+          const argument = node.arguments[parameterIndex];
+          if (argument) {
+            values.push(
+              ...expressionLiteralAlternatives(argument, sourceFile, nextSeen),
+            );
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceFile);
+      return uniqueStrings(values);
+    }
+    current = current.parent;
+  }
+  return [];
+}
+
+function callableFunctionName(
+  node:
+    | ts.FunctionDeclaration
+    | ts.FunctionExpression
+    | ts.ArrowFunction
+    | ts.MethodDeclaration,
+): string | null {
+  if (
+    (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) &&
+    node.name
+  ) {
+    return node.name.text;
+  }
+  if (
+    (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+    ts.isVariableDeclaration(node.parent) &&
+    ts.isIdentifier(node.parent.name)
+  ) {
+    return node.parent.name.text;
+  }
+  return null;
+}
+
+function nearestExclusiveBranch(
+  node: ts.Node,
+  sourceFile: ts.SourceFile,
+): {
+  group: string | null;
+  branch: "true" | "false" | null;
+} {
+  let child: ts.Node = node;
+  let current: ts.Node | undefined = node.parent;
+  while (current && current !== sourceFile) {
+    if (ts.isConditionalExpression(current)) {
+      if (child === current.whenTrue || nodeWithin(child, current.whenTrue)) {
+        return {
+          group: `${sourceFile.fileName}:${current.getStart(sourceFile)}`,
+          branch: "true",
+        };
+      }
+      if (child === current.whenFalse || nodeWithin(child, current.whenFalse)) {
+        return {
+          group: `${sourceFile.fileName}:${current.getStart(sourceFile)}`,
+          branch: "false",
+        };
+      }
+    }
+    child = current;
+    current = current.parent;
+  }
+  return { group: null, branch: null };
+}
+
+function nodeWithin(node: ts.Node, container: ts.Node): boolean {
+  return node.pos >= container.pos && node.end <= container.end;
 }
 
 function compositeControls(
@@ -883,22 +1647,112 @@ function compositeControls(
     ownerComponent: string | null;
   },
 ): ModuleControl[] {
-  const labels =
+  const controls =
     tagName === "DeviceLocationTracker"
-      ? ["Use my location", "Start tracking", "Stop tracking", "Export GPX"]
+      ? ([
+          ["Use my location", "useLocationContract"],
+          ["Start tracking", "startTrackingContract"],
+          ["Stop tracking", "stopTrackingContract"],
+        ] as const)
+      : tagName === "GooglePlaceAutocomplete"
+        ? ([
+            ["Search for a place", "searchContract"],
+          ] as const)
       : [];
-  return labels.map((label) => ({
-    kind: "button" as const,
-    label,
-    labelConfidence: "resolved" as const,
-    dynamicLabelKey: null,
-    sourcePosition: input.opening.getStart(input.sourceFile),
-    filePath: input.path,
-    line: lineOf(input.sourceFile, input.opening),
-    roles: rolesForNode(input.node, input.sourceFile),
-    targetRoute: null,
-    ownerComponent: input.ownerComponent,
-  }));
+  return controls.map(([label, bindingProp]) => {
+    const binding = jsxContractBinding(
+      input.opening,
+      bindingProp,
+      input.sourceFile,
+    );
+    return {
+      kind: "button" as const,
+      label,
+      labelConfidence: "resolved" as const,
+      dynamicLabelKey: null,
+      sourcePosition: input.opening.getStart(input.sourceFile),
+      filePath: input.path,
+      line: lineOf(input.sourceFile, input.opening),
+      roles: rolesForNode(input.node, input.sourceFile),
+      targetRoute: null,
+      ownerComponent: input.ownerComponent,
+      workflowId: binding.workflowId,
+      controlId: binding.controlId,
+      entityKey: binding.entityKey,
+      recordScoped: false,
+      recordKey: null,
+      repeated: false,
+      tagName,
+    };
+  });
+}
+
+function jsxContractBinding(
+  opening: ts.JsxOpeningLikeElement,
+  attributeName: string,
+  sourceFile: ts.SourceFile,
+): { workflowId: string | null; controlId: string | null; entityKey: string | null } {
+  const attribute = jsxAttribute(opening, attributeName);
+  const expression =
+    attribute?.initializer && ts.isJsxExpression(attribute.initializer)
+      ? attribute.initializer.expression
+      : undefined;
+  if (!expression || !ts.isObjectLiteralExpression(expression)) {
+    return { workflowId: null, controlId: null, entityKey: null };
+  }
+  return {
+    workflowId: objectStringProperty(expression, ["workflowId"], sourceFile),
+    controlId: objectStringProperty(expression, ["controlId"], sourceFile),
+    entityKey: objectStringProperty(expression, ["entityKey"], sourceFile),
+  };
+}
+
+function nearestRecordScope(
+  node: ts.Node,
+  sourceFile: ts.SourceFile,
+): { scoped: boolean; entityKey: string | null; recordKey: string | null } {
+  let current: ts.Node | undefined = node;
+  while (current) {
+    const opening = ts.isJsxElement(current)
+      ? current.openingElement
+      : ts.isJsxSelfClosingElement(current)
+        ? current
+        : null;
+    if (opening && jsxAttribute(opening, "data-vf-record")) {
+      return {
+        scoped: true,
+        entityKey: jsxAttributeValue(
+          opening,
+          "data-vf-entity",
+          sourceFile,
+        ),
+        recordKey:
+          jsxAttributeValue(opening, "data-vf-record", sourceFile) ??
+          jsxAttributeDynamicKey(opening, "data-vf-record", sourceFile),
+      };
+    }
+    current = current.parent;
+  }
+  return { scoped: false, entityKey: null, recordKey: null };
+}
+
+function isInsideRepeatedRender(node: ts.Node, sourceFile: ts.SourceFile): boolean {
+  let current: ts.Node | undefined = node;
+  while (current) {
+    if (
+      ts.isCallExpression(current) &&
+      ts.isPropertyAccessExpression(current.expression) &&
+      ["map", "flatMap"].includes(current.expression.name.text)
+    ) {
+      const collection = current.expression.expression.getText(sourceFile);
+      if (/(?:^|\.)(?:links?|nav(?:igation)?|menus?|routes?)$/i.test(collection)) {
+        return false;
+      }
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
 }
 
 function controlKind(
@@ -907,7 +1761,13 @@ function controlKind(
   sourceFile: ts.SourceFile,
 ): WorkflowContract["controls"][number]["kind"] | null {
   const lowerTag = tagName.toLowerCase();
-  if (lowerTag === "button" || jsxAttribute(opening, "onClick")) return "button";
+  if (
+    lowerTag === "button" ||
+    lowerTag.endsWith("button") ||
+    jsxAttribute(opening, "onClick")
+  ) {
+    return "button";
+  }
   if (
     lowerTag === "a" ||
     lowerTag.endsWith("link") ||
@@ -915,7 +1775,13 @@ function controlKind(
   ) {
     return "link";
   }
-  if (lowerTag === "form" || jsxAttribute(opening, "onSubmit")) return "form";
+  if (
+    lowerTag === "form" ||
+    lowerTag.endsWith("form") ||
+    jsxAttribute(opening, "onSubmit")
+  ) {
+    return "form";
+  }
   if (lowerTag === "select" || lowerTag === "googleplaceautocomplete") {
     return "combobox";
   }
@@ -1412,6 +2278,7 @@ function populateReachability(routes: Map<string, RouteWorkingEvidence>): void {
 function reviewWorkflow(
   contract: WorkflowContract,
   routes: Map<string, RouteWorkingEvidence>,
+  preferStableBindings: boolean,
 ): UiAffordanceWorkflowEvidence {
   if (contract.trigger !== "user_action") {
     return {
@@ -1450,14 +2317,21 @@ function reviewWorkflow(
     const matchedRoles: WorkflowContractRole[] = [];
     let actualMatch: UiAffordanceControlEvidence | null = null;
     for (const role of expected.roles) {
-      const exact = route?.controls.find(
+      const bound = route?.controls.find(
+        (control) =>
+          control.roles.includes(role) &&
+          compatibleControlKind(expected.kind, control.kind) &&
+          control.workflowId === contract.id &&
+          control.controlId === expected.id,
+      );
+      const named = route?.controls.find(
         (control) =>
           control.roles.includes(role) &&
           compatibleControlKind(expected.kind, control.kind) &&
           labelsEquivalent(expected.accessibleName, control.label),
       );
       const actual =
-        exact ??
+        (preferStableBindings ? bound ?? named : named ?? bound) ??
         route?.controls.find(
           (control) =>
             control.roles.includes(role) &&
@@ -2178,7 +3052,7 @@ function lineOf(sourceFile: ts.SourceFile, node: ts.Node): number {
 function uniqueModuleControls(controls: ModuleControl[]): ModuleControl[] {
   const seen = new Set<string>();
   return controls.filter((control) => {
-    const key = `${control.ownerComponent ?? ""}:${control.filePath}:${control.sourcePosition}:${control.kind}:${control.label}:${control.dynamicLabelKey ?? ""}:${control.targetRoute ?? ""}`;
+    const key = `${control.ownerComponent ?? ""}:${control.filePath}:${control.sourcePosition}:${control.kind}:${control.label}:${control.dynamicLabelKey ?? ""}:${control.targetRoute ?? ""}:${control.workflowId ?? ""}:${control.controlId ?? ""}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -2193,7 +3067,7 @@ function uniqueControls(
     const sourcePosition = (
       control as UiAffordanceControlEvidence & { sourcePosition?: number }
     ).sourcePosition ?? control.line;
-    const key = `${control.route}:${control.filePath}:${sourcePosition}:${control.kind}:${control.label}:${control.targetRoute ?? ""}`;
+    const key = `${control.route}:${control.filePath}:${sourcePosition}:${control.kind}:${control.label}:${control.targetRoute ?? ""}:${control.workflowId ?? ""}:${control.controlId ?? ""}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

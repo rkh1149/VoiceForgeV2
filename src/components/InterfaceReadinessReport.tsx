@@ -69,7 +69,7 @@ export default function InterfaceReadinessReport({
         </p>
       ) : (
         <>
-          <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+          <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-5">
             <div>
               <dt className="text-xs text-slate-500">Workflows</dt>
               <dd className="text-lg font-semibold text-slate-900">
@@ -96,6 +96,18 @@ export default function InterfaceReadinessReport({
                 {report.summary.entityPathsAvailable}/
                 {report.summary.entityPathsRequired}
               </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Stable controls</dt>
+              <dd className="text-lg font-semibold text-slate-900">
+                {report.summary.stableControlsBound}/
+                {report.summary.stableControlsRequired}
+              </dd>
+              {(report.summary.legacyControlFallbacks ?? 0) > 0 && (
+                <p className="text-xs text-amber-700">
+                  {report.summary.legacyControlFallbacks} legacy fallback
+                </p>
+              )}
             </div>
           </dl>
 

@@ -231,7 +231,7 @@ function reviewGeneratedAcceptanceJourneys(
       warnings: [],
       blockingIssues: [],
       payload: {
-        version: 1,
+        version: 2,
         skipped: true,
         reason: "No Stage 14A user-action workflow contracts were available.",
         summary: {
@@ -242,6 +242,8 @@ function reviewGeneratedAcceptanceJourneys(
           workflowsVerified: 0,
           stepsRequired: 0,
           stepsVerified: 0,
+          stableLocatorsRequired: 0,
+          stableLocatorsVerified: 0,
           savesRequired: 0,
           savesVerified: 0,
           refreshChecksRequired: 0,
@@ -268,6 +270,7 @@ function reviewGeneratedAcceptanceJourneys(
     spec: input.spec,
     architecture: input.architecture,
     files: input.allFiles,
+    requireStableControlLocators: !input.changeMode,
   });
   return {
     agentKey: "acceptance_test_reviewer",
@@ -282,7 +285,7 @@ function reviewGeneratedAcceptanceJourneys(
         ? `Acceptance journey review found ${report.blockingIssues.length} blocking issue${report.blockingIssues.length === 1 ? "" : "s"}; ${report.summary.journeysVerified}/${report.summary.journeysPlanned} journeys and ${report.summary.handoffsVerified}/${report.summary.handoffsRequired} handoffs are verified.`
         : report.warnings.length > 0
           ? `Acceptance journey review passed with ${report.warnings.length} warning${report.warnings.length === 1 ? "" : "s"}; ${report.summary.stepsVerified}/${report.summary.stepsRequired} contract steps are verified.`
-          : `Acceptance journey review passed: ${report.summary.journeysVerified}/${report.summary.journeysPlanned} journeys, ${report.summary.stepsVerified}/${report.summary.stepsRequired} steps, and ${report.summary.refreshChecksVerified}/${report.summary.refreshChecksRequired} refresh checks are verified.`,
+          : `Acceptance journey review passed: ${report.summary.journeysVerified}/${report.summary.journeysPlanned} journeys, ${report.summary.stepsVerified}/${report.summary.stepsRequired} steps, ${report.summary.stableLocatorsVerified}/${report.summary.stableLocatorsRequired} stable control locators, and ${report.summary.refreshChecksVerified}/${report.summary.refreshChecksRequired} refresh checks are verified.`,
     warnings: report.warnings,
     blockingIssues: report.blockingIssues,
     payload: { ...report },
@@ -373,7 +376,7 @@ function reviewUiAffordances(
       warnings: [],
       blockingIssues: [],
       payload: {
-        version: 1,
+        version: 2,
         skipped: true,
         reason: "No Stage 14A workflow contracts were available.",
         summary: {
@@ -389,6 +392,12 @@ function reviewUiAffordances(
           placeholderPages: 0,
           vagueControls: 0,
           uncertainControls: 0,
+          stableControlsRequired: 0,
+          stableControlsBound: 0,
+          legacyControlFallbacks: 0,
+          duplicateControlBindings: 0,
+          misplacedControlBindings: 0,
+          repeatedControlsScoped: 0,
         },
         routes: [],
         workflows: [],
@@ -397,6 +406,7 @@ function reviewUiAffordances(
         placeholderRoutes: [],
         vagueControls: [],
         uncertainControls: [],
+        stableControlBindings: [],
         warnings: [],
         blockingIssues: [],
       },
@@ -407,6 +417,7 @@ function reviewUiAffordances(
     spec: input.spec,
     architecture: input.architecture,
     files: input.allFiles,
+    requireStableControlBindings: !input.changeMode,
   });
   return {
     agentKey: "ui_affordance_reviewer",
@@ -421,7 +432,7 @@ function reviewUiAffordances(
         ? `Interface readiness found ${report.blockingIssues.length} blocking issue${report.blockingIssues.length === 1 ? "" : "s"}; ${report.summary.workflowsDiscoverable}/${report.summary.workflowsPlanned} workflows are discoverable.`
         : report.warnings.length > 0
           ? `Interface readiness passed with ${report.warnings.length} warning${report.warnings.length === 1 ? "" : "s"}; ${report.summary.workflowsDiscoverable}/${report.summary.workflowsPlanned} workflows are discoverable.`
-          : `Interface readiness passed: ${report.summary.workflowsDiscoverable}/${report.summary.workflowsPlanned} workflows and ${report.summary.reachableRoutes}/${report.summary.routesFound} routes are discoverable.`,
+          : `Interface readiness passed: ${report.summary.workflowsDiscoverable}/${report.summary.workflowsPlanned} workflows, ${report.summary.reachableRoutes}/${report.summary.routesFound} routes, and ${report.summary.stableControlsBound}/${report.summary.stableControlsRequired} stable contract controls are verified.`,
     warnings: report.warnings,
     blockingIssues: report.blockingIssues,
     payload: { ...report },
@@ -471,7 +482,12 @@ const POST_GENERATION_REPAIR_PRIORITY: PostGenerationRepairDomain[] = [
 export function postGenerationRepairDomain(
   issue: string,
 ): PostGenerationRepairDomain {
-  if (issue.startsWith("ui_affordance:")) return "interface";
+  if (
+    issue.startsWith("ui_affordance:") ||
+    issue.startsWith("contract_control:")
+  ) {
+    return "interface";
+  }
   if (issue.startsWith("persistence_handoff:")) return "persistence";
   if (issue.startsWith("acceptance_test:")) return "acceptance";
   if (issue.startsWith("human_completeness:")) return "completeness";

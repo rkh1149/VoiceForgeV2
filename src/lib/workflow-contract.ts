@@ -6,7 +6,8 @@ import {
   type AppSpec,
 } from "./spec";
 
-export const WORKFLOW_CONTRACT_VERSION = 1 as const;
+export const WORKFLOW_CONTRACT_VERSION = 2 as const;
+export const LEGACY_WORKFLOW_CONTRACT_VERSIONS = [1] as const;
 
 export const workflowContractRoleSchema = z.enum([
   "owner",
@@ -245,8 +246,10 @@ export function ensureWorkflowContracts<T extends WorkflowContractArchitecture>(
   const dataModel = normalizeApprovedDataModel(spec, architecture.dataModel);
   const approvedArchitecture = { ...architecture, dataModel };
   const supplied = architecture.workflowContracts ?? [];
+  // Existing plans already contain permanent workflow/control ids. Preserve
+  // them while upgrading the surrounding contract format instead of deriving
+  // new ids from labels that may have changed since the original build.
   const contracts =
-    architecture.workflowContractVersion === WORKFLOW_CONTRACT_VERSION &&
     supplied.length > 0
       ? supplied.map((contract) => normalizeSuppliedContract(contract, spec))
       : compileWorkflowContracts(spec, approvedArchitecture);
@@ -548,7 +551,7 @@ export function validateWorkflowContracts(
 
     const sourceWorkflow = sourceWorkflows.get(normalizeText(contract.name));
     if (
-      contractPromisesPersistence(contract, sourceWorkflow) &&
+      contractPromisesPersistence(spec, contract, sourceWorkflow) &&
       spec.dataEntities.length > 0 &&
       contract.expectedSaves.length === 0
     ) {
@@ -1250,7 +1253,9 @@ function assignSourcesAndHandoffs(
   const contracts = input.map((contract) => {
     const validHandoffs = contract.handoffs.filter((handoff) =>
       contract.expectedSaves.some(
-        (save) => save.producedReference === handoff.produces,
+        (save) =>
+          save.operation !== "delete" &&
+          save.producedReference === handoff.produces,
       ),
     );
     const hasArchitectHandoffs = validHandoffs.some(
@@ -1319,6 +1324,7 @@ function assignSourcesAndHandoffs(
       continue;
     }
     for (const save of producer.expectedSaves) {
+      if (save.operation === "delete") continue;
       if (
         producer.handoffs.some(
           (handoff) => handoff.produces === save.producedReference,
@@ -1490,6 +1496,7 @@ function inferOperations(
 ): Array<z.infer<typeof workflowDataOperationSchema>> {
   const text = workflowText(workflow).toLowerCase();
   const operations: Array<z.infer<typeof workflowDataOperationSchema>> = ["read"];
+  if (isReadOnlyActor(workflow.actor)) return operations;
   if (/\b(add|create|save|upload|record|schedule|start)\b/.test(text)) {
     operations.push("create");
   }
@@ -1498,6 +1505,15 @@ function inferOperations(
   }
   if (/\b(delete|remove|archive)\b/.test(text)) operations.push("delete");
   return unique(operations);
+}
+
+function isReadOnlyActor(actor: string): boolean {
+  const normalized = normalizeText(actor);
+  const namesReadOnlyRole = /\b(viewer|observer|guest|read only|view only)\b/.test(
+    normalized,
+  );
+  const namesWriteRole = /\b(owner|editor|admin)\b/.test(normalized);
+  return namesReadOnlyRole && !namesWriteRole;
 }
 
 function inferRoles(
@@ -1764,6 +1780,7 @@ function workflowText(workflow: AppSpec["workflows"][number]): string {
 }
 
 function contractPromisesPersistence(
+  spec: AppSpec,
   contract: WorkflowContract,
   workflow: AppSpec["workflows"][number] | undefined,
 ): boolean {
@@ -1776,6 +1793,7 @@ function contractPromisesPersistence(
     );
   if (declaresWrite) return true;
   if (!workflow) return false;
+  if (!canAnyRoleWrite(spec, contract.actor.roles)) return false;
 
   return /\b(add|archive|create|delete|edit|record|remove|save|schedule|update|upload)\b/i.test(
     workflowText(workflow),

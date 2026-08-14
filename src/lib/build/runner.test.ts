@@ -68,6 +68,10 @@ describe("sandbox browser setup", () => {
     expect(source).toContain("acceptanceRunSuffix");
     expect(source).toContain("process.pid");
     expect(source).toContain("Date.now()");
+    expect(source).toContain("export function vfControl");
+    expect(source).toContain("export function vfRecords");
+    expect(source).toContain("export function vfRecordControl");
+    expect(source).toContain("expectContractControl");
   });
 
   it("fails deterministic browser actions quickly and emits progress markers", () => {

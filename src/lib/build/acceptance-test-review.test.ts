@@ -577,3 +577,146 @@ ${dependentSource}
     );
   });
 });
+
+describe("Stage 14G acceptance locators", () => {
+  function stableCompliantTest(journey: WorkflowAcceptanceJourney): string {
+    let source = compliantTest(journey).replace(
+      "workflowHandoffTitle, voiceForgeRoleHeaders",
+      "workflowHandoffTitle, voiceForgeRoleHeaders, vfControl",
+    );
+    for (const step of journey.steps.filter((candidate) => candidate.controlId)) {
+      const stable = `vfControl(page, ${JSON.stringify(step.workflowId)}, ${JSON.stringify(step.controlId)})`;
+      const label = JSON.stringify(step.accessibleName);
+      const candidates = [
+        `page.getByRole("link", { name: ${label} })`,
+        `page.getByRole("button", { name: ${label} })`,
+        `page.getByLabel(${label})`,
+      ];
+      const current = candidates.find((candidate) => source.includes(candidate));
+      if (current) source = source.replace(current, stable);
+    }
+    return source;
+  }
+
+  it("requires exact workflow/control locator helpers for new builds", () => {
+    const { spec, architecture } = sharedApp();
+    const journey = synthesizeWorkflowAcceptancePlan(
+      spec,
+      architecture,
+    ).journeys[0];
+    const legacy = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: {
+        "e2e/generated/chore-journey.spec.ts": compliantTest(journey),
+      },
+      requireStableControlLocators: true,
+    });
+
+    expect(legacy.blockingIssues.join(" ")).toContain(
+      "must locate [voiceforge-workflow:",
+    );
+
+    const stable = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: {
+        "e2e/generated/chore-journey.spec.ts": stableCompliantTest(journey),
+      },
+      requireStableControlLocators: true,
+    });
+
+    expect(stable.blockingIssues).toEqual([]);
+    expect(stable.summary.stableLocatorsVerified).toBe(
+      stable.summary.stableLocatorsRequired,
+    );
+  });
+
+  it("accepts a canonical locator shared by an equivalent contract control", () => {
+    const { spec, architecture } = sharedApp();
+    const original = architecture.workflowContracts[0];
+    const canonical = structuredClone(original);
+    canonical.id = "canonical-shared-controls";
+    canonical.name = "Canonical shared controls";
+    canonical.trigger = "system";
+    architecture.workflowContracts = [original, canonical];
+    const journey = synthesizeWorkflowAcceptancePlan(
+      spec,
+      architecture,
+    ).journeys[0];
+    const step = journey.steps.find((candidate) => candidate.controlId)!;
+    const source = stableCompliantTest(journey).replace(
+      `vfControl(page, ${JSON.stringify(step.workflowId)}, ${JSON.stringify(step.controlId)})`,
+      `vfControl(page, "canonical-shared-controls", ${JSON.stringify(step.controlId)})`,
+    );
+
+    const review = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: { "e2e/generated/chore-journey.spec.ts": source },
+      requireStableControlLocators: true,
+    });
+
+    expect(review.blockingIssues).toEqual([]);
+    expect(review.summary.stableLocatorsVerified).toBe(
+      review.summary.stableLocatorsRequired,
+    );
+  });
+
+  it("accepts a permanent consumer control locator as handoff evidence", () => {
+    const { spec, architecture } = sharedApp();
+    const journey = synthesizeWorkflowAcceptancePlan(
+      spec,
+      architecture,
+    ).journeys[0];
+    let source = stableCompliantTest(journey);
+    for (const handoff of journey.handoffs) {
+      source = source.replace(
+        `await page.goto(${JSON.stringify(handoff.consumerRoute)});`,
+        `const consumer = vfControl(page, ${JSON.stringify(handoff.consumerWorkflowId)}, ${JSON.stringify(handoff.consumerControlId)});\n  await expect(consumer).toBeVisible();`,
+      );
+    }
+
+    const review = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: { "e2e/generated/chore-journey.spec.ts": source },
+      requireStableControlLocators: true,
+    });
+
+    expect(review.blockingIssues.join(" ")).not.toContain("does not reach");
+    expect(review.summary.handoffsVerified).toBe(
+      review.summary.handoffsRequired,
+    );
+  });
+
+  it("accepts an assertion-only action step that verifies controls are absent", () => {
+    const { spec, architecture } = sharedApp();
+    const contract = architecture.workflowContracts[0];
+    contract.steps[0] = {
+      ...contract.steps[0],
+      kind: "action",
+      controlId: "",
+      visibleResult: "Editing controls are hidden.",
+    };
+    const journey = synthesizeWorkflowAcceptancePlan(
+      spec,
+      architecture,
+    ).journeys[0];
+    const source = stableCompliantTest(journey).replace(
+      'await page.getByRole("button", { name: "" }).click();',
+      'await expect(page.getByRole("button", { name: "Save chore" })).toHaveCount(0);',
+    );
+
+    const review = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: { "e2e/generated/chore-journey.spec.ts": source },
+      requireStableControlLocators: true,
+    });
+
+    expect(review.blockingIssues.join(" ")).not.toContain(
+      `labels ${contract.steps[0].id} but does not perform`,
+    );
+  });
+});

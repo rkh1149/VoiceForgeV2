@@ -4,6 +4,8 @@
  */
 import { expect, type Download, type Locator, type Page } from "@playwright/test";
 
+type ContractLocatorScope = Page | Locator;
+
 export type VoiceForgeAcceptanceRole =
   | "owner"
   | "editor"
@@ -34,6 +36,52 @@ export function workflowSaveTitle(saveId: string): string {
 
 export function workflowHandoffTitle(handoffId: string): string {
   return `[voiceforge-handoff:${handoffId}] reaches its consumer`;
+}
+
+export function vfControl(
+  scope: ContractLocatorScope,
+  workflowId: string,
+  controlId: string,
+): Locator {
+  return scope.locator(
+    `[data-vf-workflow=${cssAttributeValue(workflowId)}][data-vf-control=${cssAttributeValue(controlId)}]`,
+  );
+}
+
+export function vfRecords(
+  scope: ContractLocatorScope,
+  entityKey: string,
+): Locator {
+  return scope.locator(
+    `[data-vf-entity=${cssAttributeValue(entityKey)}][data-vf-record]`,
+  );
+}
+
+export function vfRecord(
+  scope: ContractLocatorScope,
+  entityKey: string,
+  recordId: string,
+): Locator {
+  return scope.locator(
+    `[data-vf-entity=${cssAttributeValue(entityKey)}][data-vf-record=${cssAttributeValue(recordId)}]`,
+  );
+}
+
+export function vfRecordControl(
+  record: Locator,
+  workflowId: string,
+  controlId: string,
+): Locator {
+  return vfControl(record, workflowId, controlId);
+}
+
+export async function expectContractControl(
+  control: Locator,
+  accessibleName?: string | RegExp,
+): Promise<void> {
+  await expect(control).toHaveCount(1);
+  await expect(control).toBeVisible();
+  if (accessibleName) await expect(control).toHaveAccessibleName(accessibleName);
 }
 
 export function voiceForgeRoleHeaders(
@@ -67,4 +115,14 @@ export function tinyPngUpload(fileName = "voiceforge-stage-14d.png") {
       "base64",
     ),
   };
+}
+
+function cssAttributeValue(value: string): string {
+  const escaped = value.replace(/[\\"\n\r\f]/g, (character) => {
+    if (character === "\n") return "\\a ";
+    if (character === "\r") return "\\d ";
+    if (character === "\f") return "\\c ";
+    return `\\${character}`;
+  });
+  return `"${escaped}"`;
 }

@@ -70,10 +70,11 @@ export type WorkflowRepairPackage = {
     reasons: string[];
   };
   target: {
-    kind: "workflow" | "step" | "save" | "handoff" | "journey";
+    kind: "workflow" | "control" | "step" | "save" | "handoff" | "journey";
     id: string;
     workflowId: string;
     workflowName: string;
+    controlId: string;
     stepId: string;
     saveId: string;
     handoffId: string;
@@ -177,6 +178,7 @@ const LOCKED_REPAIR_PATHS = new Set([
 ]);
 
 const WORKFLOW_MARKER = /\[voiceforge-workflow:([^\]]+)\]/i;
+const CONTROL_MARKER = /\[voiceforge-control:([^\]]+)\]/i;
 const STEP_MARKER = /\[voiceforge-step:([^\]]+)\]/i;
 const SAVE_MARKER = /\[voiceforge-save:([^\]]+)\]/i;
 const HANDOFF_MARKER = /\[voiceforge-handoff:([^\]]+)\]/i;
@@ -185,6 +187,7 @@ const JOURNEY_MARKER = /\[voiceforge-journey:([^\]]+)\]/i;
 export function isWorkflowLinkedFailure(errorOutput: string): boolean {
   return (
     WORKFLOW_MARKER.test(errorOutput) ||
+    CONTROL_MARKER.test(errorOutput) ||
     STEP_MARKER.test(errorOutput) ||
     SAVE_MARKER.test(errorOutput) ||
     HANDOFF_MARKER.test(errorOutput) ||
@@ -210,6 +213,14 @@ export function selectWorkflowRepairIssueCluster(
     const cluster = unique.filter((issue) => issue.includes(workflowId));
     if (cluster.length > 0) return cluster;
   }
+  const boundWorkflowId = first.match(
+    /\[voiceforge-workflow:([a-z0-9][a-z0-9-]+)\]/i,
+  )?.[1];
+  if (boundWorkflowId) {
+    const marker = `[voiceforge-workflow:${boundWorkflowId}]`;
+    const cluster = unique.filter((issue) => issue.includes(marker));
+    if (cluster.length > 0) return cluster;
+  }
   const journeyId = first.match(/Journey\s+([a-z0-9][a-z0-9-]+)/i)?.[1];
   if (journeyId) {
     const cluster = unique.filter((issue) => issue.includes(journeyId));
@@ -232,7 +243,11 @@ export function createWorkflowRepairPackage(
     ...(input.reviews ?? []).flatMap((review) => review.blockingIssues),
   ]);
   const failedTestEvidence = input.failureFingerprint?.failedTests.join("\n") ?? "";
-  const markerEvidence = failedTestEvidence || input.errorOutput;
+  const focusedReviewEvidence = input.errorOutput.split(
+    /\n\nSTRUCTURED (?:REVIEW|PRODUCT COMPLETENESS) EVIDENCE:/,
+    1,
+  )[0];
+  const markerEvidence = failedTestEvidence || focusedReviewEvidence;
   const markers = extractMarkers(markerEvidence);
   let journey = findJourney(plan.journeys, markers, markerEvidence);
   const workflow = findWorkflow({
@@ -440,6 +455,19 @@ export function classifyWorkflowRepairFailure(input: {
       "A deterministic acceptance-test finding identifies missing or unrecognized proof in the generated Playwright journey.",
     );
   }
+  if (/\bcontract_control:/i.test(text)) {
+    return result(
+      "missing_control",
+      /duplicate|appears on \d+ unscoped controls/i.test(text)
+        ? "duplicate_contract_binding"
+        : /non-interactive|wrong route|rendered on/i.test(text)
+          ? "misplaced_contract_binding"
+          : "missing_or_invalid_contract_binding",
+      "application_source",
+      "high",
+      "The stable control gate identified an exact workflow/control identity that is missing, duplicated, or attached to the wrong interface element.",
+    );
+  }
   const staticBlockers = (input.reviews ?? []).flatMap(
     (review) => review.blockingIssues,
   );
@@ -587,12 +615,12 @@ export function assessWorkflowRepairCandidate(input: {
   const baseline = new Set(input.repair.baselineBlockingIssues);
   const current = uniqueStrings([...input.currentBlockingIssues]);
   const targetIssuesRemaining = current.filter((issue) =>
-    issueBelongsToWorkflowRepair(issue, input.repair),
+    issueMatchesTargetEvidence(issue, input.repair.evidence.blockingIssues),
   );
   const unrelatedFindingsAdded = current.filter(
     (issue) =>
       !baseline.has(issue) &&
-      !issueBelongsToWorkflowRepair(issue, input.repair),
+      !issueMatchesTargetEvidence(issue, input.repair.evidence.blockingIssues),
   );
   const targetIssues = input.repair.evidence.blockingIssues;
   const targetResolved = targetIssuesRemaining.length === 0;
@@ -617,25 +645,58 @@ export function assessWorkflowRepairCandidate(input: {
   };
 }
 
-function issueBelongsToWorkflowRepair(
+function issueMatchesTargetEvidence(
   issue: string,
-  repair: WorkflowRepairPackage,
+  targetIssues: readonly string[],
 ): boolean {
-  const identifiers = uniqueStrings([
-    repair.target.journeyId,
-    repair.target.handoffId,
-    repair.target.saveId,
-    repair.target.stepId,
-    repair.target.workflowId,
-    repair.target.workflowName,
-    ...repair.data.producerWorkflowIds,
-    ...repair.data.consumerWorkflowIds,
-    ...repair.data.handoffs.map((handoff) => handoff.id),
-  ]);
-  if (identifiers.some((identifier) => containsLoose(issue, identifier))) {
-    return true;
+  return targetIssues.some((target) => {
+    if (target === issue) return true;
+    const targetIdentity = reviewIssueIdentity(target);
+    const issueIdentity = reviewIssueIdentity(issue);
+    return Boolean(
+      targetIdentity &&
+        issueIdentity &&
+        targetIdentity === issueIdentity,
+    );
+  });
+}
+
+function reviewIssueIdentity(issue: string): string {
+  const category = issue.match(/^([a-z_]+:[a-z_]+)/i)?.[1]?.toLowerCase() ?? "";
+  if (!category) return "";
+  const bracketMarkers = [
+    ...issue.matchAll(
+      /\[voiceforge-(workflow|control|step|save|handoff|journey):([^\]]+)\]/gi,
+    ),
+  ].map((match) => `${match[1].toLowerCase()}:${match[2].toLowerCase()}`);
+  if (bracketMarkers.length > 0) {
+    return `${category}|${bracketMarkers.join("|")}`;
   }
-  return repair.evidence.blockingIssues.includes(issue);
+  const handoffOrSaveProof = issue.match(
+    /\b(?:(?:downstream|persistence|reload) proof|saved result for)\s+([a-z0-9][a-z0-9:_-]*)/i,
+  )?.[1];
+  if (handoffOrSaveProof) {
+    return `${category}|proof:${handoffOrSaveProof.toLowerCase()}`;
+  }
+  const journeyId = issue.match(
+    /\bJourney\s+([a-z0-9][a-z0-9-]*)/i,
+  )?.[1];
+  const stepId = issue.match(
+    /\bstep\s+([a-z0-9][a-z0-9-]*)/i,
+  )?.[1];
+  if (journeyId && stepId) {
+    return `${category}|journey:${journeyId.toLowerCase()}|step:${stepId.toLowerCase()}`;
+  }
+  if (journeyId) return `${category}|journey:${journeyId.toLowerCase()}`;
+  const workflow = issue.match(
+    /\bWorkflow\s+"([^"]+)"(?:\s+\(([a-z0-9][a-z0-9-]+)\))?/i,
+  );
+  if (workflow) {
+    return `${category}|workflow:${(workflow[2] || workflow[1]).toLowerCase()}`;
+  }
+  return issue
+    .replace(/((?:src|e2e)\/[A-Za-z0-9_./@-]+):\d+/g, "$1:<line>")
+    .toLowerCase();
 }
 
 export function restoreWorkflowRepairPackages(
@@ -708,6 +769,7 @@ function deriveWorkflowRepairScope(input: {
       contract.id,
       contract.name,
       ...contract.controls.map((control) => control.accessibleName),
+      ...contract.controls.map((control) => control.id),
       ...contract.requiredData.map((data) => data.entityKey),
       ...contract.expectedSaves.flatMap((save) => [
         save.entityKey,
@@ -849,6 +911,13 @@ function findWorkflow(input: {
       (contract) => contract.id === input.markers.workflowId,
     ) ??
     input.contracts.find((contract) =>
+      input.markers.controlId
+        ? contract.controls.some(
+            (control) => control.id === input.markers.controlId,
+          )
+        : false,
+    ) ??
+    input.contracts.find((contract) =>
       input.markers.stepId
         ? contract.steps.some((step) => step.id === input.markers.stepId)
         : false,
@@ -920,6 +989,8 @@ function createTarget(input: {
       ? "save"
       : input.markers.stepId
         ? "step"
+        : input.markers.controlId
+          ? "control"
         : input.markers.journeyId
           ? "journey"
           : "workflow";
@@ -927,6 +998,7 @@ function createTarget(input: {
     input.handoffId ||
     input.markers.saveId ||
     input.markers.stepId ||
+    input.markers.controlId ||
     input.markers.journeyId ||
     input.workflow?.id ||
     "unknown-workflow";
@@ -935,6 +1007,7 @@ function createTarget(input: {
     id,
     workflowId: input.markers.workflowId || input.workflow?.id || "",
     workflowName: input.workflow?.name || input.journey?.name || "Workflow",
+    controlId: input.markers.controlId,
     stepId: input.markers.stepId,
     saveId: input.markers.saveId,
     handoffId: input.handoffId,
@@ -945,6 +1018,7 @@ function createTarget(input: {
 function extractMarkers(text: string) {
   return {
     workflowId: text.match(WORKFLOW_MARKER)?.[1] ?? "",
+    controlId: text.match(CONTROL_MARKER)?.[1] ?? "",
     stepId: text.match(STEP_MARKER)?.[1] ?? "",
     saveId: text.match(SAVE_MARKER)?.[1] ?? "",
     handoffId: text.match(HANDOFF_MARKER)?.[1] ?? "",

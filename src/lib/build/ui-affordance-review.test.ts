@@ -1025,3 +1025,200 @@ export default function Packing() { void listPackingItems(); void updatePackingI
     expect(result.blockingIssues).toEqual([]);
   });
 });
+
+describe("Stage 14G stable contract controls", () => {
+  const home = `import Link from "next/link";
+export default function Home() { return <main><h1>Ride Helper</h1><Link href="/gps">GPS tracking</Link></main>; }`;
+
+  it("accepts a friendly label change when the permanent binding is unchanged", () => {
+    const result = analyzeUiAffordances({
+      spec,
+      architecture: architecture(),
+      files: {
+        "src/app/page.tsx": home,
+        "src/app/gps/page.tsx": `"use client";
+import { createPlatformRecord, listPlatformRecords } from "@/lib/platform-data";
+export default function GpsPage() { void listPlatformRecords("ride"); return <main><h1>GPS tracking</h1><button data-vf-workflow="track-current-ride" data-vf-control="start-gps-tracking" onClick={() => void createPlatformRecord("ride", { name: "Morning ride" })}>Begin this ride</button></main>; }`,
+      },
+      requireStableControlBindings: true,
+    });
+
+    expect(result.summary.stableControlsBound).toBe(1);
+    expect(result.summary.legacyControlFallbacks).toBe(0);
+    expect(result.blockingIssues).toEqual([]);
+  });
+
+  it("rejects a new app that only has accessible-name fallback", () => {
+    const result = analyzeUiAffordances({
+      spec,
+      architecture: architecture(),
+      files: {
+        "src/app/page.tsx": home,
+        "src/app/gps/page.tsx": gpsPage,
+      },
+      requireStableControlBindings: true,
+    });
+
+    expect(result.summary.stableControlsBound).toBe(0);
+    expect(result.summary.legacyControlFallbacks).toBe(1);
+    expect(result.blockingIssues.join(" ")).toContain(
+      'data-vf-workflow="track-current-ride"',
+    );
+  });
+
+  it("keeps legacy Change an App controls available through a warning", () => {
+    const result = analyzeUiAffordances({
+      spec,
+      architecture: architecture(),
+      files: {
+        "src/app/page.tsx": home,
+        "src/app/gps/page.tsx": gpsPage,
+      },
+      requireStableControlBindings: false,
+    });
+
+    expect(result.blockingIssues).toEqual([]);
+    expect(result.warnings.join(" ")).toContain("Legacy Change an App");
+  });
+
+  it("rejects duplicate unscoped bindings", () => {
+    const result = analyzeUiAffordances({
+      spec,
+      architecture: architecture(),
+      files: {
+        "src/app/page.tsx": home,
+        "src/app/gps/page.tsx": `export default function GpsPage() { return <main><h1>GPS tracking</h1><button data-vf-workflow="track-current-ride" data-vf-control="start-gps-tracking">Start GPS tracking</button><button data-vf-workflow="track-current-ride" data-vf-control="start-gps-tracking">Start GPS tracking</button></main>; }`,
+      },
+      requireStableControlBindings: true,
+    });
+
+    expect(result.summary.duplicateControlBindings).toBe(1);
+    expect(result.blockingIssues.join(" ")).toContain(
+      "appears on 2 unscoped controls",
+    );
+  });
+
+  it("requires repeated actions to be associated with exact records", () => {
+    const contract = rideContract();
+    contract.controls[0] = {
+      ...contract.controls[0],
+      id: "edit-ride",
+      accessibleName: "Edit ride",
+      action: "Edit the selected ride",
+    };
+    contract.steps[0] = {
+      ...contract.steps[0],
+      controlId: "edit-ride",
+    };
+    const scoped = analyzeUiAffordances({
+      spec,
+      architecture: architecture(contract),
+      files: {
+        "src/app/page.tsx": home,
+        "src/app/gps/page.tsx": `export default function GpsPage() { const rides = [{ id: "ride-1", name: "Morning ride" }]; return <main><h1>GPS tracking</h1>{rides.map((ride) => <article key={ride.id} data-vf-entity="ride" data-vf-record={ride.id}><span>{ride.name}</span><button aria-label={\`Edit \${ride.name}\`} data-vf-workflow="track-current-ride" data-vf-control="edit-ride">Edit</button></article>)}</main>; }`,
+      },
+      requireStableControlBindings: true,
+    });
+
+    expect(scoped.summary.repeatedControlsScoped).toBe(1);
+    expect(scoped.blockingIssues.join(" ")).not.toContain(
+      "without a nearest data-vf-entity/data-vf-record",
+    );
+  });
+
+  it("accepts finite literal workflow alternatives in a shared add/edit form", () => {
+    const add = rideContract();
+    add.id = "add-ride";
+    add.name = "Add ride";
+    add.controls[0] = {
+      ...add.controls[0],
+      id: "save-ride",
+      accessibleName: "Save ride",
+    };
+    add.steps[0] = { ...add.steps[0], controlId: "save-ride" };
+    const edit = structuredClone(add);
+    edit.id = "edit-ride";
+    edit.name = "Edit ride";
+    const appArchitecture = architecture(add);
+    appArchitecture.workflowContracts = [add, edit];
+
+    const result = analyzeUiAffordances({
+      spec,
+      architecture: appArchitecture,
+      files: {
+        "src/app/page.tsx": home,
+        "src/app/gps/page.tsx": `"use client";
+export default function GpsPage() { const editing = false; const workflow = editing ? "edit-ride" : "add-ride"; return <main><h1>GPS tracking</h1><button data-vf-workflow={workflow} data-vf-control="save-ride">Save ride</button></main>; }`,
+      },
+      requireStableControlBindings: true,
+    });
+
+    expect(result.summary.stableControlsBound).toBe(2);
+    expect(result.blockingIssues).toEqual([]);
+  });
+
+  it("resolves literal control ids passed to a local JSX field helper", () => {
+    const contract = rideContract();
+    contract.controls = [
+      {
+        ...contract.controls[0],
+        id: "ride-name",
+        kind: "textbox",
+        accessibleName: "Ride name",
+      },
+      {
+        ...contract.controls[0],
+        id: "ride-notes",
+        kind: "textbox",
+        accessibleName: "Ride notes",
+      },
+    ];
+    contract.steps = [
+      { ...contract.steps[0], id: "enter-name", kind: "input", controlId: "ride-name" },
+      { ...contract.steps[0], id: "enter-notes", kind: "input", controlId: "ride-notes" },
+    ];
+
+    const result = analyzeUiAffordances({
+      spec,
+      architecture: architecture(contract),
+      files: {
+        "src/app/page.tsx": home,
+        "src/app/gps/page.tsx": `export default function GpsPage() { const field = (label: string, multiline: boolean, controlId: string) => <label>{label}{multiline ? <textarea data-vf-workflow="track-current-ride" data-vf-control={controlId} /> : <input data-vf-workflow="track-current-ride" data-vf-control={controlId} />}</label>; return <main><h1>GPS tracking</h1>{field("Ride name", false, "ride-name")}{field("Ride notes", true, "ride-notes")}</main>; }`,
+      },
+      requireStableControlBindings: true,
+    });
+
+    expect(result.summary.stableControlsBound).toBe(2);
+    expect(result.summary.duplicateControlBindings).toBe(0);
+    expect(result.blockingIssues).toEqual([]);
+  });
+
+  it("accepts one canonical stable binding reused by an equivalent workflow", () => {
+    const owner = rideContract();
+    const viewer = structuredClone(owner);
+    viewer.id = "view-current-ride";
+    viewer.name = "View current ride";
+    viewer.actor.roles = ["viewer"];
+    viewer.controls[0].roles = ["viewer"];
+    viewer.requiredData[0].operations = ["read"];
+    viewer.expectedSaves = [];
+    viewer.steps[0].kind = "action";
+    viewer.steps[0].writes = [];
+    const appArchitecture = architecture(owner);
+    appArchitecture.workflowContracts = [owner, viewer];
+
+    const result = analyzeUiAffordances({
+      spec,
+      architecture: appArchitecture,
+      files: {
+        "src/app/page.tsx": home,
+        "src/app/gps/page.tsx": `export default function GpsPage() { return <main><h1>GPS tracking</h1><button data-vf-workflow="track-current-ride" data-vf-control="start-gps-tracking">Start GPS tracking</button></main>; }`,
+      },
+      requireStableControlBindings: true,
+    });
+
+    expect(result.summary.stableControlsBound).toBe(2);
+    expect(result.summary.legacyControlFallbacks).toBe(0);
+    expect(result.blockingIssues).toEqual([]);
+  });
+});

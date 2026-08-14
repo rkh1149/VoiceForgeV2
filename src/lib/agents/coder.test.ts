@@ -139,6 +139,17 @@ describe("coder shared rules", () => {
     expect(source).toContain("Do not use test.skip");
   });
 
+  it("requires stable Stage 14G contract controls and record scoping", () => {
+    const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("STAGE 14G STABLE CONTRACT CONTROLS");
+    expect(source).toContain('data-vf-workflow="<workflowId>"');
+    expect(source).toContain('data-vf-control="<controlId>"');
+    expect(source).toContain("data-vf-record={record.id}");
+    expect(source).toContain("vfRecordControl");
+    expect(source).toContain("Accessible-name fallback is only");
+  });
+
   it("continues a generation phase once when its initial turn budget is exhausted", () => {
     const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
 
@@ -163,6 +174,10 @@ describe("coder shared rules", () => {
     expect(source).toContain('targetSurface "generated_test"');
     expect(source).toContain('targetSurface "application_source"');
     expect(source).toContain("Never disguise a failure");
+    expect(source).toContain(
+      "must preserve every existing workflowStepTitle block",
+    );
+    expect(source).toContain("leave an empty step marker");
     expect(source).toContain("allowedMutationPaths");
     expect(source).toContain("WORKFLOW REPAIR PACKAGE");
   });

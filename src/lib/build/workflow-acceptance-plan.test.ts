@@ -235,6 +235,51 @@ describe("workflow acceptance plan", () => {
     });
   });
 
+  it("keeps read-only role proof in one dedicated viewer workflow", () => {
+    const { spec, architecture } = bikePlan();
+    const routeWorkflow = architecture.workflowContracts.find(
+      (contract) => contract.name === "Save a bicycle route",
+    )!;
+    const viewerWorkflow = structuredClone(routeWorkflow);
+    viewerWorkflow.id = "view-saved-routes";
+    viewerWorkflow.name = "View saved routes";
+    viewerWorkflow.actor = { persona: "Viewer", roles: ["viewer"] };
+    viewerWorkflow.controls = viewerWorkflow.controls.slice(0, 1).map((control) => ({
+      ...control,
+      id: "view-saved-routes",
+      accessibleName: "View saved routes",
+      roles: ["viewer"],
+    }));
+    viewerWorkflow.steps = viewerWorkflow.steps.slice(0, 1).map((step) => ({
+      ...step,
+      id: "load-saved-routes",
+      kind: "action",
+      controlId: "view-saved-routes",
+      writes: [],
+      visibleResult: "Saved routes are visible without editing controls.",
+    }));
+    viewerWorkflow.requiredData = viewerWorkflow.requiredData.map((data) => ({
+      ...data,
+      operations: ["read"],
+    }));
+    viewerWorkflow.expectedSaves = [];
+    viewerWorkflow.handoffs = [];
+    viewerWorkflow.dependencies.workflowIds = [routeWorkflow.id];
+    architecture.workflowContracts.push(viewerWorkflow);
+
+    const plan = synthesizeWorkflowAcceptancePlan(spec, architecture);
+    const roleScenarios = plan.journeys.flatMap(
+      (journey) => journey.roleScenarios,
+    );
+    const viewerProofs = roleScenarios.filter((scenario) =>
+      scenario.readOnlyRoles.includes("viewer"),
+    );
+
+    expect(viewerProofs).toEqual([
+      expect.objectContaining({ workflowId: "view-saved-routes" }),
+    ]);
+  });
+
   it("classifies scheduled and system workflows instead of pretending they are browser actions", () => {
     const { spec, architecture } = bikePlan();
     const plan = synthesizeWorkflowAcceptancePlan(spec, architecture);

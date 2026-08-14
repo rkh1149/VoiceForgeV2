@@ -104,7 +104,7 @@ function acceptanceStepScope(
 ): { start: number; end: number } | null {
   let current: ts.Node | undefined = traceCall.parent;
   while (current && current !== sourceFile) {
-    if (ts.isCallExpression(current) && isTestStepCall(current)) {
+    if (ts.isCallExpression(current) && isAcceptanceScopeCall(current)) {
       const callback = current.arguments[1];
       if (
         callback &&
@@ -120,6 +120,19 @@ function acceptanceStepScope(
     current = current.parent;
   }
   return null;
+}
+
+function isAcceptanceScopeCall(call: ts.CallExpression): boolean {
+  if (isTestStepCall(call)) return true;
+  if (ts.isIdentifier(call.expression)) {
+    return call.expression.text === "test";
+  }
+  return (
+    ts.isPropertyAccessExpression(call.expression) &&
+    ts.isIdentifier(call.expression.expression) &&
+    call.expression.expression.text === "test" &&
+    ["only", "fixme", "skip"].includes(call.expression.name.text)
+  );
 }
 
 function isTestStepCall(call: ts.CallExpression): boolean {

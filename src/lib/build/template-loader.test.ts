@@ -59,6 +59,12 @@ describe("template loader", () => {
     expect(files["e2e/voiceforge-acceptance.ts"]).toContain(
       "export function acceptanceRunSuffix",
     );
+    expect(files["e2e/voiceforge-acceptance.ts"]).toContain(
+      "export function vfControl",
+    );
+    expect(files["e2e/voiceforge-acceptance.ts"]).toContain(
+      "export function vfRecordControl",
+    );
     expect(files["e2e/voiceforge-progress-reporter.ts"]).toContain(
       "class VoiceForgeProgressReporter",
     );

@@ -454,6 +454,76 @@ describe("workflow-aware repairs", () => {
     expect(repair.target.workflowId).toBe("review-overview");
   });
 
+  it("ignores unrelated journey markers in structured review evidence", () => {
+    const reviewOverview: WorkflowContract = {
+      ...trackRoute,
+      id: "review-overview",
+      name: "Review overview",
+      start: { route: "/overview", screen: "Overview", preconditions: [] },
+      controls: [],
+      steps: [
+        {
+          id: "show-overview",
+          description: "Show overview",
+          kind: "automatic",
+          route: "/overview",
+          controlId: "",
+          reads: ["route_option"],
+          writes: [],
+          visibleResult: "Overview is visible.",
+        },
+      ],
+      expectedSaves: [],
+      handoffs: [],
+      dependencies: { workflowIds: [], platformServices: ["data"] },
+      source: {
+        workflowName: "Review overview",
+        acceptanceCriteria: ["Overview is visible."],
+        testScenarios: ["Open overview."],
+      },
+    };
+    const expandedArchitecture: ArchitecturePlan = {
+      ...architecture,
+      workflowContracts: [saveRoute, trackRoute, reviewOverview],
+      pageMap: [
+        ...architecture.pageMap,
+        {
+          route: "/overview",
+          name: "Overview",
+          purpose: "Review saved routes",
+          primaryComponents: ["OverviewPage"],
+          workflows: ["Review overview"],
+        },
+      ],
+    };
+    const targetIssue =
+      "acceptance_test:handoff Journey journey-save-calculated-route-to-track-saved-route is missing downstream proof saved-route-to-gps.";
+    const repair = createWorkflowRepairPackage({
+      spec,
+      architecture: expandedArchitecture,
+      files,
+      failedStep: "review_gate",
+      repairDomain: "acceptance",
+      errorOutput: [
+        targetIssue,
+        "",
+        "STRUCTURED REVIEW EVIDENCE:",
+        JSON.stringify({
+          laterJourney:
+            "[voiceforge-journey:journey-review-overview] Review overview",
+        }),
+      ].join("\n"),
+      blockingIssues: [targetIssue],
+    });
+
+    expect(repair.target).toMatchObject({
+      kind: "handoff",
+      workflowId: "save-calculated-route",
+      handoffId: "saved-route-to-gps",
+      journeyId: "journey-save-calculated-route-to-track-saved-route",
+    });
+  });
+
   it("does not edit source for external Google Maps failures", () => {
     const classification = classifyWorkflowRepairFailure({
       failedStep: "e2e",
@@ -490,6 +560,31 @@ describe("workflow-aware repairs", () => {
       targetSurface: "generated_test",
       confidence: "high",
     });
+  });
+
+  it("targets an invalid stable control binding as an interface repair", () => {
+    const issue =
+      "contract_control: src/app/explore/page.tsx:42 is missing [voiceforge-workflow:save-calculated-route][voiceforge-control:save-route].";
+    const repair = createWorkflowRepairPackage({
+      spec,
+      architecture,
+      files,
+      failedStep: "review_gate",
+      errorOutput: issue,
+      blockingIssues: [issue],
+    });
+
+    expect(repair.classification).toMatchObject({
+      category: "missing_control",
+      subtype: "missing_or_invalid_contract_binding",
+      targetSurface: "application_source",
+    });
+    expect(repair.target).toMatchObject({
+      kind: "control",
+      workflowId: "save-calculated-route",
+      controlId: "save-route",
+    });
+    expect(repair.scope.mutationPaths).toContain("src/app/explore/page.tsx");
   });
 
   it("classifies the selected finding instead of an unrelated review blocker", () => {
@@ -594,12 +689,88 @@ describe("workflow-aware repairs", () => {
     expect(assessment.unrelatedFindingsAdded).toEqual([]);
   });
 
+  it("accepts one repaired handoff while other baseline journeys remain", () => {
+    const targetIssue =
+      "acceptance_test:handoff Journey journey-save-calculated-route-to-track-saved-route is missing downstream proof saved-route-to-gps.";
+    const remainingIssues = Array.from(
+      { length: 6 },
+      (_, index) =>
+        `acceptance_test:handoff Journey journey-unrelated-${index + 1} is missing downstream proof unrelated-handoff-${index + 1}.`,
+    );
+    const repair = createWorkflowRepairPackage({
+      spec,
+      architecture,
+      files,
+      failedStep: "review_gate",
+      repairDomain: "acceptance",
+      errorOutput: targetIssue,
+      blockingIssues: [targetIssue],
+      reviews: [
+        {
+          agentKey: "acceptance_test_reviewer",
+          blockingIssues: remainingIssues,
+        },
+      ],
+    });
+    const assessment = assessWorkflowRepairCandidate({
+      repair,
+      currentBlockingIssues: remainingIssues,
+    });
+
+    expect(assessment).toMatchObject({
+      accepted: true,
+      improved: false,
+      targetResolved: true,
+      targetIssuesRemaining: [],
+      unrelatedFindingsAdded: [],
+    });
+  });
+
+  it("checkpoints a handoff marker that still needs consumer-route proof", () => {
+    const initialIssues = [
+      "acceptance_test:handoff Journey journey-meal-plan-refresh is missing downstream proof planned-meal-for-edit.",
+      "acceptance_test:handoff Journey journey-meal-plan-refresh is missing downstream proof planned-meal-for-refresh.",
+      "acceptance_test:handoff Journey journey-meal-plan-refresh is missing downstream proof updated-meal-for-refresh.",
+    ];
+    const repair = createWorkflowRepairPackage({
+      spec,
+      architecture,
+      files,
+      failedStep: "review_gate",
+      repairDomain: "acceptance",
+      errorOutput: initialIssues.join("\n"),
+      blockingIssues: initialIssues,
+    });
+    const assessment = assessWorkflowRepairCandidate({
+      repair,
+      currentBlockingIssues: [
+        "acceptance_test:handoff Journey journey-meal-plan-refresh does not reach /recipes and assert the saved result for planned-meal-for-refresh.",
+        "acceptance_test:handoff Journey journey-meal-plan-refresh does not reach /recipes and assert the saved result for updated-meal-for-refresh.",
+      ],
+    });
+
+    expect(assessment).toMatchObject({
+      accepted: false,
+      improved: true,
+      targetResolved: false,
+      unrelatedFindingsAdded: [],
+    });
+    expect(assessment.targetIssuesRemaining).toHaveLength(2);
+  });
+
   it("groups findings for one workflow and restores durable packages", () => {
     expect(
       selectWorkflowRepairIssueCluster([
         'persistence_handoff:save Workflow "Save calculated route" has no write.',
         'persistence_handoff:test Workflow "Save calculated route" has no test.',
         'ui_affordance: Workflow "Track saved route" has no control.',
+      ]),
+    ).toHaveLength(2);
+    expect(
+      selectWorkflowRepairIssueCluster([
+        "contract_control: source.tsx:10 uses unknown binding [voiceforge-workflow:edit-route][voiceforge-control:route-name].",
+        "contract_control: source.tsx:11 uses unknown binding [voiceforge-workflow:edit-route][voiceforge-control:route-notes].",
+        "contract_control: source.tsx:12 uses unknown binding [voiceforge-workflow:add-route][voiceforge-control:route-name].",
       ]),
     ).toHaveLength(2);
 

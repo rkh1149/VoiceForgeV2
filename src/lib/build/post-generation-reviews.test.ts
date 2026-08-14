@@ -9,6 +9,7 @@ import {
   assessPostGenerationRepair,
   comparePostGenerationIssueSets,
   getPostGenerationBlockingIssues,
+  postGenerationRepairDomain,
   postGenerationIssuesForDomain,
   runPostGenerationReviews,
   selectPostGenerationRepairBatch,
@@ -449,6 +450,14 @@ describe("post-generation reviews", () => {
     expect(postGenerationIssuesForDomain(issues, "acceptance")).toEqual([
       "acceptance_test:handoff Missing route proof",
     ]);
+  });
+
+  it("routes stable contract-control findings to the interface repair domain", () => {
+    expect(
+      postGenerationRepairDomain(
+        "contract_control: Missing [voiceforge-workflow:add-task][voiceforge-control:save-task].",
+      ),
+    ).toBe("interface");
   });
 
   it("records passing gates for a shared app with platform clients and generated tests", () => {

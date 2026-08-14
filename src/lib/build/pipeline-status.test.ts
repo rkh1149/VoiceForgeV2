@@ -29,6 +29,9 @@ describe("build pipeline app status fallbacks", () => {
     expect(source).toContain("workflowRepairOwnsFailure");
     expect(source).toContain("candidateProgressed");
     expect(source).toContain("Checkpointed partial");
+    expect(source).toMatch(
+      /Rolled back resumed[\s\S]{0,500}await saveReviewCheckpoint\(\);[\s\S]{0,300}rounds >= 2/,
+    );
     expect(source).toContain("the prior proven source is active again");
     expect(source).toContain("the named workflow will be reviewed");
   });

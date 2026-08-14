@@ -43,6 +43,9 @@ describe("build resume status filter", () => {
     expect(pipeline).toContain("best saved source checkpoint");
     expect(pipeline).toContain("refreshResumedTemplateFiles");
     expect(pipeline).toContain("options?.resetDebugBudget");
+    expect(pipeline).toContain(
+      "reviewProgress.unchangedRoundsByDomain = {};",
+    );
     expect(pipeline).toContain("recheckTestingCheckpoint");
     expect(pipeline).toContain("includeCompleteness: !recheckTestingCheckpoint");
     expect(pipeline).toContain(

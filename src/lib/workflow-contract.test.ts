@@ -677,6 +677,83 @@ describe("workflow contract layer", () => {
     expect(validation.blockingIssues).toEqual([]);
   });
 
+  it("removes downstream handoffs from deleted records", () => {
+    const spec = bikeSpec();
+    const supplied = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const producer = supplied.workflowContracts[0];
+    const consumer = supplied.workflowContracts[1];
+    const save = producer.expectedSaves[0];
+    if (!save || !consumer) throw new Error("Missing handoff fixtures");
+    save.operation = "delete";
+    producer.requiredData[0].operations = ["read", "delete"];
+    producer.steps = producer.steps.map((step) => ({
+      ...step,
+      writes: step.id === save.stepId ? [save.entityKey] : step.writes,
+    }));
+    producer.handoffs = [
+      {
+        id: "deleted-route-for-gps",
+        fromStepId: save.stepId,
+        produces: save.producedReference,
+        storage: save.storage,
+        consumerWorkflowId: consumer.id,
+        consumerRoute: consumer.start.route,
+        consumerControlId: consumer.controls[0]?.id ?? "",
+        loadRule: "Load the deleted route in GPS.",
+      },
+    ];
+
+    const normalized = ensureWorkflowContracts(spec, supplied);
+    const normalizedProducer = normalized.workflowContracts.find(
+      (contract) => contract.id === producer.id,
+    );
+
+    expect(normalizedProducer?.handoffs).toEqual([]);
+  });
+
+  it("does not treat absent mutation controls as a viewer persistence promise", () => {
+    const spec = bikeSpec();
+    spec.workflows = [
+      {
+        name: "View-only route access",
+        actor: "Viewer",
+        trigger: "A viewer opens the saved routes screen.",
+        steps: [
+          "Open the route list.",
+          "Browse saved routes and check for editing controls.",
+        ],
+        successOutcome:
+          "The viewer sees saved routes but no Add, Save, Edit, or Delete controls.",
+        failureStates: [
+          "A restricted action is denied and no route data changes.",
+        ],
+      },
+    ];
+    spec.acceptanceCriteria = [];
+    spec.testScenarios = [];
+
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const contract = architecture.workflowContracts[0];
+    const validation = validateWorkflowContracts(spec, architecture);
+
+    expect(contract.actor.roles).toEqual(["viewer"]);
+    expect(contract.requiredData).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ operations: ["read"] }),
+      ]),
+    );
+    expect(contract.expectedSaves).toEqual([]);
+    expect(validation.blockingIssues).not.toContainEqual(
+      expect.stringContaining("defines no persistent record transition"),
+    );
+  });
+
   it("blocks unknown routes, fields, and downstream workflows", () => {
     const spec = bikeSpec();
     const architecture = createFallbackArchitecturePlan(
@@ -924,6 +1001,34 @@ describe("workflow contract layer", () => {
     expect(normalized.workflowContracts).toHaveLength(spec.workflows.length);
     expect(workflowContractStats(normalized.workflowContracts).handoffs).toBeGreaterThan(
       0,
+    );
+  });
+
+  it("upgrades a version 1 plan without regenerating its permanent ids", () => {
+    const spec = bikeSpec();
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const legacy = structuredClone(architecture) as Omit<
+      ArchitecturePlan,
+      "workflowContractVersion"
+    > & {
+      workflowContractVersion: number;
+    };
+    legacy.workflowContractVersion = 1;
+    legacy.workflowContracts[0].id = "permanent-family-route-workflow";
+    legacy.workflowContracts[0].controls[0].id =
+      "permanent-calculate-route-control";
+
+    const normalized = ensureWorkflowContracts(spec, legacy);
+
+    expect(normalized.workflowContractVersion).toBe(2);
+    expect(normalized.workflowContracts[0].id).toBe(
+      "permanent-family-route-workflow",
+    );
+    expect(normalized.workflowContracts[0].controls[0].id).toBe(
+      "permanent-calculate-route-control",
     );
   });
 });

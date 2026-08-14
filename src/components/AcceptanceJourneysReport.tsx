@@ -75,7 +75,7 @@ export default function AcceptanceJourneysReport({
         </p>
       ) : (
         <>
-          <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+          <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-5">
             <div>
               <dt className="text-xs text-slate-500">Planned</dt>
               <dd className="text-lg font-semibold text-slate-900">
@@ -102,6 +102,13 @@ export default function AcceptanceJourneysReport({
                 {executionLabel(browserResult)}
               </dd>
             </div>
+            <div>
+              <dt className="text-xs text-slate-500">Stable locators</dt>
+              <dd className="text-lg font-semibold text-slate-900">
+                {report.summary.stableLocatorsVerified}/
+                {report.summary.stableLocatorsRequired}
+              </dd>
+            </div>
           </dl>
 
           {journeys.length > 0 && (
@@ -117,6 +124,9 @@ export default function AcceptanceJourneysReport({
                     </p>
                     <p className="mt-0.5 text-xs text-slate-500">
                       Steps {journey.stepsVerified}/{journey.stepsRequired}
+                      {journey.stableLocatorsRequired > 0
+                        ? ` · stable controls ${journey.stableLocatorsVerified}/${journey.stableLocatorsRequired}`
+                        : ""}
                       {journey.savesRequired > 0
                         ? ` · saves ${journey.savesVerified}/${journey.savesRequired}`
                         : ""}

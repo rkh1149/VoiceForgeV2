@@ -36,7 +36,7 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Frontend builder: own reusable React components, hooks, accessible controls, responsive layout primitives, and state handoff from the backend/platform foundation.",
     objective:
-      "Create every reusable component and hook assigned to this phase by the architecture file plan, including workflow forms, lists, dialogs, session/role helpers, and responsive navigation. Prefer compact shared components with clear props, group related file reads and writes, and read existing foundation files before importing from them. Do not stop after only the shell or document remaining planned components as later work.",
+      "Create every reusable component and hook assigned to this phase by the architecture file plan, including workflow forms, lists, dialogs, session/role helpers, and responsive navigation. Give every contracted interactive control a permanent data-vf-workflow/data-vf-control identity. Shared add/edit components may select among finite literal contract ids, and equivalent workflows may reuse one canonical navigation/filter binding; repeated entity actions also need a data-vf-entity/data-vf-record container. Prefer compact shared components with clear props, group related file reads and writes, and read existing foundation files before importing from them. Do not stop after only the shell or document remaining planned components as later work.",
     maxTurns: 30,
   },
   {
@@ -46,7 +46,7 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Frontend builder: own App Router pages, navigation, user-visible workflows, role-aware controls, empty/loading/error states, and safe button behavior.",
     objective:
-      "Assemble all App Router pages and wire every planned user-visible workflow end to end. Replace the placeholder home page, create each route in the architecture page map, and expose visible create/edit/action controls for every planned editable entity and workflow. Advanced apps may use compact screens, but they must not defer planned routes, CRUD/save wiring, platform integrations, file upload/export, GPS, search/report, or workflow controls to later phases. Make every button safe.",
+      "Assemble all App Router pages and wire every planned user-visible workflow end to end. Replace the placeholder home page, create each route in the architecture page map, and expose visible create/edit/action controls for every planned editable entity and workflow. Preserve exact Stage 14G workflow/control attributes while composing components, including loading, disabled, responsive, and repeated-record variants. Advanced apps may use compact screens, but they must not defer planned routes, CRUD/save wiring, platform integrations, file upload/export, GPS, search/report, or workflow controls to later phases. Make every button safe.",
     maxTurns: 36,
   },
   {
@@ -66,7 +66,7 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Test agent: translate every synthesized Stage 14D workflow journey into Playwright acceptance coverage. Keep tests stable, same-origin, and complementary to the locked smoke/accessibility test.",
     objective:
-      "Add contract-driven Playwright acceptance tests under e2e/generated/ for every synthesized user-action journey. Keep bounded journeys as focused tests and place dependent journeys in the same test.describe.serial suite, but remember that every Playwright test receives a fresh browser context: recreate localStorage/sessionStorage prerequisites through visible UI inside each dependent test instead of relying on an earlier test. Capture selected result identity before completion/delete/status actions that clear it, and navigate downstream through a stable visible link rather than assuming a contextual result link remains after mutation. Exercise the ordered workflow steps through visible controls, then prove expected saves after page.reload(), downstream handoffs on their consumer routes, role behavior, downloads, uploads, drag/drop, integration fallbacks, and browser geolocation when required. Use the locked e2e/voiceforge-acceptance.ts trace helpers and never replace a promised journey with a generic page-render test.",
+      "Add contract-driven Playwright acceptance tests under e2e/generated/ for every synthesized user-action journey. Locate contracted controls with the locked vfControl/vfRecord helpers using exact workflowId/controlId pairs; use friendly names as accessibility assertions, not identity. Keep bounded journeys as focused tests and place dependent journeys in the same test.describe.serial suite, but remember that every Playwright test receives a fresh browser context: recreate localStorage/sessionStorage prerequisites through visible UI inside each dependent test instead of relying on an earlier test. Capture selected result identity before completion/delete/status actions that clear it, and navigate downstream through a stable visible link rather than assuming a contextual result link remains after mutation. Exercise the ordered workflow steps through visible controls, then prove expected saves after page.reload(), downstream handoffs on their consumer routes, role behavior, downloads, uploads, drag/drop, integration fallbacks, and browser geolocation when required. Use the locked e2e/voiceforge-acceptance.ts trace helpers and never replace a promised journey with a generic page-render test.",
     maxTurns: 28,
   },
   {
@@ -76,7 +76,7 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Final integration agent: inspect the generated app across foundation, components, pages, and tests. Patch only small cross-file wiring, import, route, acceptance coverage, accessibility, or platform-contract issues before the gauntlet.",
     objective:
-      "Review the generated app end to end for missing routes, broken imports, unrendered workflows, unsafe platform usage, missing sign-in states, and obvious test gaps. For advanced apps, treat missing planned routes, CRUD controls, integration calls, or workflow tests as blocking and patch them when practical instead of documenting them as later work. Make focused corrective patches when needed; otherwise record that no changes were necessary.",
+      "Review the generated app end to end for missing routes, broken imports, unrendered workflows, unsafe platform usage, missing sign-in states, stable contract-control bindings, and obvious test gaps. Confirm each user-action contract control has one correctly placed workflowId/controlId pair and every repeated action is record-scoped. For advanced apps, treat missing planned routes, CRUD controls, integration calls, or workflow tests as blocking and patch them when practical instead of documenting them as later work. Make focused corrective patches when needed; otherwise record that no changes were necessary.",
     maxTurns: 18,
   },
 ];
@@ -100,7 +100,7 @@ export const CHANGE_GENERATION_PHASES: GenerationPhase[] = [
     specialistRole:
       "Change builder: patch the smallest source surface needed for the approved change while preserving existing routes, style, storage shapes, and platform contracts.",
     objective:
-      "Patch or rewrite only files that need to change. Preserve unrelated look, behavior, routes, and localStorage data shapes.",
+      "Patch or rewrite only files that need to change. Preserve unrelated look, behavior, routes, localStorage data shapes, and existing data-vf workflow/control identities. Add Stage 14G bindings to newly introduced or directly modified contract controls without forcing a whole-app identity rewrite for a legacy app.",
     maxTurns: 24,
   },
   {

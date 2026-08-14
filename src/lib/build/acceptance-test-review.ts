@@ -23,6 +23,8 @@ export type AcceptanceJourneyReview = {
   files: string[];
   stepsRequired: number;
   stepsVerified: number;
+  stableLocatorsRequired: number;
+  stableLocatorsVerified: number;
   savesRequired: number;
   savesVerified: number;
   refreshChecksRequired: number;
@@ -40,7 +42,7 @@ export type AcceptanceJourneyReview = {
 };
 
 export type AcceptanceTestReview = {
-  version: 1;
+  version: 2;
   plan: WorkflowAcceptancePlan;
   summary: {
     journeysPlanned: number;
@@ -50,6 +52,8 @@ export type AcceptanceTestReview = {
     workflowsVerified: number;
     stepsRequired: number;
     stepsVerified: number;
+    stableLocatorsRequired: number;
+    stableLocatorsVerified: number;
     savesRequired: number;
     savesVerified: number;
     refreshChecksRequired: number;
@@ -89,6 +93,7 @@ export function analyzeGeneratedAcceptanceTests(input: {
   spec: AppSpec;
   architecture: ArchitecturePlan;
   files: FileMap;
+  requireStableControlLocators?: boolean;
 }): AcceptanceTestReview {
   const plan = synthesizeWorkflowAcceptancePlan(input.spec, input.architecture);
   const planValidation = validateWorkflowAcceptancePlan(
@@ -107,7 +112,13 @@ export function analyzeGeneratedAcceptanceTests(input: {
     ...reviewGlobalTestQuality(testEntries),
   ];
   const journeyReviews = plan.journeys.map((journey) =>
-    reviewJourney(journey, testEntries, plan),
+    reviewJourney(
+      journey,
+      testEntries,
+      plan,
+      input.architecture,
+      input.requireStableControlLocators ?? false,
+    ),
   );
   const blockingIssues = uniqueStrings([
     ...globalBlockingIssues,
@@ -119,7 +130,7 @@ export function analyzeGeneratedAcceptanceTests(input: {
   ]);
 
   return {
-    version: 1,
+    version: 2,
     plan,
     summary: {
       journeysPlanned: plan.journeys.length,
@@ -136,6 +147,8 @@ export function analyzeGeneratedAcceptanceTests(input: {
       ).length,
       stepsRequired: sum(journeyReviews, "stepsRequired"),
       stepsVerified: sum(journeyReviews, "stepsVerified"),
+      stableLocatorsRequired: sum(journeyReviews, "stableLocatorsRequired"),
+      stableLocatorsVerified: sum(journeyReviews, "stableLocatorsVerified"),
       savesRequired: sum(journeyReviews, "savesRequired"),
       savesVerified: sum(journeyReviews, "savesVerified"),
       refreshChecksRequired: sum(journeyReviews, "refreshChecksRequired"),
@@ -165,6 +178,8 @@ function reviewJourney(
   journey: WorkflowAcceptanceJourney,
   allEntries: SourceEntry[],
   plan: WorkflowAcceptancePlan,
+  architecture: ArchitecturePlan,
+  requireStableControlLocators: boolean,
 ): AcceptanceJourneyReview {
   const entries = allEntries.filter((entry) =>
     hasHelperMarker(entry.traceCalls, "workflowJourneyTitle", [journey.id]),
@@ -173,6 +188,12 @@ function reviewJourney(
   const warnings: string[] = [];
   const source = entries.map((entry) => entry.source).join("\n");
   const traceCalls = extractAcceptanceTraceCalls(source);
+  const journeyWindow = helperMarkerWindow(
+    source,
+    traceCalls,
+    "workflowJourneyTitle",
+    [journey.id],
+  );
   if (entries.length === 0) {
     issues.push(
       `acceptance_test:journey Missing generated Playwright journey ${journey.id} (${journey.name}).`,
@@ -201,11 +222,10 @@ function reviewJourney(
           (handoff) => handoff.storage === "localStorage",
         ),
     );
-    const journeyPrelude = helperMarkerWindow(
+    const journeyPrelude = journeyPreludeWindow(
       source,
       traceCalls,
-      "workflowJourneyTitle",
-      [journey.id],
+      journey.id,
     );
     if (
       browserLocalDependencies.length > 0 &&
@@ -234,6 +254,10 @@ function reviewJourney(
     }
   }
 
+  let stableLocatorsVerified = 0;
+  const stableLocatorsRequired = journey.steps.filter(
+    (step) => Boolean(step.controlId),
+  ).length;
   const verifiedSteps = journey.steps.filter((step) => {
     const window = helperMarkerWindow(
       source,
@@ -260,6 +284,32 @@ function reviewJourney(
         `acceptance_test:step Journey ${journey.id} labels ${step.contractStepId} but does not perform its ${step.kind} action and assertion.`,
       );
       return false;
+    }
+    if (step.controlId) {
+      const stableLocatorPairs = stableControlLocatorPairs(
+        architecture,
+        step,
+      );
+      if (
+        stableLocatorPairs.some((pair) =>
+          containsStableControlLocator(
+            window,
+            pair.workflowId,
+            pair.controlId,
+          ),
+        )
+      ) {
+        stableLocatorsVerified += 1;
+      } else if (requireStableControlLocators) {
+        issues.push(
+          `acceptance_test:control Journey ${journey.id} step ${step.contractStepId} must locate [voiceforge-workflow:${step.workflowId}][voiceforge-control:${step.controlId}] with vfControl or vfRecordControl instead of relying on wording.`,
+        );
+        return false;
+      } else {
+        warnings.push(
+          `acceptance_test:control Journey ${journey.id} step ${step.contractStepId} uses legacy accessible-name control discovery for ${step.workflowId}/${step.controlId}.`,
+        );
+      }
     }
     if (
       step.accessibleName &&
@@ -341,10 +391,22 @@ function reviewJourney(
     }
     const reachesConsumerInMarker =
       containsRouteNavigation(window, handoff.consumerRoute) ||
+      (handoff.consumerControlId &&
+        containsStableControlLocator(
+          window,
+          handoff.consumerWorkflowId,
+          handoff.consumerControlId,
+        )) ||
       (handoff.consumerAccessibleName &&
         containsLooseText(window, handoff.consumerAccessibleName));
     const reachesConsumerEarlierInJourney =
       containsRouteNavigation(source, handoff.consumerRoute) ||
+      (handoff.consumerControlId &&
+        containsStableControlLocator(
+          source,
+          handoff.consumerWorkflowId,
+          handoff.consumerControlId,
+        )) ||
       (handoff.consumerAccessibleName &&
         containsLooseText(source, handoff.consumerAccessibleName));
     const reachesConsumer =
@@ -371,13 +433,14 @@ function reviewJourney(
     journey.roleScenarios.flatMap((scenario) => scenario.readOnlyRoles),
   );
   const verifiedRoles = requiredReadOnlyRoles.filter((role) => {
-    const marker = helperMarkerWindow(
-      source,
-      traceCalls,
-      "voiceForgeRoleHeaders",
-      [role],
+    const rolePattern = new RegExp(
+      `\\bvoiceForgeRoleHeaders\\s*\\(\\s*["']${escapeRegExp(role)}["']\\s*\\)`,
     );
-    if (!marker || !READ_ONLY_ASSERTION_PATTERN.test(marker)) {
+    if (
+      !journeyWindow ||
+      !rolePattern.test(journeyWindow) ||
+      !READ_ONLY_ASSERTION_PATTERN.test(journeyWindow)
+    ) {
       issues.push(
         `acceptance_test:role Journey ${journey.id} does not prove ${role} receives read-only workflow controls.`,
       );
@@ -455,6 +518,8 @@ function reviewJourney(
     files: entries.map((entry) => entry.path),
     stepsRequired: journey.steps.length,
     stepsVerified: verifiedSteps.length,
+    stableLocatorsRequired,
+    stableLocatorsVerified,
     savesRequired: journey.saves.length,
     savesVerified: verifiedSaves.length,
     refreshChecksRequired: journey.saves.length,
@@ -470,6 +535,54 @@ function reviewJourney(
     blockingIssues: uniqueStrings(issues),
     warnings: uniqueStrings(warnings),
   };
+}
+
+function stableControlLocatorPairs(
+  architecture: ArchitecturePlan,
+  step: WorkflowAcceptanceStep,
+): Array<{ workflowId: string; controlId: string }> {
+  const pairs = [{ workflowId: step.workflowId, controlId: step.controlId }];
+  for (const contract of architecture.workflowContracts) {
+    for (const control of contract.controls) {
+      if (
+        control.id === step.controlId &&
+        normalizeAcceptanceRoute(control.route) ===
+          normalizeAcceptanceRoute(step.route) &&
+        compatibleAcceptanceControlKind(control.kind, step.controlKind)
+      ) {
+        pairs.push({ workflowId: contract.id, controlId: control.id });
+      }
+    }
+  }
+  const seen = new Set<string>();
+  return pairs.filter((pair) => {
+    const key = `${pair.workflowId}:${pair.controlId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizeAcceptanceRoute(route: string): string {
+  const clean = route.trim().replace(/\/{2,}/g, "/");
+  if (!clean || clean === "/") return "/";
+  return `/${clean.replace(/^\/+/, "").replace(/\/+$/, "")}`;
+}
+
+function compatibleAcceptanceControlKind(
+  expected: WorkflowAcceptanceStep["controlKind"],
+  actual: WorkflowAcceptanceStep["controlKind"],
+): boolean {
+  if (expected === actual) return true;
+  const fieldKinds = new Set([
+    "textbox",
+    "combobox",
+    "checkbox",
+    "radio",
+    "date",
+    "file",
+  ]);
+  return expected === "form" && Boolean(actual && fieldKinds.has(actual));
 }
 
 function hasRunScopedFixture(source: string): boolean {
@@ -619,7 +732,10 @@ function stepHasRequiredAction(
       );
     case "action":
     case "save":
-      return INTERACTION_PATTERN.test(sourceWindow);
+      return (
+        INTERACTION_PATTERN.test(sourceWindow) ||
+        (!step.controlId && ASSERTION_PATTERN.test(sourceWindow))
+      );
     case "result":
     case "automatic":
       return ASSERTION_PATTERN.test(sourceWindow);
@@ -697,6 +813,31 @@ function helperMarkerWindow(
   );
 }
 
+function journeyPreludeWindow(
+  source: string,
+  calls: readonly AcceptanceTraceCall[],
+  journeyId: string,
+): string {
+  const journeyCall = findAcceptanceTraceCall(
+    calls,
+    "workflowJourneyTitle",
+    [journeyId],
+  );
+  if (!journeyCall) return "";
+  const start = journeyCall.scopeStart ?? journeyCall.index;
+  const scopeEnd = journeyCall.scopeEnd ?? source.length;
+  const firstStep = calls
+    .filter(
+      (candidate) =>
+        candidate.helper === "workflowStepTitle" &&
+        candidate.index > journeyCall.index &&
+        candidate.index < scopeEnd,
+    )
+    .map((candidate) => candidate.index)
+    .sort((left, right) => left - right)[0];
+  return source.slice(start, firstStep ?? scopeEnd);
+}
+
 function hasHelperMarker(
   calls: readonly AcceptanceTraceCall[],
   helper: AcceptanceTraceHelper,
@@ -718,11 +859,25 @@ function containsLooseText(source: string, value: string): boolean {
   return words.length === 0 || words.every((word) => normalized.includes(word));
 }
 
+function containsStableControlLocator(
+  source: string,
+  workflowId: string,
+  controlId: string,
+): boolean {
+  const workflow = escapeRegExp(workflowId);
+  const control = escapeRegExp(controlId);
+  return new RegExp(
+    `\\b(?:vfControl|vfRecordControl)\\s*\\([\\s\\S]{0,240}?["']${workflow}["']\\s*,\\s*["']${control}["']`,
+  ).test(source);
+}
+
 function sum(
   journeys: readonly AcceptanceJourneyReview[],
   key:
     | "stepsRequired"
     | "stepsVerified"
+    | "stableLocatorsRequired"
+    | "stableLocatorsVerified"
     | "savesRequired"
     | "savesVerified"
     | "refreshChecksRequired"

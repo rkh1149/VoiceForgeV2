@@ -2913,6 +2913,7 @@ async function runCheckpointReviewGate(input: {
           ? `Checkpointed partial ${repairBatch.domain} progress and will continue from it: ${assessment.reason}`
           : `Rolled back resumed ${repairBatch.domain} repair: ${assessment.reason}`,
     );
+    await saveReviewCheckpoint();
     if (!candidateProgressed && rounds >= 2) {
       throw new Error(
         `${repairBatch.domain} static review could not validate an improving repair after two resumed attempts. VoiceForge preserved the best generated source; this may be a reviewer limitation.`,
@@ -3426,6 +3427,9 @@ export async function resumeBuildPipelineContinuation(
       generated,
       changeMode,
     );
+    if (options?.resetDebugBudget) {
+      reviewProgress.unchangedRoundsByDomain = {};
+    }
     const recheckTestingCheckpoint =
       checkpoint.stage === "testing" && options?.resetDebugBudget === true;
     if (checkpoint.stage === "reviewing" || recheckTestingCheckpoint) {

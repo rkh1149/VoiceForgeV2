@@ -302,6 +302,23 @@ export function MetricCard({
   );
 }
 
+export type VoiceForgeContractControlBinding = {
+  workflowId: string;
+  controlId: string;
+  entityKey?: string;
+};
+
+function contractControlAttributes(
+  binding: VoiceForgeContractControlBinding | undefined,
+) {
+  if (!binding) return {};
+  return {
+    "data-vf-workflow": binding.workflowId,
+    "data-vf-control": binding.controlId,
+    ...(binding.entityKey ? { "data-vf-entity": binding.entityKey } : {}),
+  };
+}
+
 export function DeviceLocationTracker({
   title = "GPS tracking",
   canTrack = true,
@@ -309,6 +326,9 @@ export function DeviceLocationTracker({
   maxTrackPoints = 5_000,
   onLocation,
   onTrackUpdate,
+  useLocationContract,
+  startTrackingContract,
+  stopTrackingContract,
 }: {
   title?: string;
   canTrack?: boolean;
@@ -319,6 +339,9 @@ export function DeviceLocationTracker({
     track: DeviceLocationFix[],
     summary: DeviceTrackSummary,
   ) => void;
+  useLocationContract?: VoiceForgeContractControlBinding;
+  startTrackingContract?: VoiceForgeContractControlBinding;
+  stopTrackingContract?: VoiceForgeContractControlBinding;
 }) {
   const watchRef = useRef<DeviceLocationWatchHandle | null>(null);
   const onLocationRef = useRef(onLocation);
@@ -462,6 +485,7 @@ export function DeviceLocationTracker({
       </div>
       <div className="mt-4 flex flex-wrap gap-2">
         <button
+          {...contractControlAttributes(useLocationContract)}
           type="button"
           disabled={!canTrack || status === "locating"}
           onClick={useCurrentLocation}
@@ -472,6 +496,7 @@ export function DeviceLocationTracker({
         </button>
         {status === "tracking" ? (
           <button
+            {...contractControlAttributes(stopTrackingContract)}
             type="button"
             onClick={stopTracking}
             className="inline-flex items-center gap-2 rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
@@ -481,6 +506,7 @@ export function DeviceLocationTracker({
           </button>
         ) : (
           <button
+            {...contractControlAttributes(startTrackingContract)}
             type="button"
             disabled={!canTrack}
             onClick={startTracking}

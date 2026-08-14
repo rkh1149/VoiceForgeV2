@@ -45,6 +45,12 @@ export type GooglePlaceAutocompleteResult = {
   googleMapsUri?: string;
 };
 
+export type VoiceForgeMapControlBinding = {
+  workflowId: string;
+  controlId: string;
+  entityKey?: string;
+};
+
 export type GooglePlaceAutocompleteProps = {
   label?: string;
   placeholder?: string;
@@ -52,6 +58,8 @@ export type GooglePlaceAutocompleteProps = {
   includedPrimaryTypes?: string[];
   locationBias?: GoogleMapsCoordinate & { radiusMeters?: number };
   className?: string;
+  inputContract?: VoiceForgeMapControlBinding;
+  searchContract?: VoiceForgeMapControlBinding;
   onPlaceSelect: (place: GooglePlaceAutocompleteResult) => void;
 };
 
@@ -500,6 +508,8 @@ export function GooglePlaceAutocomplete({
   includedPrimaryTypes,
   locationBias,
   className = "",
+  inputContract,
+  searchContract,
   onPlaceSelect,
 }: GooglePlaceAutocompleteProps) {
   const inputId = useId();
@@ -670,6 +680,7 @@ export function GooglePlaceAutocomplete({
       <form className="relative" onSubmit={handleSubmit}>
         <div className="flex min-h-11 overflow-hidden rounded-md border border-slate-300 bg-white shadow-sm focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-200">
           <input
+            {...mapContractControlAttributes(inputContract)}
             id={inputId}
             ref={inputRef}
             value={query}
@@ -683,6 +694,7 @@ export function GooglePlaceAutocomplete({
             className="min-w-0 flex-1 border-0 bg-transparent px-3 py-2 text-sm text-slate-950 outline-none placeholder:text-slate-400"
           />
           <button
+            {...mapContractControlAttributes(searchContract)}
             type="submit"
             disabled={isSearching}
             aria-label={`Search ${label}`}
@@ -737,6 +749,17 @@ export function GooglePlaceAutocomplete({
       )}
     </div>
   );
+}
+
+function mapContractControlAttributes(
+  binding: VoiceForgeMapControlBinding | undefined,
+) {
+  if (!binding) return {};
+  return {
+    "data-vf-workflow": binding.workflowId,
+    "data-vf-control": binding.controlId,
+    ...(binding.entityKey ? { "data-vf-entity": binding.entityKey } : {}),
+  };
 }
 
 function RouteCards({

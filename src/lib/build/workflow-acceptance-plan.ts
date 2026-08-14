@@ -486,6 +486,19 @@ function buildJourney(input: {
       ),
     )
     .map((contract) => contract.id);
+  const dedicatedReadOnlyContracts = input.componentContracts.filter(
+    (contract) =>
+      contract.expectedSaves.length === 0 &&
+      contract.actor.roles.some(
+        (role) => role === "viewer" || role === "public",
+      ) &&
+      contract.actor.roles.every(
+        (role) => role === "viewer" || role === "public",
+      ) &&
+      contract.requiredData.every((data) =>
+        data.operations.every((operation) => operation === "read"),
+      ),
+  );
 
   return {
     id: journeyId,
@@ -508,22 +521,44 @@ function buildJourney(input: {
     fixtures,
     saves,
     handoffs,
-    roleScenarios: contracts.map((contract) => ({
-      workflowId: contract.id,
-      workflowName: contract.name,
-      allowedRoles: [...contract.actor.roles],
-      visibleControlNames: uniqueStrings(
-        contract.controls.map((control) => control.accessibleName),
-      ),
-      readOnlyRoles:
+    roleScenarios: contracts.map((contract) => {
+      const explicitReadOnlyRoles =
+        contract.expectedSaves.length === 0 &&
+        contract.actor.roles.every(
+          (role) => role === "viewer" || role === "public",
+        )
+          ? contract.actor.roles.filter(
+              (role) => role === "viewer" || role === "public",
+            )
+          : [];
+      const fallbackReadOnlyRoles =
         contract.expectedSaves.length > 0
           ? input.appRoles.filter(
               (role) =>
                 (role === "viewer" || role === "public") &&
-                !contract.actor.roles.includes(role),
+                !contract.actor.roles.includes(role) &&
+                !dedicatedReadOnlyContracts.some((readOnlyContract) =>
+                  readOnlyContractCoversContract(
+                    readOnlyContract,
+                    contract,
+                    role,
+                  ),
+                ),
             )
-          : [],
-    })),
+          : [];
+      return {
+        workflowId: contract.id,
+        workflowName: contract.name,
+        allowedRoles: [...contract.actor.roles],
+        visibleControlNames: uniqueStrings(
+          contract.controls.map((control) => control.accessibleName),
+        ),
+        readOnlyRoles: uniqueRoles([
+          ...explicitReadOnlyRoles,
+          ...fallbackReadOnlyRoles,
+        ]),
+      };
+    }),
     successResults: contracts.map((contract) => ({
       workflowId: contract.id,
       route: contract.success.route,
@@ -549,6 +584,33 @@ function buildJourney(input: {
       contracts.flatMap((contract) => contract.source.testScenarios),
     ),
   };
+}
+
+function readOnlyContractCoversContract(
+  readOnlyContract: WorkflowContract,
+  mutableContract: WorkflowContract,
+  role: WorkflowContractRole,
+): boolean {
+  if (!readOnlyContract.actor.roles.includes(role)) return false;
+  const readOnlyEntities = new Set(
+    readOnlyContract.requiredData.map((data) => data.entityKey),
+  );
+  const mutableEntities = mutableContract.requiredData.map(
+    (data) => data.entityKey,
+  );
+  const sharesEntity = mutableEntities.some((entityKey) =>
+    readOnlyEntities.has(entityKey),
+  );
+  const sharesRoute = [
+    readOnlyContract.start.route,
+    ...readOnlyContract.controls.map((control) => control.route),
+  ].some((route) =>
+    [
+      mutableContract.start.route,
+      ...mutableContract.controls.map((control) => control.route),
+    ].includes(route),
+  );
+  return sharesEntity || sharesRoute;
 }
 
 function connectedWorkflowComponents(
