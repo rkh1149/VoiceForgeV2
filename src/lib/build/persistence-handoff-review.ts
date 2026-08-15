@@ -562,7 +562,7 @@ function hasWriteOperation(source: string, save: SaveContract): boolean {
           ? "updatePlatformRecord"
           : "deletePlatformRecord";
     const durableCall = new RegExp(
-      `\\b${direct}(?:\\s*<[^>()]+>)?\\s*\\(`,
+      `\\b${direct}(?:\\s*<[^;()]+>)?\\s*\\(`,
     ).test(source);
     const namedEntityWrapper = new RegExp(
       `\\b(?:${operationVerbs(save.operation)})[A-Za-z0-9_$]*${entity}[A-Za-z0-9_$]*\\s*\\(`,
@@ -588,7 +588,7 @@ function hasWriteOperation(source: string, save: SaveContract): boolean {
 
 function platformWriteIncludesRawBinary(source: string): boolean {
   for (const match of source.matchAll(
-    /\b(?:createPlatformRecord|updatePlatformRecord)(?:\s*<[^>()]+>)?\s*\(([\s\S]{0,1400}?)\)\s*[;\n]/g,
+    /\b(?:createPlatformRecord|updatePlatformRecord)(?:\s*<[^;()]+>)?\s*\(([\s\S]{0,1400}?)\)\s*[;\n]/g,
   )) {
     if (RAW_BINARY_PATTERN.test(match[1] ?? "")) return true;
   }

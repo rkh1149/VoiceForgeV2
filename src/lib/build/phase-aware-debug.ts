@@ -109,7 +109,12 @@ const LOCKED_PLATFORM_HELPERS = [
   "src/lib/voiceforge-modules.ts",
   "src/components/voiceforge-reusable.tsx",
   "e2e/voiceforge-acceptance.ts",
+  "e2e/generated/voiceforge-acceptance-manifest.ts",
+  "e2e/generated/voiceforge-compiled.spec.ts",
 ];
+
+const ACCEPTANCE_ADAPTERS_PATH =
+  "e2e/generated/voiceforge-acceptance-adapters.ts";
 
 const FILE_PATH_PATTERN =
   /(?:^|[\s('"`])((?:\.\/)?(?:src|e2e)\/[A-Za-z0-9_./@-]+\.(?:tsx?|jsx?|json|css))/g;
@@ -281,7 +286,7 @@ export function selectDebugFileScope(input: {
   const preferred = new Set<string>();
   const acceptanceReviewFailure =
     input.classification.domain === "integration_review_gate" &&
-    /acceptance_test:/.test(input.errorOutput.toLowerCase());
+    /acceptance_(?:test|compiler):/.test(input.errorOutput.toLowerCase());
   const mentionedPaths = extractMentionedFilePaths(input.errorOutput).filter(
     (filePath) => input.files[filePath] !== undefined,
   );
@@ -352,7 +357,7 @@ export function selectDebugFileScope(input: {
           path.startsWith("e2e/generated/"),
         );
         addPreferredByPattern(preferred, input.files, (path) =>
-          path.startsWith("e2e/generated/"),
+          path === ACCEPTANCE_ADAPTERS_PATH,
         );
       } else if (/persistence_handoff:/.test(input.errorOutput.toLowerCase())) {
         addPersistenceHandoffSurface(
@@ -380,7 +385,10 @@ export function selectDebugFileScope(input: {
   }
 
   if (acceptanceReviewFailure) {
-    addExisting(selected, input.files, ["e2e/voiceforge-acceptance.ts"]);
+    addExisting(selected, input.files, [
+      "e2e/voiceforge-acceptance.ts",
+      ACCEPTANCE_ADAPTERS_PATH,
+    ]);
   } else {
     addExisting(selected, input.files, LOCKED_PLATFORM_HELPERS);
     addRelatedImportNeighbors(selected, input.files);
@@ -495,7 +503,7 @@ function phaseHintForReviewGate(input: {
     phaseId = "pages-workflows";
     reason =
       "The product completeness reviewer found that a normal user cannot obtain a promised outcome, so the pages/workflows phase owns the first end-to-end repair.";
-  } else if (/acceptance_test:/.test(lowerOutput)) {
+  } else if (/acceptance_(?:test|compiler):/.test(lowerOutput)) {
     phaseId = "browser-acceptance-tests";
     reason =
       "The Stage 14D review found missing or incomplete contract-driven Playwright proof, so the browser acceptance test phase owns the repair.";
@@ -910,8 +918,8 @@ function instructionsFor(
     responsiblePhase.id === "browser-acceptance-tests"
   ) {
     common.push(
-      `This debug round is escalated across the generated acceptance-test suite because earlier focused repairs did not make reliable progress${escalation.escalationReason ? `: ${escalation.escalationReason}` : "."}`,
-      "Inspect the complete contracted Playwright journey and shared acceptance helpers, but do not rewrite application pages or components to satisfy uncertain static locator wording. The running browser test will arbitrate locator semantics.",
+      `This debug round is escalated across the acceptance evidence because earlier focused repairs did not make reliable progress${escalation.escalationReason ? `: ${escalation.escalationReason}` : "."}`,
+      "Inspect the protected manifest, compiled journey, and locked acceptance runtime as evidence. Change only the exact app-specific adapter when the manifest requires one; compiler-owned files must remain unchanged.",
     );
   } else if (escalation.forceFullScope) {
     common.push(
@@ -952,7 +960,7 @@ function instructionsFor(
     }
     if (responsiblePhase.id === "browser-acceptance-tests") {
       common.push(
-        "For Stage 14D acceptance findings, use the exact workflowJourneyTitle, workflowStepTitle, workflowSaveTitle, and workflowHandoffTitle ids from the supplied acceptance plan and perform the associated visible UI action inside each trace step.",
+        "For Stage 14H acceptance findings, never edit the protected compiled manifest or Playwright spec. Repair the named application workflow, or implement the exact required key in e2e/generated/voiceforge-acceptance-adapters.ts when the manifest classifies the interaction as app-specific.",
         "Do not remove or skip a required journey, bypass its UI with direct API/localStorage setup, or replace save/reload/handoff assertions with generic page-render checks.",
       );
     }

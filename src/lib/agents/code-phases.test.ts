@@ -53,24 +53,19 @@ describe("code generation specialist phases", () => {
     expect(reproductionTests?.objective).toContain("MIME-keyed DataTransfer");
   });
 
-  it("requires browser tests for every synthesized workflow journey", () => {
+  it("limits AI work to explicit Stage 14H acceptance adapters", () => {
     const browserTests = CODE_GENERATION_PHASES.find(
       (phase) => phase.id === "browser-acceptance-tests",
     );
 
-    expect(browserTests?.objective).toContain("every synthesized user-action journey");
-    expect(browserTests?.objective).toContain("page.reload()");
-    expect(browserTests?.objective).toContain("downstream handoffs");
-    expect(browserTests?.objective).toContain("voiceforge-acceptance.ts");
-    expect(browserTests?.objective).toContain("test.describe.serial");
-    expect(browserTests?.objective).toContain("fresh browser context");
+    expect(browserTests?.objective).toContain("Do not write Playwright spec files");
+    expect(browserTests?.objective).toContain("compile routes, fixtures, steps");
+    expect(browserTests?.objective).toContain("saves, reloads, handoffs");
     expect(browserTests?.objective).toContain(
-      "recreate localStorage/sessionStorage prerequisites",
+      "voiceforge-acceptance-adapters.ts",
     );
-    expect(browserTests?.objective).toContain(
-      "Capture selected result identity before completion/delete/status actions",
-    );
-    expect(browserTests?.objective).toContain("stable visible link");
+    expect(browserTests?.objective).toContain("exact quoted adapter id");
+    expect(browserTests?.objective).toContain("dragAcceptanceControl");
   });
 
   it("keeps change mode diagnostic, implementation, test, and final review phases separate", () => {

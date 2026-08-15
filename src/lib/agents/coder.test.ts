@@ -109,34 +109,23 @@ describe("coder shared rules", () => {
     expect(source).toContain("exportPlatformRecordsCsv");
   });
 
-  it("requires traceable Stage 14D browser journeys", () => {
+  it("requires deterministic Stage 14H acceptance compilation", () => {
     const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
 
-    expect(source).toContain("STAGE 14D BROWSER ACCEPTANCE CONTRACT");
-    expect(source).toContain("workflowJourneyTitle");
-    expect(source).toContain("workflowStepTitle");
-    expect(source).toContain("workflowSaveTitle");
-    expect(source).toContain("workflowHandoffTitle");
-    expect(source).toContain("Every navigate trace block must itself");
-    expect(source).toContain("nest the workflowStepTitle block");
-    expect(source).toContain("every supplied saveId still needs its own reload");
-    expect(source).toContain("expectPersistedAfterReload");
-    expect(source).toContain("test.describe.serial");
-    expect(source).toContain("dependsOnJourneyIds");
-    expect(source).toContain("fresh browser context");
-    expect(source).toContain("replay the necessary prerequisite workflows");
-    expect(source).toContain("Before a state-clearing action");
-    expect(source).toContain("stable visible navigation link");
-    expect(source).toContain("acceptanceRunSuffix");
+    expect(source).toContain("STAGE 14H DETERMINISTIC ACCEPTANCE CONTRACT");
+    expect(source).toContain("VoiceForge compiles the acceptance-test manifest");
+    expect(source).toContain("voiceforge-acceptance-manifest.ts");
+    expect(source).toContain("voiceforge-compiled.spec.ts");
+    expect(source).toContain("voiceforge-acceptance-adapters.ts");
+    expect(source).toContain("Every required adapter key must be quoted exactly");
+    expect(source).toContain("Do not write a Playwright spec");
+    expect(source).toContain("manifest.adapters");
     expect(source).toContain("substring-based by default");
     expect(source).toContain("strict-mode locator failure");
     expect(source).toContain("exact: true");
     expect(source).toContain("scope the locator to the named form or dialog");
     expect(source).toContain("audit the rest of that journey");
-    expect(source).toContain("Native select option elements are hidden");
-    expect(source).toContain("toHaveCount(1), never toBeVisible()");
-    expect(source).toContain("never click a Next.js link and immediately reload");
-    expect(source).toContain("Do not use test.skip");
+    expect(source).toContain("a failing standard compiled primitive");
   });
 
   it("requires stable Stage 14G contract controls and record scoping", () => {

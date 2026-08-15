@@ -2,7 +2,13 @@
  * LOCKED PLATFORM FILE - managed by VoiceForge.
  * Stable helpers for generated contract-driven Playwright journeys.
  */
-import { expect, type Download, type Locator, type Page } from "@playwright/test";
+import {
+  expect,
+  type BrowserContext,
+  type Download,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 
 type ContractLocatorScope = Page | Locator;
 
@@ -11,6 +17,41 @@ export type VoiceForgeAcceptanceRole =
   | "editor"
   | "viewer"
   | "public";
+
+export type VoiceForgeAcceptanceManifest = {
+  version: number;
+  compilerVersion: number;
+  sourcePlanVersion: number;
+  locatorMode: "contract" | "accessible_name_fallback";
+  journeys: readonly unknown[];
+  adapters: readonly unknown[];
+  summary: Record<string, number>;
+};
+
+export type VoiceForgeAcceptanceAdapterContext = {
+  page: Page;
+  context: BrowserContext;
+  control: Locator | null;
+  fixtures: Record<string, unknown>;
+  step: {
+    journeyId: string;
+    workflowId: string;
+    contractStepId: string;
+    description: string;
+  };
+};
+
+export type VoiceForgeAcceptanceAdapters = Record<
+  string,
+  (context: VoiceForgeAcceptanceAdapterContext) => Promise<void>
+>;
+
+export type VoiceForgeAcceptanceFormFixture = {
+  id: string;
+  label: string;
+  type: string;
+  value: unknown;
+};
 
 const ACCEPTANCE_RUN_SUFFIX = `${process.pid}-${Date.now().toString(36)}`;
 
@@ -75,6 +116,20 @@ export function vfRecordControl(
   return vfControl(record, workflowId, controlId);
 }
 
+export function resolveAcceptanceControl(
+  scope: ContractLocatorScope,
+  workflowId: string,
+  controlId: string,
+  accessibleName: string,
+): Locator {
+  const stable = vfControl(scope, workflowId, controlId);
+  return stable.or(
+    scope.getByRole("button", { name: accessibleName, exact: true }),
+  ).or(scope.getByRole("link", { name: accessibleName, exact: true })).or(
+    scope.getByLabel(accessibleName, { exact: true }),
+  );
+}
+
 export async function expectContractControl(
   control: Locator,
   accessibleName?: string | RegExp,
@@ -106,6 +161,121 @@ export async function expectDownloadedFile(
   expect(await download.failure()).toBeNull();
 }
 
+export async function selectAcceptanceOption(
+  control: Locator,
+  requestedValue: unknown,
+): Promise<void> {
+  const tagName = await control.evaluate((element) => element.tagName.toLowerCase());
+  if (tagName === "select") {
+    const requested = String(requestedValue ?? "");
+    if (requested) {
+      const matching = control.locator("option").filter({ hasText: requested });
+      if ((await matching.count()) > 0) {
+        await control.selectOption({ label: await matching.first().innerText() });
+        return;
+      }
+      const values = await control.locator("option").evaluateAll((options) =>
+        options.map((option) => (option as HTMLOptionElement).value),
+      );
+      if (values.includes(requested)) {
+        await control.selectOption(requested);
+        return;
+      }
+    }
+    const fallbackValue = await firstUsableOptionValue(control);
+    await control.selectOption(fallbackValue);
+    return;
+  }
+
+  await control.click();
+  const requested = String(requestedValue ?? "");
+  const page = control.page();
+  const requestedOption = requested
+    ? page.getByRole("option", { name: requested, exact: true })
+    : null;
+  if (requestedOption && (await requestedOption.count()) > 0) {
+    await requestedOption.first().click();
+    return;
+  }
+  const firstOption = page.getByRole("option").filter({ visible: true }).first();
+  await expect(firstOption).toBeVisible();
+  await firstOption.click();
+}
+
+export async function completeAcceptanceForm(
+  page: Page,
+  formOrControl: Locator,
+  fixtures: readonly VoiceForgeAcceptanceFormFixture[],
+): Promise<void> {
+  const scope =
+    (await formOrControl.evaluate((element) => element.tagName.toLowerCase())) ===
+    "form"
+      ? formOrControl
+      : page.locator("form").filter({ has: formOrControl }).first();
+  const target = (await scope.count()) > 0 ? scope : page.locator("body");
+  for (const fixture of fixtures) {
+    const field = target.getByLabel(fixture.label, { exact: true });
+    if ((await field.count()) === 0) continue;
+    const candidate = field.first();
+    const inputType = (await candidate.getAttribute("type"))?.toLowerCase() ?? "";
+    const tagName = await candidate.evaluate((element) =>
+      element.tagName.toLowerCase(),
+    );
+    if (inputType === "hidden" || inputType === "submit" || inputType === "button") {
+      continue;
+    }
+    if (inputType === "checkbox" || inputType === "radio") {
+      await candidate.check();
+    } else if (inputType === "file") {
+      await candidate.setInputFiles(tinyPngUpload(String(fixture.value)));
+    } else if (tagName === "select") {
+      await selectAcceptanceOption(candidate, fixture.value);
+    } else {
+      await candidate.fill(formFixtureText(fixture));
+    }
+  }
+}
+
+export async function runAcceptanceAdapter(
+  adapters: VoiceForgeAcceptanceAdapters,
+  adapterId: string | null,
+  context: VoiceForgeAcceptanceAdapterContext,
+): Promise<void> {
+  if (!adapterId) {
+    throw new Error(
+      `VoiceForge acceptance compiler did not declare an adapter for ${context.step.workflowId}/${context.step.contractStepId}.`,
+    );
+  }
+  const adapter = adapters[adapterId];
+  if (!adapter) {
+    throw new Error(
+      `VoiceForge acceptance adapter ${adapterId} is unresolved for ${context.step.workflowId}/${context.step.contractStepId}.`,
+    );
+  }
+  await adapter(context);
+}
+
+export async function dragAcceptanceControl(
+  source: Locator,
+  target: Locator,
+  payload: Record<string, string> = {},
+): Promise<void> {
+  const dataTransfer = await source.page().evaluateHandle(
+    (entries) => {
+      const transfer = new DataTransfer();
+      for (const [mimeType, value] of entries) transfer.setData(mimeType, value);
+      return transfer;
+    },
+    Object.entries(payload),
+  );
+  await source.dispatchEvent("dragstart", { dataTransfer });
+  await target.dispatchEvent("dragenter", { dataTransfer });
+  await target.dispatchEvent("dragover", { dataTransfer });
+  await target.dispatchEvent("drop", { dataTransfer });
+  await source.dispatchEvent("dragend", { dataTransfer });
+  await dataTransfer.dispose();
+}
+
 export function tinyPngUpload(fileName = "voiceforge-stage-14d.png") {
   return {
     name: fileName,
@@ -125,4 +295,24 @@ function cssAttributeValue(value: string): string {
     return `\\${character}`;
   });
   return `"${escaped}"`;
+}
+
+async function firstUsableOptionValue(control: Locator): Promise<string> {
+  const values = await control.locator("option").evaluateAll((options) =>
+    options.map((option) => ({
+      value: (option as HTMLOptionElement).value,
+      disabled: (option as HTMLOptionElement).disabled,
+    })),
+  );
+  const option = values.find((candidate) => candidate.value && !candidate.disabled);
+  if (!option) throw new Error("Acceptance combobox has no selectable option.");
+  return option.value;
+}
+
+function formFixtureText(fixture: VoiceForgeAcceptanceFormFixture): string {
+  if (typeof fixture.value === "string") return fixture.value;
+  if (typeof fixture.value === "number") return String(fixture.value);
+  if (Array.isArray(fixture.value)) return fixture.value.join(", ");
+  if (typeof fixture.value === "boolean") return fixture.value ? "true" : "false";
+  return JSON.stringify(fixture.value);
 }

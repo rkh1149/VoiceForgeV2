@@ -5,6 +5,9 @@ import {
   normalizeAppSpec,
   type AppSpec,
 } from "../spec";
+import { applyDeterministicAcceptanceCompiler } from "../build/acceptance-compiler";
+import { runPostGenerationReviews } from "../build/post-generation-reviews";
+import { loadTemplate } from "../build/template";
 import {
   canUsePlatformDataStarter,
   generatePlatformDataStarterApp,
@@ -53,9 +56,75 @@ const richActivityPlannerInput = {
   deploymentNotes: "",
 };
 
+function simpleAddItemSpec(needsLogin: boolean): AppSpec {
+  const spec = normalizeAppSpec({
+    ...sharedGroceryInput,
+    needsLogin,
+    features: ["Add an item"],
+    testPlan: ["Add an item and see it after refresh"],
+  });
+  spec.workflows = [
+    {
+      name: "Add an item",
+      actor: "Editor",
+      trigger: "The editor opens the list.",
+      steps: ["Enter item name", "Save item"],
+      successOutcome: "The saved item appears in the list.",
+      failureStates: ["Item name is missing"],
+    },
+  ];
+  spec.acceptanceCriteria = [];
+  spec.testScenarios = [];
+  return spec;
+}
+
+function sharedQuickNoteSpec(): AppSpec {
+  const base = normalizeAppSpec({
+    ...sharedGroceryInput,
+    appName: "Shared Quick Notes",
+    purpose: "Let family members save and revisit a shared quick note.",
+    features: ["Add a note"],
+    dataToStore: ["Notes with text"],
+    screens: [{ name: "Notes", description: "Add and review notes." }],
+    testPlan: ["Add a note and see it after refresh"],
+  });
+  return {
+    ...base,
+    dataEntities: [
+      {
+        name: "Note",
+        description: "A shared note.",
+        ownership: "shared",
+        fields: [
+          {
+            name: "text",
+            label: "Note text",
+            type: "text",
+            required: true,
+            validation: "Required",
+          },
+        ],
+        relationships: [],
+      },
+    ],
+    workflows: [
+      {
+        name: "Add a note",
+        actor: "Editor",
+        trigger: "The editor opens Notes.",
+        steps: ["Enter note text", "Save note"],
+        successOutcome: "The saved note appears in the list.",
+        failureStates: ["Note text is missing"],
+      },
+    ],
+    acceptanceCriteria: [],
+    testScenarios: [],
+  };
+}
+
 describe("platform data starter generator", () => {
   it("generates a locked-platform-data CRUD starter for no-login shared apps", () => {
-    const spec = normalizeAppSpec(sharedGroceryInput);
+    const spec = simpleAddItemSpec(false);
     const architecture = createFallbackArchitecturePlan(
       spec,
       computeSpecComplexity(spec),
@@ -86,10 +155,7 @@ describe("platform data starter generator", () => {
   });
 
   it("generates role-aware session UI for signed-in shared apps", () => {
-    const spec = normalizeAppSpec({
-      ...sharedGroceryInput,
-      needsLogin: true,
-    });
+    const spec = simpleAddItemSpec(true);
     const architecture = createFallbackArchitecturePlan(
       spec,
       computeSpecComplexity(spec),
@@ -116,6 +182,76 @@ describe("platform data starter generator", () => {
     expect(result.files["src/components/PlatformDataApp.tsx"]).toContain(
       "accessModeLabel",
     );
+    expect(result.files["src/components/PlatformDataApp.tsx"]).toContain(
+      'data-vf-entity="grocery_items_with"',
+    );
+  });
+
+  it("binds a simple workflow contract to fields and the save command", () => {
+    const spec = sharedQuickNoteSpec();
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+
+    expect(canUsePlatformDataStarter({ spec, architecture })).toBe(true);
+    const result = generatePlatformDataStarterApp({ spec, architecture });
+    const config = result.files["src/lib/platform-app-config.ts"];
+    const component = result.files["src/components/PlatformDataApp.tsx"];
+
+    expect(config).toContain('controlId: string');
+    expect(config).toContain('"accessibleName": "Enter note text"');
+    expect(config).toContain('"accessibleName": "Save note"');
+    expect(config).toContain("The saved note appears in the list.");
+    expect(component).toContain(
+      'data-vf-workflow={field.key === "text" ? "add-a-note-1" : undefined}',
+    );
+    expect(component).toContain(
+      'data-vf-control={"add-a-note-1-control-2"}',
+    );
+    expect(component).toContain("{session?.canWrite && (");
+    expect(component).toContain("data-vf-record={record.id}");
+  });
+
+  it("passes every static workflow gate with deterministic acceptance output", async () => {
+    const spec = sharedQuickNoteSpec();
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const template = await loadTemplate({
+      slug: "shared-quick-notes",
+      name: spec.appName,
+      purpose: spec.purpose,
+    });
+    const generated = generatePlatformDataStarterApp({ spec, architecture });
+    const files = { ...template, ...generated.files };
+    const compilation = applyDeterministicAcceptanceCompiler({
+      spec,
+      architecture,
+      files,
+      generated,
+    });
+    const reviews = runPostGenerationReviews({
+      spec,
+      architecture,
+      allFiles: files,
+      changedFiles: generated.files,
+      changedFilePaths: generated.filesWritten,
+      deletedFilePaths: generated.deletedFiles,
+      changeMode: false,
+    });
+
+    expect(compilation.blockingIssues).toEqual([]);
+    expect(compilation.manifest.summary).toMatchObject({
+      journeys: 1,
+      steps: 2,
+      saves: 1,
+      adapterRequirements: 0,
+    });
+    expect(
+      reviews.flatMap((review) => review.blockingIssues),
+    ).toEqual([]);
   });
 
   it("does not use the simple starter for Stage 10 rich shared apps", () => {

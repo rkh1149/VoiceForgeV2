@@ -486,6 +486,7 @@ test("loads", async ({ page }) => { await page.goto("/"); await expect(page.getB
       "code_reviewer",
       "ui_affordance_reviewer",
       "persistence_handoff_reviewer",
+      "acceptance_compiler",
       "acceptance_test_reviewer",
       "test_reviewer",
       "security_reviewer",
@@ -495,6 +496,7 @@ test("loads", async ({ page }) => { await page.goto("/"); await expect(page.getB
       reviews.every((item) =>
         item.agentKey === "ui_affordance_reviewer" ||
         item.agentKey === "persistence_handoff_reviewer" ||
+        item.agentKey === "acceptance_compiler" ||
         item.agentKey === "acceptance_test_reviewer"
           ? item.status === "skipped"
           : item.status === "passed",

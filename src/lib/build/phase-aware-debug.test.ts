@@ -287,10 +287,15 @@ describe("phase-aware debug", () => {
     expect(plan.responsiblePhase.agentKey).toBe("frontend_builder");
   });
 
-  it("routes Stage 14D acceptance findings to generated browser tests", () => {
+  it("routes acceptance findings to the Stage 14H adapter surface", () => {
     const filesWithBrowserTest = {
       ...files,
-      "e2e/generated/tasks.spec.ts": "test('tasks', async () => {});",
+      "e2e/generated/voiceforge-acceptance-manifest.ts":
+        "export const voiceForgeAcceptanceManifest = {};",
+      "e2e/generated/voiceforge-compiled.spec.ts":
+        "test('compiled tasks', async () => {});",
+      "e2e/generated/voiceforge-acceptance-adapters.ts":
+        "export const acceptanceAdapters = {};",
       "e2e/voiceforge-acceptance.ts": "export function workflowStepTitle() {}",
     };
     const plan = createPhaseAwareDebugPlan({
@@ -305,7 +310,10 @@ describe("phase-aware debug", () => {
     expect(plan.responsiblePhase.id).toBe("browser-acceptance-tests");
     expect(plan.responsiblePhase.agentKey).toBe("test_agent");
     expect(plan.scope.visibleFilePaths).toContain(
-      "e2e/generated/tasks.spec.ts",
+      "e2e/generated/voiceforge-compiled.spec.ts",
+    );
+    expect(plan.scope.preferredInspectionPaths).toContain(
+      "e2e/generated/voiceforge-acceptance-adapters.ts",
     );
     expect(plan.scope.visibleFilePaths).toContain(
       "e2e/voiceforge-acceptance.ts",
@@ -313,7 +321,10 @@ describe("phase-aware debug", () => {
     expect(plan.scope.visibleFilePaths).not.toContain("src/app/tasks/page.tsx");
     expect(plan.scope.visibleFilePaths).not.toContain("src/lib/tasks.ts");
     expect(plan.context.instructions.join(" ")).toContain(
-      "workflowJourneyTitle",
+      "voiceforge-acceptance-adapters.ts",
+    );
+    expect(plan.context.instructions.join(" ")).toContain(
+      "never edit the protected compiled manifest",
     );
   });
 
@@ -335,11 +346,15 @@ describe("phase-aware debug", () => {
     );
   });
 
-  it("keeps repeated Stage 14D static repairs inside acceptance tests", () => {
+  it("keeps repeated Stage 14H static repairs inside acceptance evidence", () => {
     const filesWithBrowserTest = {
       ...files,
-      "e2e/generated/tasks.spec.ts": "test('tasks', async () => {});",
-      "e2e/generated/results.spec.ts": "test('results', async () => {});",
+      "e2e/generated/voiceforge-acceptance-manifest.ts":
+        "export const voiceForgeAcceptanceManifest = {};",
+      "e2e/generated/voiceforge-compiled.spec.ts":
+        "test('compiled tasks', async () => {});",
+      "e2e/generated/voiceforge-acceptance-adapters.ts":
+        "export const acceptanceAdapters = {};",
       "e2e/voiceforge-acceptance.ts":
         "export function workflowStepTitle() {}",
     };
@@ -356,17 +371,17 @@ describe("phase-aware debug", () => {
 
     expect(plan.scope.label).toBe("escalated acceptance-test scope");
     expect(plan.scope.visibleFilePaths).toContain(
-      "e2e/generated/tasks.spec.ts",
+      "e2e/generated/voiceforge-compiled.spec.ts",
     );
     expect(plan.scope.visibleFilePaths).toContain(
-      "e2e/generated/results.spec.ts",
+      "e2e/generated/voiceforge-acceptance-adapters.ts",
     );
     expect(plan.scope.visibleFilePaths).not.toContain("src/app/tasks/page.tsx");
     expect(plan.scope.visibleFilePaths).not.toContain(
       "src/components/TaskForm.tsx",
     );
     expect(plan.context.instructions.join(" ")).toContain(
-      "do not rewrite application pages or components",
+      "compiler-owned files must remain unchanged",
     );
   });
 

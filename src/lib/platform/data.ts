@@ -875,7 +875,10 @@ export async function updateRecord(
   }
   await assertCanWriteAppData(db, record.appId, input.user);
   const entity = await getEntityDefinition(db, record.appId, record.entityKey);
-  const validation = validateRecordData(entity, input.data);
+  const validation = validateRecordData(
+    entity,
+    mergePlatformRecordUpdate(record.data, input.data),
+  );
   if (!validation.ok) {
     throw new PlatformDataError(
       400,
@@ -912,6 +915,16 @@ export async function updateRecord(
   });
 
   return updated;
+}
+
+export function mergePlatformRecordUpdate(
+  currentData: unknown,
+  updateData: unknown,
+): unknown {
+  if (!isPlainObject(currentData) || !isPlainObject(updateData)) {
+    return updateData;
+  }
+  return { ...currentData, ...updateData };
 }
 
 export async function deleteRecord(

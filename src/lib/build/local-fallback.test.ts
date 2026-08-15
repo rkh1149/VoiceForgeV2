@@ -120,6 +120,51 @@ describe("generated app local platform fallback", () => {
     expect(valid.status).toBe(201);
   });
 
+  it("preserves required record fields when applying a partial local update", async () => {
+    process.env.VOICEFORGE_DATA_LOCAL_FALLBACK = "1";
+    process.env.VOICEFORGE_PLATFORM_SCHEMA_JSON = JSON.stringify(schema);
+
+    const created = await dataPOST(
+      new Request("http://local.test/api/data", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "createRecord",
+          entityKey: "activity",
+          data: {
+            name: "Family picnic",
+            planned_date: "2026-07-18",
+            estimated_cost: 12,
+          },
+        }),
+      }),
+    );
+    const createdPayload = (await created.json()) as {
+      record: { id: string };
+    };
+
+    const updated = await dataPOST(
+      new Request("http://local.test/api/data", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "updateRecord",
+          recordId: createdPayload.record.id,
+          data: { estimated_cost: 20 },
+        }),
+      }),
+    );
+
+    expect(updated.status).toBe(200);
+    await expect(updated.json()).resolves.toMatchObject({
+      record: {
+        data: {
+          name: "Family picnic",
+          planned_date: "2026-07-18",
+          estimated_cost: 20,
+        },
+      },
+    });
+  });
+
   it("supports local file upload, download, and archive for browser tests", async () => {
     process.env.VOICEFORGE_DATA_LOCAL_FALLBACK = "1";
 

@@ -285,6 +285,15 @@ const files: FileMap = {
   "e2e/smoke.spec.ts": "test('smoke', async () => {});",
 };
 
+const deterministicAcceptanceFiles: FileMap = {
+  ...files,
+  "e2e/generated/voiceforge-acceptance-manifest.ts":
+    "export const voiceForgeAcceptanceManifest = {};",
+  "e2e/generated/voiceforge-compiled.spec.ts": files["e2e/generated/bike.spec.ts"],
+  "e2e/generated/voiceforge-acceptance-adapters.ts":
+    "export const acceptanceAdapters = {};",
+};
+
 describe("workflow-aware repairs", () => {
   it("builds a producer-consumer package for a broken GPS handoff", () => {
     const repair = createWorkflowRepairPackage({
@@ -311,8 +320,13 @@ describe("workflow-aware repairs", () => {
         "src/app/explore/page.tsx",
         "src/app/gps/page.tsx",
         "src/lib/routes.ts",
-        "e2e/generated/bike.spec.ts",
       ]),
+    );
+    expect(repair.scope.inspectionPaths).toContain(
+      "e2e/generated/bike.spec.ts",
+    );
+    expect(repair.scope.mutationPaths).not.toContain(
+      "e2e/generated/bike.spec.ts",
     );
     expect(repair.scope.mutationPaths).not.toContain(
       "src/app/journal/page.tsx",
@@ -334,7 +348,7 @@ describe("workflow-aware repairs", () => {
     const repair = createWorkflowRepairPackage({
       spec,
       architecture,
-      files,
+      files: deterministicAcceptanceFiles,
       failedStep: "e2e",
       errorOutput: [
         "e2e/generated/bike.spec.ts > [voiceforge-journey:journey-save-calculated-route-to-track-saved-route] Save calculated route -> Track saved route",
@@ -355,9 +369,52 @@ describe("workflow-aware repairs", () => {
       confidence: "high",
     });
     expect(repair.scope.mutationPaths).toEqual([
-      "e2e/generated/bike.spec.ts",
+      "e2e/generated/voiceforge-acceptance-adapters.ts",
     ]);
+    expect(repair.scope.inspectionPaths).toEqual(
+      expect.arrayContaining([
+        "e2e/generated/voiceforge-acceptance-manifest.ts",
+        "e2e/generated/voiceforge-compiled.spec.ts",
+      ]),
+    );
+    expect(repair.scope.protectedPaths).toEqual(
+      expect.arrayContaining([
+        "e2e/generated/voiceforge-acceptance-manifest.ts",
+        "e2e/generated/voiceforge-compiled.spec.ts",
+      ]),
+    );
     expect(repair.scope.protectedPaths).toContain("src/app/gps/page.tsx");
+  });
+
+  it("never lets an application repair rewrite deterministic acceptance output", () => {
+    const repair = createWorkflowRepairPackage({
+      spec,
+      architecture,
+      files: deterministicAcceptanceFiles,
+      failedStep: "review_gate",
+      errorOutput:
+        'persistence_handoff:handoff Workflow "Track saved route" does not load saved route_option records on /gps.',
+      blockingIssues: [
+        'persistence_handoff:handoff Workflow "Track saved route" does not load saved route_option records on /gps.',
+      ],
+    });
+
+    expect(repair.scope.mutationPaths).toContain("src/app/gps/page.tsx");
+    expect(repair.scope.mutationPaths).not.toContain(
+      "e2e/generated/voiceforge-compiled.spec.ts",
+    );
+    expect(repair.scope.mutationPaths).not.toContain(
+      "e2e/generated/voiceforge-acceptance-manifest.ts",
+    );
+    expect(
+      validateWorkflowRepairMutationScope({
+        repair,
+        filesWritten: ["e2e/generated/voiceforge-compiled.spec.ts"],
+      }),
+    ).toMatchObject({
+      ok: false,
+      outOfScopePaths: ["e2e/generated/voiceforge-compiled.spec.ts"],
+    });
   });
 
   it("does not mistake unrelated viewer test output for a permission defect", () => {

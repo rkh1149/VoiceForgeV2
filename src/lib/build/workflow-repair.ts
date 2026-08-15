@@ -5,6 +5,11 @@ import type { FailureFingerprint } from "./debug-progress";
 import type { HumanCompletenessSourceContext } from "./human-completeness-review";
 import type { FileMap } from "./template";
 import {
+  ACCEPTANCE_ADAPTERS_PATH,
+  ACCEPTANCE_COMPILED_SPEC_PATH,
+  ACCEPTANCE_MANIFEST_SOURCE_PATH,
+} from "./acceptance-compiler";
+import {
   synthesizeWorkflowAcceptancePlan,
   type WorkflowAcceptanceJourney,
 } from "./workflow-acceptance-plan";
@@ -175,6 +180,8 @@ const LOCKED_REPAIR_PATHS = new Set([
   "e2e/smoke.spec.ts",
   "e2e/voiceforge-acceptance.ts",
   "e2e/voiceforge-progress-reporter.ts",
+  ACCEPTANCE_MANIFEST_SOURCE_PATH,
+  ACCEPTANCE_COMPILED_SPEC_PATH,
 ]);
 
 const WORKFLOW_MARKER = /\[voiceforge-workflow:([^\]]+)\]/i;
@@ -753,6 +760,16 @@ function deriveWorkflowRepairScope(input: {
   );
   const e2ePaths =
     matchedE2ePaths.length > 0 ? matchedE2ePaths : allGeneratedE2ePaths;
+  const usesDeterministicCompiler =
+    ACCEPTANCE_COMPILED_SPEC_PATH in input.files ||
+    ACCEPTANCE_MANIFEST_SOURCE_PATH in input.files;
+  const acceptanceAdapterPaths =
+    ACCEPTANCE_ADAPTERS_PATH in input.files ? [ACCEPTANCE_ADAPTERS_PATH] : [];
+  const acceptanceEvidencePaths = allPaths.filter(
+    (path) =>
+      path === ACCEPTANCE_MANIFEST_SOURCE_PATH ||
+      path === ACCEPTANCE_COMPILED_SPEC_PATH,
+  );
   const routePaths = uniqueStrings(
     input.contracts.flatMap((contract) =>
       uniqueStrings([
@@ -837,7 +854,6 @@ function deriveWorkflowRepairScope(input: {
     ...navigationMatches,
     ...permissionMatches,
     ...unitTests,
-    ...e2ePaths,
     ...(input.classification === "missing_route_or_navigation"
       ? missingRoutePaths
       : []),
@@ -846,7 +862,9 @@ function deriveWorkflowRepairScope(input: {
     input.targetSurface === "external_environment"
       ? []
       : input.targetSurface === "generated_test"
-        ? e2ePaths
+        ? usesDeterministicCompiler
+          ? acceptanceAdapterPaths
+          : e2ePaths
         : appMutationPaths.slice(0, 24);
   const inspectionPaths = uniqueStrings([
     ...mutationPaths,
@@ -854,6 +872,8 @@ function deriveWorkflowRepairScope(input: {
     ...sourceMatches,
     ...unitTests,
     ...e2ePaths,
+    ...acceptanceEvidencePaths,
+    ...acceptanceAdapterPaths,
     ...allPaths.filter((path) =>
       LOCKED_REPAIR_PATHS.has(path) &&
       input.contracts.some((contract) =>
@@ -871,7 +891,9 @@ function deriveWorkflowRepairScope(input: {
     protectedPaths,
     reason:
       input.targetSurface === "generated_test"
-        ? "Deterministic workflow reviews passed, so only the generated journey that failed may change."
+        ? usesDeterministicCompiler
+          ? "The deterministic manifest and compiled Playwright source are protected evidence; only the explicit app-specific acceptance adapter may change."
+          : "Deterministic workflow reviews passed, so only the legacy generated journey that failed may change."
         : input.targetSurface === "external_environment"
           ? "External provider failures are retried and reported without editing generated source."
           : `Scope follows ${input.contracts.length} connected workflow contract(s), their routes, saved entities, consumer handoffs, and targeted tests.`,

@@ -386,7 +386,7 @@ export async function createPlatformRecord<TData extends object>(
 
 export async function updatePlatformRecord<TData extends object>(
   recordId: string,
-  data: TData,
+  data: Partial<TData>,
 ): Promise<PlatformRecord<TData>> {
   const result = await request<{ record: PlatformRecord<TData> }>({
     action: "updateRecord",

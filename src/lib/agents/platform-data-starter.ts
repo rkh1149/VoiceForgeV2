@@ -13,6 +13,19 @@ type StarterField = {
   options: string[];
 };
 
+type StarterControlBinding = {
+  workflowId: string;
+  controlId: string;
+  accessibleName: string;
+};
+
+type StarterWorkflowBindings = {
+  fieldControls: Record<string, StarterControlBinding>;
+  saveControl: StarterControlBinding | null;
+  successResult: string;
+  mappedControlIds: string[];
+};
+
 export function canUsePlatformDataStarter(input: {
   spec: AppSpec;
   architecture: ArchitecturePlan;
@@ -21,6 +34,29 @@ export function canUsePlatformDataStarter(input: {
     input.architecture.dependencyProfile.some((profile) =>
       ["advancedInterface", "fileExport"].includes(profile),
     ) || hasExplicitRichUiRequest(input.spec);
+  const entity = input.spec.dataEntities[0];
+  const platform = entity ? platformEntityFromSpec(entity, input.spec) : null;
+  const fields: StarterField[] =
+    platform?.fields.map((field) => ({
+      key: field.key,
+      label: field.label,
+      type: field.type,
+      required: field.required,
+      options: field.options,
+    })) ?? [];
+  const bindings = platform
+    ? starterWorkflowBindings(input.architecture, platform.key, fields)
+    : null;
+  const requiredControlIds = input.architecture.workflowContracts.flatMap(
+    (contract) => contract.controls.map((control) => control.id),
+  );
+  const allContractControlsMapped =
+    requiredControlIds.length > 0 &&
+    bindings !== null &&
+    bindings.saveControl !== null &&
+    requiredControlIds.every((controlId) =>
+      bindings.mappedControlIds.includes(controlId),
+    );
   return (
     !needsRichStage10Ui &&
     appHasPersistentData(input.spec) &&
@@ -28,7 +64,8 @@ export function canUsePlatformDataStarter(input: {
     input.spec.notifications.every((notification) => notification.channel === "none") &&
     input.spec.screens.length === 1 &&
     input.spec.dataEntities.length === 1 &&
-    input.architecture.dataModel.some((entity) => entity.storage === "platformData")
+    input.architecture.dataModel.some((entity) => entity.storage === "platformData") &&
+    allContractControlsMapped
   );
 }
 
@@ -87,10 +124,18 @@ export function generatePlatformDataStarterApp(input: {
           `${field.key} ${field.label}`,
         ),
     ) ?? fields.find((field) => field.type === "boolean");
+  const workflowBindings = starterWorkflowBindings(
+    input.architecture,
+    entity.key,
+    fields,
+  );
 
   const files: FileMap = {
     "src/app/page.tsx": pageFile(),
-    "src/components/PlatformDataApp.tsx": componentFile(),
+    "src/components/PlatformDataApp.tsx": componentFile({
+      entityKey: entity.key,
+      workflowBindings,
+    }),
     "src/lib/platform-app-config.ts": configFile({
       spec: input.spec,
       entityKey: entity.key,
@@ -98,6 +143,7 @@ export function generatePlatformDataStarterApp(input: {
       fields,
       primaryFieldKey: primaryField.key,
       toggleFieldKey: toggleField?.key ?? null,
+      workflowBindings,
     }),
     "src/lib/platform-app-config.test.ts": configTestFile(),
   };
@@ -146,6 +192,7 @@ function configFile(input: {
   fields: StarterField[];
   primaryFieldKey: string;
   toggleFieldKey: string | null;
+  workflowBindings: StarterWorkflowBindings;
 }): string {
   return `export type FieldConfig = {
   key: string;
@@ -170,6 +217,16 @@ export const VISIBLE_FIELDS = FIELDS.filter(
 
 export type DraftValue = string | number | boolean | string[] | null;
 export type DraftData = Record<string, DraftValue>;
+
+export type WorkflowControlConfig = {
+  workflowId: string;
+  controlId: string;
+  accessibleName: string;
+};
+
+export const FIELD_WORKFLOW_CONTROLS: Record<string, WorkflowControlConfig> = ${JSON.stringify(input.workflowBindings.fieldControls, null, 2)};
+export const SAVE_WORKFLOW_CONTROL: WorkflowControlConfig | null = ${JSON.stringify(input.workflowBindings.saveControl, null, 2)};
+export const WORKFLOW_SUCCESS_RESULT = ${JSON.stringify(input.workflowBindings.successResult)};
 
 export function defaultValueForField(field: FieldConfig): DraftValue {
   if (field.type === "boolean") return false;
@@ -226,7 +283,35 @@ export function prepareDataForSave(
 `;
 }
 
-function componentFile(): string {
+function componentFile(input: {
+  entityKey: string;
+  workflowBindings: StarterWorkflowBindings;
+}): string {
+  const fieldWorkflowExpression = fieldBindingExpression(
+    input.workflowBindings.fieldControls,
+    "workflowId",
+    "undefined",
+  );
+  const fieldControlExpression = fieldBindingExpression(
+    input.workflowBindings.fieldControls,
+    "controlId",
+    "undefined",
+  );
+  const fieldAccessibleNameExpression = fieldBindingExpression(
+    input.workflowBindings.fieldControls,
+    "accessibleName",
+    "field.label",
+  );
+  const saveWorkflowId = sourceLiteral(
+    input.workflowBindings.saveControl?.workflowId,
+  );
+  const saveControlId = sourceLiteral(
+    input.workflowBindings.saveControl?.controlId,
+  );
+  const saveAccessibleName = sourceLiteral(
+    input.workflowBindings.saveControl?.accessibleName,
+  );
+  const entityKey = JSON.stringify(input.entityKey);
   return `"use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -244,12 +329,12 @@ import {
 import {
   APP_NAME,
   APP_PURPOSE,
-  ENTITY_KEY,
   ENTITY_LABEL,
   REQUIRE_SIGN_IN,
   SHARING_MODEL,
   TOGGLE_FIELD_KEY,
   VISIBLE_FIELDS,
+  WORKFLOW_SUCCESS_RESULT,
   createEmptyDraft,
   isMissingRequiredValue,
   prepareDataForSave,
@@ -274,6 +359,7 @@ export default function PlatformDataApp() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [session, setSession] = useState<PlatformSession | null>(null);
 
   useEffect(() => {
@@ -293,7 +379,7 @@ export default function PlatformDataApp() {
           return;
         }
         const loaded = await listPlatformRecords<Record<string, unknown>>(
-          ENTITY_KEY,
+          ${entityKey},
         );
         if (active) setRecords(loaded);
       } catch (err) {
@@ -332,12 +418,14 @@ export default function PlatformDataApp() {
     try {
       setIsSaving(true);
       setError(null);
+      setSuccessMessage(null);
       const created = await createPlatformRecord<Record<string, unknown>>(
-        ENTITY_KEY,
+        ${entityKey},
         payload,
       );
       setRecords((current) => [created, ...current]);
       setDraft(createEmptyDraft());
+      setSuccessMessage(WORKFLOW_SUCCESS_RESULT || "The saved item is visible.");
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -461,13 +549,23 @@ export default function PlatformDataApp() {
                 {error}
               </p>
             )}
-            <button
-              type="submit"
-              disabled={isSaving || !session?.canWrite}
-              className="mt-5 w-full rounded-md bg-emerald-700 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-            >
-              {isSaving ? "Saving..." : "Save item"}
-            </button>
+            {successMessage && (
+              <p className="mt-4 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800" role="status">
+                {successMessage}
+              </p>
+            )}
+            {session?.canWrite && (
+              <button
+                type="submit"
+                aria-label={${saveAccessibleName}}
+                data-vf-workflow={${saveWorkflowId}}
+                data-vf-control={${saveControlId}}
+                disabled={isSaving}
+                className="mt-5 w-full rounded-md bg-emerald-700 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+              >
+                {isSaving ? "Saving..." : "Save item"}
+              </button>
+            )}
           </form>
 
           <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -491,6 +589,8 @@ export default function PlatformDataApp() {
                 {records.map((record) => (
                   <li
                     key={record.id}
+                    data-vf-entity=${entityKey}
+                    data-vf-record={record.id}
                     className="grid gap-3 py-4 sm:grid-cols-[1fr_auto]"
                   >
                     <div>
@@ -665,6 +765,9 @@ function FieldInput({
       {field.required && <span className="text-red-600"> *</span>}
       <input
         id={id}
+        aria-label={${fieldAccessibleNameExpression}}
+        data-vf-workflow={${fieldWorkflowExpression}}
+        data-vf-control={${fieldControlExpression}}
         type={inputType(field)}
         value={inputValue(value)}
         onChange={(event) => onChange(coerceValue(field, event.target.value))}
@@ -730,6 +833,130 @@ function errorMessage(err: unknown): string {
     : "The shared data could not be updated. Please try again.";
 }
 `;
+}
+
+function fieldBindingExpression(
+  bindings: Record<string, StarterControlBinding>,
+  property: keyof StarterControlBinding,
+  fallback: string,
+): string {
+  return Object.entries(bindings).reduceRight(
+    (expression, [fieldKey, binding]) =>
+      `field.key === ${JSON.stringify(fieldKey)} ? ${JSON.stringify(binding[property])} : ${expression}`,
+    fallback,
+  );
+}
+
+function sourceLiteral(value: string | undefined): string {
+  return value === undefined ? "undefined" : JSON.stringify(value);
+}
+
+function starterWorkflowBindings(
+  architecture: ArchitecturePlan,
+  entityKey: string,
+  fields: StarterField[],
+): StarterWorkflowBindings {
+  const contract = architecture.workflowContracts.find((candidate) =>
+    candidate.expectedSaves.some(
+      (save) => save.entityKey === entityKey && save.operation === "create",
+    ),
+  );
+  if (!contract) {
+    return {
+      fieldControls: {},
+      saveControl: null,
+      successResult: "The saved item is visible.",
+      mappedControlIds: [],
+    };
+  }
+  const saveStepIds = new Set(
+    contract.expectedSaves
+      .filter((save) => save.entityKey === entityKey && save.operation === "create")
+      .map((save) => save.stepId),
+  );
+  const saveStep = contract.steps.find((step) => saveStepIds.has(step.id));
+  const saveControl = contract.controls.find(
+    (control) => control.id === saveStep?.controlId && control.kind === "button",
+  );
+  const fieldControls: Record<string, StarterControlBinding> = {};
+  const usedFields = new Set<string>();
+  for (const step of contract.steps.filter(
+    (candidate) => candidate.kind === "input" && candidate.controlId,
+  )) {
+    const control = contract.controls.find(
+      (candidate) => candidate.id === step.controlId,
+    );
+    if (
+      !control ||
+      (control.kind !== "textbox" && control.kind !== "date")
+    ) {
+      continue;
+    }
+    const field = bestStarterField(
+      `${step.description} ${control.accessibleName} ${control.action}`,
+      fields.filter((candidate) => !usedFields.has(candidate.key)),
+      control.kind,
+    );
+    if (!field) continue;
+    usedFields.add(field.key);
+    fieldControls[field.key] = {
+      workflowId: contract.id,
+      controlId: control.id,
+      accessibleName: control.accessibleName,
+    };
+  }
+  const normalizedSaveControl = saveControl
+    ? {
+        workflowId: contract.id,
+        controlId: saveControl.id,
+        accessibleName: saveControl.accessibleName,
+      }
+    : null;
+  return {
+    fieldControls,
+    saveControl: normalizedSaveControl,
+    successResult: contract.success.visibleResult,
+    mappedControlIds: [
+      ...Object.values(fieldControls).map((control) => control.controlId),
+      ...(normalizedSaveControl ? [normalizedSaveControl.controlId] : []),
+    ],
+  };
+}
+
+function bestStarterField(
+  description: string,
+  fields: StarterField[],
+  controlKind: "textbox" | "date",
+): StarterField | null {
+  const descriptionWords = wordSet(description);
+  const compatibleFields = fields.filter((field) =>
+    controlKind === "date"
+      ? ["date", "datetime"].includes(field.type)
+      : !["boolean", "select", "multi_select", "image", "file", "relation", "json"].includes(
+          field.type,
+        ),
+  );
+  return (
+    compatibleFields
+      .map((field) => ({
+        field,
+        score: [...wordSet(`${field.key} ${field.label}`)].filter((word) =>
+          descriptionWords.has(word),
+        ).length,
+      }))
+      .sort((left, right) => right.score - left.score)[0]?.field ??
+    compatibleFields[0] ??
+    null
+  );
+}
+
+function wordSet(value: string): Set<string> {
+  return new Set(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((word) => word.length > 2),
+  );
 }
 
 function configTestFile(): string {

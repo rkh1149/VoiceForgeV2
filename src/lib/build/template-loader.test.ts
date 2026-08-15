@@ -37,6 +37,8 @@ describe("template loader", () => {
 
   it("refreshes the locked acceptance helper without replacing generated app source", async () => {
     const files = {
+      "src/lib/platform-data.ts": "old platform data client",
+      "src/app/api/data/route.ts": "old platform data route",
       "e2e/smoke.spec.ts": "old smoke test",
       "e2e/voiceforge-acceptance.ts": "old helper",
       "e2e/voiceforge-progress-reporter.ts": "old reporter",
@@ -51,11 +53,19 @@ describe("template loader", () => {
         purpose: "Track shared equipment",
       }),
     ).resolves.toEqual([
+      "src/lib/platform-data.ts",
+      "src/app/api/data/route.ts",
       "e2e/smoke.spec.ts",
       "e2e/voiceforge-acceptance.ts",
       "e2e/voiceforge-progress-reporter.ts",
       "playwright.config.ts",
     ]);
+    expect(files["src/lib/platform-data.ts"]).toContain(
+      "data: Partial<TData>",
+    );
+    expect(files["src/app/api/data/route.ts"]).toContain(
+      "mergeLocalRecordUpdate(record.data, body.data)",
+    );
     expect(files["e2e/voiceforge-acceptance.ts"]).toContain(
       "export function acceptanceRunSuffix",
     );

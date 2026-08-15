@@ -42,6 +42,7 @@ describe("build resume status filter", () => {
     expect(pipeline).toContain("runCheckpointReviewGate");
     expect(pipeline).toContain("best saved source checkpoint");
     expect(pipeline).toContain("refreshResumedTemplateFiles");
+    expect(pipeline).toContain("refreshDeterministicAcceptanceCompiler");
     expect(pipeline).toContain("options?.resetDebugBudget");
     expect(pipeline).toContain(
       "reviewProgress.unchangedRoundsByDomain = {};",

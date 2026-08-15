@@ -280,7 +280,13 @@ export function compileWorkflowContracts(
     const operations = inferOperations(workflow);
     const requiredData = inferRequiredData(spec, architecture, workflow, operations);
     const roles = inferRoles(spec, workflow.actor, operations);
-    const controls = inferControls(id, roles, workflow.steps, stepPages);
+    const controls = inferControls(
+      id,
+      roles,
+      workflow.steps,
+      stepPages,
+      route,
+    );
     const storageByEntity = new Map(
       architecture.dataModel.map((entity) => [
         normalizeEntityKey(entity.name),
@@ -1016,6 +1022,7 @@ function normalizeContractInteractionSemantics(
           ? step.controlId
           : bestControlForStep(step, controls)?.id ?? "",
   }));
+  controls = alignControlRoutesWithSteps(controls, steps, start.route);
 
   return {
     ...contract,
@@ -1087,6 +1094,34 @@ function isDirectUserGestureDescription(value: string): boolean {
   return /^\s*(?:the\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:may\s+)?(?:clicks?|taps?|presses?|enters?|types?|writes?|chooses?|selects?|picks?|uploads?|attaches?|checks?|unchecks?|toggles?|drags?|drops?|opens?|navigates?|visits?|adds?|creates?|edits?|updates?|deletes?|removes?|saves?|submits?|starts?|stops?|plays?|retries?|restarts?|finishes?|answers?|calculates?|exports?|downloads?|searches?|filters?|sorts?)\b/i.test(
     value,
   );
+}
+
+function isNavigationGestureDescription(value: string): boolean {
+  return /^\s*(?:the\s+)?(?:user|player|rider|member|owner|editor|child|parent|guest|visitor|customer|student|teacher|participant|person)?\s*(?:opens?|go(?:es)? to|navigates?|visits?)\b/i.test(
+    value,
+  );
+}
+
+function alignControlRoutesWithSteps(
+  controls: WorkflowContract["controls"],
+  steps: WorkflowContract["steps"],
+  startingRoute: string,
+): WorkflowContract["controls"] {
+  const routesByControl = new Map<string, string>();
+  let currentRoute = startingRoute;
+  for (const step of steps) {
+    if (step.controlId && !routesByControl.has(step.controlId)) {
+      routesByControl.set(
+        step.controlId,
+        step.kind === "navigate" ? currentRoute : step.route,
+      );
+    }
+    currentRoute = step.route;
+  }
+  return controls.map((control) => ({
+    ...control,
+    route: routesByControl.get(control.id) ?? control.route,
+  }));
 }
 
 function isUserGestureDescription(value: string): boolean {
@@ -1537,21 +1572,29 @@ function inferControls(
   roles: WorkflowContractRole[],
   steps: string[],
   stepPages: WorkflowContractArchitecture["pageMap"],
+  startingPage: WorkflowContractArchitecture["pageMap"][number],
 ): WorkflowContract["controls"] {
-  return steps.flatMap((step, index) =>
-    isUserGestureDescription(step)
+  let currentRoute = startingPage.route;
+  return steps.flatMap((step, index) => {
+    const stepRoute =
+      stepPages[index]?.route ?? stepPages[index - 1]?.route ?? currentRoute;
+    const controlRoute = isNavigationGestureDescription(step)
+      ? currentRoute
+      : stepRoute;
+    currentRoute = stepRoute;
+    return isUserGestureDescription(step)
       ? [
           {
             id: `${workflowId}-control-${index + 1}`,
             kind: inferControlKind(step),
             accessibleName: controlLabel(step),
-            route: stepPages[index]?.route ?? stepPages[0]?.route ?? "/",
+            route: controlRoute,
             roles,
             action: step,
           } satisfies WorkflowContract["controls"][number],
         ]
-      : [],
-  );
+      : [];
+  });
 }
 
 function inferControlKind(
@@ -1582,7 +1625,7 @@ function inferStepKind(
     if (isAutomaticEffectDescription(step)) return "automatic";
     if (isVisibleOutcomeDescription(step)) return "result";
   }
-  if (/^\s*(open|go to|navigate)/.test(lower)) return "navigate";
+  if (isNavigationGestureDescription(lower)) return "navigate";
   if (isFieldInputDescription(lower)) return "input";
   return "action";
 }
@@ -1654,7 +1697,16 @@ function selectWorkflowStepPages(
     );
     const bestScore = pageWorkflowScore(description, best);
     const currentScore = pageWorkflowScore(description, current);
-    if (best.route !== current.route && bestScore >= 2 && bestScore > currentScore) {
+    const mayChangeRoute =
+      isNavigationGestureDescription(description) ||
+      isVisibleOutcomeDescription(description) ||
+      isAutomaticEffectDescription(description);
+    if (
+      mayChangeRoute &&
+      best.route !== current.route &&
+      bestScore >= 2 &&
+      bestScore > currentScore
+    ) {
       current = best;
     }
     return current;
@@ -1706,7 +1758,13 @@ function inferPlatformServices(
   ) {
     requested.add("integrations");
   }
-  if (/\b(gps|location|track|tracking|gpx)\b/.test(text)) requested.add("device_location");
+  if (
+    /\b(?:gps|geolocation|gpx|latitude|longitude|current location|live location|location permission|device location|track(?:ing)? (?:a |the )?(?:ride|route|position|location))\b/.test(
+      text,
+    )
+  ) {
+    requested.add("device_location");
+  }
   if (
     spec.fileRequirements.length > 0 &&
     /\b(file|photo|image|attachment|upload|download)\b/.test(text)

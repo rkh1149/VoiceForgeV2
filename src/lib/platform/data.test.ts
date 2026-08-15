@@ -8,6 +8,7 @@ import {
   canReadAppData,
   canWriteAppData,
   consumePlatformDataRateLimit,
+  mergePlatformRecordUpdate,
   normalizeEntityDefinition,
   normalizeEntityKey,
   resetPlatformDataRateLimitsForTests,
@@ -88,6 +89,20 @@ describe("platform data validation", () => {
     if (!result.ok) {
       expect(result.issues.some((issue) => issue.includes("too large"))).toBe(true);
     }
+  });
+
+  it("merges partial updates with the current record before validation", () => {
+    const merged = mergePlatformRecordUpdate(
+      { title: "Empty dishwasher", done: false, status: "todo" },
+      { done: true },
+    );
+
+    expect(merged).toEqual({
+      title: "Empty dishwasher",
+      done: true,
+      status: "todo",
+    });
+    expect(validateRecordData(choreEntity, merged)).toMatchObject({ ok: true });
   });
 });
 

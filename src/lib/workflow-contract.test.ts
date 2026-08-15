@@ -11,6 +11,7 @@ import {
   workflowContractStats,
   type WorkflowContract,
 } from "./workflow-contract";
+import { GOLDEN_REGRESSION_SPECS } from "./build/golden-regression-specs";
 
 const personalInput = {
   appName: "Reading Timer",
@@ -212,6 +213,37 @@ function bikeSpec(): AppSpec {
 }
 
 describe("workflow contract layer", () => {
+  it("keeps navigation controls on their origin and later save controls on the form route", () => {
+    const golden = GOLDEN_REGRESSION_SPECS.find(
+      (candidate) => candidate.id === "shared-platform-data",
+    );
+    if (!golden) throw new Error("Missing shared platform-data golden spec");
+    const architecture = createFallbackArchitecturePlan(
+      golden.spec,
+      computeSpecComplexity(golden.spec),
+    );
+    const contract = architecture.workflowContracts.find(
+      (candidate) => candidate.name === "Save chore",
+    );
+    if (!contract) throw new Error("Missing Save chore workflow contract");
+
+    expect(contract.start.route).toBe("/");
+    expect(contract.steps.map((step) => step.route)).toEqual([
+      "/chores",
+      "/chores",
+      "/chores",
+    ]);
+    expect(contract.controls.map((control) => control.route)).toEqual([
+      "/",
+      "/chores",
+      "/chores",
+    ]);
+    expect(contract.success.route).toBe("/chores");
+    expect(contract.dependencies.platformServices).not.toContain(
+      "device_location",
+    );
+  });
+
   it("creates one strict contract for every promised personal workflow", () => {
     const spec = normalizeAppSpec(personalInput);
     const architecture = createFallbackArchitecturePlan(

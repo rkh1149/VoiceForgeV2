@@ -57,9 +57,13 @@ const PROTECTED_FILES = new Set([
   "e2e/smoke.spec.ts", // locked browser/accessibility smoke test
   "e2e/voiceforge-acceptance.ts", // locked contract-driven browser test helpers (Stage 14D)
   "e2e/voiceforge-progress-reporter.ts", // locked streamed browser progress reporter
+  "e2e/generated/voiceforge-acceptance-manifest.ts", // deterministic Stage 14H manifest
+  "e2e/generated/voiceforge-compiled.spec.ts", // deterministic Stage 14H Playwright output
 ]);
 
 const RESUME_REFRESHED_TEMPLATE_FILES = [
+  "src/lib/platform-data.ts",
+  "src/app/api/data/route.ts",
   "e2e/smoke.spec.ts",
   "e2e/voiceforge-acceptance.ts",
   "e2e/voiceforge-progress-reporter.ts",

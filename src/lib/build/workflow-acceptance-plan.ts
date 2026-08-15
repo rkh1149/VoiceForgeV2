@@ -526,6 +526,17 @@ function buildJourney(input: {
         contract.expectedSaves.length === 0 &&
         contract.actor.roles.every(
           (role) => role === "viewer" || role === "public",
+        ) &&
+        input.componentContracts.some(
+          (mutableContract) =>
+            mutableContract.expectedSaves.length > 0 &&
+            contract.actor.roles.some((role) =>
+              readOnlyContractCoversContract(
+                contract,
+                mutableContract,
+                role,
+              ),
+            ),
         )
           ? contract.actor.roles.filter(
               (role) => role === "viewer" || role === "public",

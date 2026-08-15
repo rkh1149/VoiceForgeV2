@@ -131,6 +131,10 @@ import {
   validateWorkflowRepairMutationScope,
   type WorkflowRepairPackage,
 } from "./workflow-repair";
+import {
+  applyDeterministicAcceptanceCompiler,
+  refreshDeterministicAcceptanceCompiler,
+} from "./acceptance-compiler";
 
 /**
  * Build pipeline (Stage 2): approved spec -> generated code -> local test
@@ -1150,6 +1154,13 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       }
     }
     applyCodegenResult(files, generated);
+    const acceptanceCompilation = applyDeterministicAcceptanceCompiler({
+      spec,
+      architecture: architectureForStorage,
+      files,
+      generated,
+      changeMode,
+    });
     recordGeneratedPhaseMetrics(metrics, generated.phases);
     for (const phase of generated.phases) {
       await log(
@@ -1179,6 +1190,51 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         },
       });
     }
+    await recordBuildAgentArtifact({
+      appId: app.id,
+      buildRunId,
+      agentKey: "acceptance_compiler",
+      phaseKey: "acceptance-manifest",
+      artifactType: "acceptance_test_manifest",
+      status: artifactStatusFromIssues({
+        failed: acceptanceCompilation.blockingIssues.length > 0,
+        warnings: acceptanceCompilation.warnings,
+      }),
+      summary: `Acceptance manifest v${acceptanceCompilation.manifest.version}: ${acceptanceCompilation.manifest.summary.journeys} journey(s), ${acceptanceCompilation.manifest.summary.steps} step(s), ${acceptanceCompilation.manifest.summary.saves} save check(s), and ${acceptanceCompilation.manifest.summary.handoffs} handoff check(s).`,
+      payload: {
+        manifest: acceptanceCompilation.manifest,
+        blockingIssues: acceptanceCompilation.blockingIssues,
+        warnings: acceptanceCompilation.warnings,
+      },
+    });
+    await recordBuildAgentArtifact({
+      appId: app.id,
+      buildRunId,
+      agentKey: "acceptance_compiler",
+      phaseKey: "acceptance-compiler",
+      artifactType: "acceptance_test_compiler",
+      status: artifactStatusFromIssues({
+        failed: acceptanceCompilation.blockingIssues.length > 0,
+        warnings: acceptanceCompilation.warnings,
+      }),
+      summary: `Compiled protected Playwright source with hash ${acceptanceCompilation.compilerHash.slice(0, 12)} and ${acceptanceCompilation.manifest.summary.adapterRequirements} app-specific adapter requirement(s).`,
+      payload: {
+        compilerVersion: acceptanceCompilation.manifest.compilerVersion,
+        compilerHash: acceptanceCompilation.compilerHash,
+        manifestPath: "e2e/generated/voiceforge-acceptance-manifest.ts",
+        compiledSourcePath: "e2e/generated/voiceforge-compiled.spec.ts",
+        adapterPath: "e2e/generated/voiceforge-acceptance-adapters.ts",
+        lineMap: acceptanceCompilation.lineMap,
+        compiledSource: acceptanceCompilation.compiledSource,
+        adapterRequirements: acceptanceCompilation.manifest.adapters,
+        blockingIssues: acceptanceCompilation.blockingIssues,
+        warnings: acceptanceCompilation.warnings,
+      },
+    });
+    await log(
+      buildRunId,
+      `Acceptance compiler ready: ${acceptanceCompilation.manifest.summary.journeys} journey(s) and ${acceptanceCompilation.manifest.summary.steps} contract step(s) compiled deterministically${acceptanceCompilation.manifest.summary.adapterRequirements > 0 ? `; ${acceptanceCompilation.manifest.summary.adapterRequirements} app-specific adapter(s) required` : " with no app-specific adapters"}.`,
+    );
     await log(
       buildRunId,
       `Code agent changed ${generated.filesWritten.length} files: ${generated.filesWritten.join(", ")}`,
@@ -3405,6 +3461,19 @@ export async function resumeBuildPipelineContinuation(
     );
     const metadata = checkpoint.metadata;
     const generated = restoreGeneratedResult(metadata.generated);
+    const refreshedAcceptance = refreshDeterministicAcceptanceCompiler({
+      spec,
+      architecture,
+      files: checkpoint.files,
+      generated,
+      changeMode: Boolean(app.githubRepoUrl && requirement.version > 1),
+    });
+    if (refreshedAcceptance.refreshedPaths.length > 0) {
+      await log(
+        run.id,
+        `Recompiled deterministic acceptance artifacts in the durable checkpoint: ${refreshedAcceptance.refreshedPaths.join(", ")}.`,
+      );
+    }
     const metrics = restoreBuildMetrics(metadata.metrics);
     const debugBudget = options?.resetDebugBudget
       ? createDebugBudget({

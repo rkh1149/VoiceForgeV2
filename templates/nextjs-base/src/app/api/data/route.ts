@@ -356,7 +356,10 @@ function handleLocalData(
           `Data entity "${normalizeEntityKey(record.entityKey)}" is not defined for this app.`,
         );
       }
-      const validation = validateLocalRecordData(entity, body.data);
+      const validation = validateLocalRecordData(
+        entity,
+        mergeLocalRecordUpdate(record.data, body.data),
+      );
       if (!validation.ok) {
         return localPlatformError(
           400,
@@ -948,6 +951,16 @@ function normalizeEntityKey(value: string): string {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mergeLocalRecordUpdate(
+  currentData: unknown,
+  updateData: unknown,
+): unknown {
+  if (!isPlainObject(currentData) || !isPlainObject(updateData)) {
+    return updateData;
+  }
+  return { ...currentData, ...updateData };
 }
 
 function stringValue(value: unknown): string {

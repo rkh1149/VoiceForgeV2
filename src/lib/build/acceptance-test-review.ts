@@ -229,7 +229,12 @@ function reviewJourney(
     );
     if (
       browserLocalDependencies.length > 0 &&
-      !hasFreshContextPrerequisiteSetup(journeyPrelude)
+      !hasFreshContextPrerequisiteSetup(journeyPrelude) &&
+      !hasCompiledSharedContextPrerequisites(
+        source,
+        journey,
+        browserLocalDependencies,
+      )
     ) {
       issues.push(
         `acceptance_test:journey Dependent journey ${journey.id} consumes browser-local records from ${browserLocalDependencies.map((dependency) => dependency.id).join(", ")}, but it does not recreate those prerequisites through visible UI before its first contract step. Playwright gives every test a fresh browser context, so test.describe.serial does not preserve localStorage or sessionStorage.`,
@@ -542,13 +547,18 @@ function stableControlLocatorPairs(
   step: WorkflowAcceptanceStep,
 ): Array<{ workflowId: string; controlId: string }> {
   const pairs = [{ workflowId: step.workflowId, controlId: step.controlId }];
+  const sourceControl = architecture.workflowContracts
+    .find((contract) => contract.id === step.workflowId)
+    ?.controls.find((control) => control.id === step.controlId);
+  const controlRoute = sourceControl?.route ?? step.route;
+  const controlKind = sourceControl?.kind ?? step.controlKind;
   for (const contract of architecture.workflowContracts) {
     for (const control of contract.controls) {
       if (
         control.id === step.controlId &&
         normalizeAcceptanceRoute(control.route) ===
-          normalizeAcceptanceRoute(step.route) &&
-        compatibleAcceptanceControlKind(control.kind, step.controlKind)
+          normalizeAcceptanceRoute(controlRoute) &&
+        compatibleAcceptanceControlKind(control.kind, controlKind)
       ) {
         pairs.push({ workflowId: contract.id, controlId: control.id });
       }
@@ -687,6 +697,24 @@ function hasFreshContextPrerequisiteSetup(source: string): boolean {
       source,
     );
   return directVisibleSetup || uiSetupHelper;
+}
+
+function hasCompiledSharedContextPrerequisites(
+  source: string,
+  journey: WorkflowAcceptanceJourney,
+  dependencies: readonly WorkflowAcceptanceJourney[],
+): boolean {
+  if (!source.includes("[voiceforge-compiled-component:")) return false;
+  const journeyMarker = source.indexOf(
+    `workflowJourneyTitle(${JSON.stringify(journey.id)}`,
+  );
+  if (journeyMarker < 0) return false;
+  return dependencies.every((dependency) => {
+    const dependencyMarker = source.indexOf(
+      `workflowJourneyTitle(${JSON.stringify(dependency.id)}`,
+    );
+    return dependencyMarker >= 0 && dependencyMarker < journeyMarker;
+  });
 }
 
 function reviewGlobalTestQuality(entries: SourceEntry[]): string[] {

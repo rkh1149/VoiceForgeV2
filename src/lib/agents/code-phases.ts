@@ -2,6 +2,7 @@ export type CodegenAgentKey =
   | "backend_platform_planner"
   | "frontend_builder"
   | "test_agent"
+  | "acceptance_compiler"
   | "final_integration_agent"
   | "diagnostic_agent"
   | "debug_agent";
@@ -61,13 +62,13 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
   },
   {
     id: "browser-acceptance-tests",
-    label: "Browser acceptance tests",
+    label: "Acceptance adapters",
     agentKey: "test_agent",
     specialistRole:
-      "Test agent: translate every synthesized Stage 14D workflow journey into Playwright acceptance coverage. Keep tests stable, same-origin, and complementary to the locked smoke/accessibility test.",
+      "Acceptance adapter agent: inspect the app and implement only the small app-specific adapters explicitly required by the deterministic Stage 14H manifest. VoiceForge owns the Playwright journey structure.",
     objective:
-      "Add contract-driven Playwright acceptance tests under e2e/generated/ for every synthesized user-action journey. Locate contracted controls with the locked vfControl/vfRecord helpers using exact workflowId/controlId pairs; use friendly names as accessibility assertions, not identity. Keep bounded journeys as focused tests and place dependent journeys in the same test.describe.serial suite, but remember that every Playwright test receives a fresh browser context: recreate localStorage/sessionStorage prerequisites through visible UI inside each dependent test instead of relying on an earlier test. Capture selected result identity before completion/delete/status actions that clear it, and navigate downstream through a stable visible link rather than assuming a contextual result link remains after mutation. Exercise the ordered workflow steps through visible controls, then prove expected saves after page.reload(), downstream handoffs on their consumer routes, role behavior, downloads, uploads, drag/drop, integration fallbacks, and browser geolocation when required. Use the locked e2e/voiceforge-acceptance.ts trace helpers and never replace a promised journey with a generic page-render test.",
-    maxTurns: 28,
+      "Do not write Playwright spec files. VoiceForge will compile routes, fixtures, steps, saves, reloads, handoffs, roles, downloads, uploads, and geolocation deterministically. If the supplied manifest declares adapter requirements, create or update only e2e/generated/voiceforge-acceptance-adapters.ts with each exact quoted adapter id and implement that interaction through visible UI. Use locked helpers such as dragAcceptanceControl when useful. If no adapters are required, inspect the relevant UI and report that the deterministic compiler needs no app-specific adapter.",
+    maxTurns: 18,
   },
   {
     id: "final-integration-review",

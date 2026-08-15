@@ -9,6 +9,7 @@ import type { FileMap } from "./template";
 import { analyzeGeneratedAcceptanceTests } from "./acceptance-test-review";
 import { analyzePersistenceHandoffs } from "./persistence-handoff-review";
 import { analyzeUiAffordances } from "./ui-affordance-review";
+import { reviewAcceptanceCompiler } from "./acceptance-compiler";
 
 export type PostGenerationReviewAgentKey =
   | "code_reviewer"
@@ -18,6 +19,7 @@ export type PostGenerationReviewAgentKey =
   | "ui_affordance_reviewer"
   | "persistence_handoff_reviewer"
   | "acceptance_test_reviewer"
+  | "acceptance_compiler"
   | "product_completeness_reviewer";
 
 export type PostGenerationReview = {
@@ -28,6 +30,7 @@ export type PostGenerationReview = {
     | "ui_affordance_review"
     | "persistence_handoff_review"
     | "acceptance_test_review"
+    | "acceptance_compiler_review"
     | "human_completeness_review";
   status: BuildAgentArtifactStatus;
   summary: string;
@@ -65,6 +68,8 @@ const PROTECTED_TEMPLATE_FILES = new Set([
   "e2e/smoke.spec.ts",
   "e2e/voiceforge-acceptance.ts",
   "e2e/voiceforge-progress-reporter.ts",
+  "e2e/generated/voiceforge-acceptance-manifest.ts",
+  "e2e/generated/voiceforge-compiled.spec.ts",
 ]);
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx"] as const;
@@ -207,11 +212,59 @@ export function runPostGenerationReviews(
     reviewGeneratedCode(input),
     reviewUiAffordances(input),
     reviewPersistenceHandoffs(input),
+    reviewCompiledAcceptanceManifest(input),
     reviewGeneratedAcceptanceJourneys(input),
     reviewGeneratedTests(input),
     reviewSecurity(input),
     reviewUxAccessibility(input),
   ];
+}
+
+function reviewCompiledAcceptanceManifest(
+  input: PostGenerationReviewInput,
+): PostGenerationReview {
+  const hasCompilerFiles =
+    "e2e/generated/voiceforge-acceptance-manifest.ts" in input.allFiles ||
+    "e2e/generated/voiceforge-compiled.spec.ts" in input.allFiles;
+  if (!hasCompilerFiles) {
+    return {
+      agentKey: "acceptance_compiler",
+      phaseKey: "deterministic-acceptance-compiler-review",
+      artifactType: "acceptance_compiler_review",
+      status: "skipped",
+      summary:
+        "Deterministic acceptance compiler review skipped for a legacy or isolated source fixture that predates Stage 14H output.",
+      warnings: [],
+      blockingIssues: [],
+      payload: {
+        version: 1,
+        skipped: true,
+        reason: "No deterministic acceptance compiler files were supplied.",
+      },
+    };
+  }
+  const report = reviewAcceptanceCompiler({
+    spec: input.spec,
+    architecture: input.architecture,
+    files: input.allFiles,
+    changeMode: input.changeMode,
+  });
+  return {
+    agentKey: "acceptance_compiler",
+    phaseKey: "deterministic-acceptance-compiler-review",
+    artifactType: "acceptance_compiler_review",
+    status: artifactStatusFromIssues({
+      failed: report.blockingIssues.length > 0,
+      warnings: report.warnings,
+    }),
+    summary:
+      report.blockingIssues.length > 0
+        ? `Deterministic acceptance compilation found ${report.blockingIssues.length} blocking issue${report.blockingIssues.length === 1 ? "" : "s"}; ${report.summary.adaptersResolved}/${report.summary.adaptersRequired} app-specific adapters are resolved.`
+        : `Deterministic acceptance compiler verified ${report.summary.journeys} journey(s), ${report.summary.stepsCompiled} step(s), ${report.summary.savesCompiled} save check(s), and ${report.summary.handoffsCompiled} handoff check(s).`,
+    warnings: report.warnings,
+    blockingIssues: report.blockingIssues,
+    payload: { ...report },
+  };
 }
 
 function reviewGeneratedAcceptanceJourneys(
@@ -489,6 +542,7 @@ export function postGenerationRepairDomain(
     return "interface";
   }
   if (issue.startsWith("persistence_handoff:")) return "persistence";
+  if (issue.startsWith("acceptance_compiler:")) return "acceptance";
   if (issue.startsWith("acceptance_test:")) return "acceptance";
   if (issue.startsWith("human_completeness:")) return "completeness";
   return "implementation";
@@ -585,6 +639,9 @@ export function createPostGenerationRepairEvidence(input: {
       ? "ui_affordance_reviewer"
       : input.domain === "persistence"
         ? "persistence_handoff_reviewer"
+        : input.domain === "acceptance" &&
+            input.issues.some((issue) => issue.startsWith("acceptance_compiler:"))
+          ? "acceptance_compiler"
       : input.domain === "acceptance"
           ? "acceptance_test_reviewer"
           : input.domain === "completeness"
@@ -754,8 +811,9 @@ function reviewGeneratedCode(
     );
     const hasManualSignIn =
       combinedSource.includes("getPlatformSession") &&
-      combinedSource.includes("signInToPlatform") &&
-      /\bloginUrl\b/.test(combinedSource);
+      (combinedSource.includes("signInToPlatform") ||
+        (combinedSource.includes("loginUrl") &&
+          /\bwindow\.location(?:\.href)?\b/.test(combinedSource)));
     if (!hasReusableGate && !hasManualSignIn) {
       blockingIssues.push(
         "code_review: Sign-in or role-aware app did not provide a usable locked platform sign-in action.",
