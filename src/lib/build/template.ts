@@ -57,8 +57,9 @@ const PROTECTED_FILES = new Set([
   "e2e/smoke.spec.ts", // locked browser/accessibility smoke test
   "e2e/voiceforge-acceptance.ts", // locked contract-driven browser test helpers (Stage 14D)
   "e2e/voiceforge-progress-reporter.ts", // locked streamed browser progress reporter
-  "e2e/generated/voiceforge-acceptance-manifest.ts", // deterministic Stage 14H manifest
-  "e2e/generated/voiceforge-compiled.spec.ts", // deterministic Stage 14H Playwright output
+  "e2e/voiceforge-isolation-runner.mjs", // locked Stage 14I retry/parallel matrix
+  "e2e/generated/voiceforge-acceptance-manifest.ts", // deterministic Stage 14I manifest
+  "e2e/generated/voiceforge-compiled.spec.ts", // deterministic Stage 14I Playwright output
 ]);
 
 const RESUME_REFRESHED_TEMPLATE_FILES = [
@@ -67,6 +68,7 @@ const RESUME_REFRESHED_TEMPLATE_FILES = [
   "e2e/smoke.spec.ts",
   "e2e/voiceforge-acceptance.ts",
   "e2e/voiceforge-progress-reporter.ts",
+  "e2e/voiceforge-isolation-runner.mjs",
   "playwright.config.ts",
 ] as const;
 

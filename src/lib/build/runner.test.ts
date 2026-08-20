@@ -56,7 +56,7 @@ describe("sandbox browser setup", () => {
     );
   });
 
-  it("provides a stable per-worker suffix for retry-safe acceptance fixtures", () => {
+  it("provides a per-attempt namespace for retry-safe acceptance fixtures", () => {
     const source = readFileSync(
       new URL(
         "../../../templates/nextjs-base/e2e/voiceforge-acceptance.ts",
@@ -68,10 +68,30 @@ describe("sandbox browser setup", () => {
     expect(source).toContain("acceptanceRunSuffix");
     expect(source).toContain("process.pid");
     expect(source).toContain("Date.now()");
+    expect(source).toContain("testInfo.workerIndex");
+    expect(source).toContain("testInfo.parallelIndex");
+    expect(source).toContain("testInfo.retry");
+    expect(source).toContain("testInfo.testId");
     expect(source).toContain("export function vfControl");
     expect(source).toContain("export function vfRecords");
     expect(source).toContain("export function vfRecordControl");
     expect(source).toContain("expectContractControl");
+  });
+
+  it("runs baseline, retry, and parallel Stage 14I browser validation", () => {
+    const source = readFileSync(
+      new URL(
+        "../../../templates/nextjs-base/e2e/voiceforge-isolation-runner.mjs",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(source).toContain("baseline full suite");
+    expect(source).toContain("independent retry suite");
+    expect(source).toContain("VOICEFORGE_ACCEPTANCE_RETRY_PROBE");
+    expect(source).toContain("--fully-parallel");
+    expect(source).toContain("parallel-safe suite");
   });
 
   it("fails deterministic browser actions quickly and emits progress markers", () => {

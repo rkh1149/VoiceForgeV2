@@ -5,6 +5,7 @@ export const ACCEPTANCE_TRACE_HELPERS = [
   "workflowStepTitle",
   "workflowSaveTitle",
   "workflowHandoffTitle",
+  "workflowFixtureSetupTitle",
   "voiceForgeRoleHeaders",
 ] as const;
 

@@ -206,7 +206,7 @@ const STEPS: Record<
   build: { cmd: "npm", args: ["run", "build"], timeoutMs: 8 * 60_000 },
   // Installs Chromium on first run (cached in ~/Library/Caches thereafter),
   // starts the production build on port 4321, runs browser + axe checks.
-  e2e: { cmd: "npm", args: ["run", "test:e2e"], timeoutMs: 10 * 60_000 },
+  e2e: { cmd: "npm", args: ["run", "test:e2e"], timeoutMs: 18 * 60_000 },
 };
 
 export async function createRunner(

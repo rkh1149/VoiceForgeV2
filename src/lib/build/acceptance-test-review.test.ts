@@ -8,6 +8,12 @@ import {
 import { GOLDEN_REGRESSION_SPECS } from "./golden-regression-specs";
 import { analyzeGeneratedAcceptanceTests } from "./acceptance-test-review";
 import {
+  ACCEPTANCE_ADAPTERS_PATH,
+  ACCEPTANCE_COMPILED_SPEC_PATH,
+  ACCEPTANCE_MANIFEST_SOURCE_PATH,
+  compileAcceptanceTests,
+} from "./acceptance-compiler";
+import {
   extractAcceptanceTraceCalls,
   findAcceptanceTraceCall,
 } from "./acceptance-trace-parser";
@@ -502,6 +508,106 @@ ${dependentSource}
     expect(repaired.blockingIssues.join(" ")).not.toContain(
       "does not recreate those prerequisites through visible UI",
     );
+  });
+
+  it("accepts the compiler-selected create prerequisite instead of replaying a destructive journey", () => {
+    const { spec, architecture } = sharedApp();
+    const template = architecture.workflowContracts.find(
+      (contract) => contract.trigger === "user_action",
+    );
+    if (!template) throw new Error("Shared workflow template missing");
+    architecture.workflowContracts = Array.from({ length: 7 }, (_, index) => {
+      const contract = structuredClone(template);
+      const number = index + 1;
+      const stepIds = new Map<string, string>();
+      const controlIds = new Map<string, string>();
+      contract.id = `errand-workflow-${number}`;
+      contract.name = `Errand workflow ${number}`;
+      contract.controls = contract.controls.map((control, controlIndex) => {
+        const id = `errand-workflow-${number}-control-${controlIndex + 1}`;
+        controlIds.set(control.id, id);
+        return { ...control, id };
+      });
+      contract.steps = contract.steps.map((step, stepIndex) => {
+        const id = `errand-workflow-${number}-step-${stepIndex + 1}`;
+        stepIds.set(step.id, id);
+        return {
+          ...step,
+          id,
+          controlId: controlIds.get(step.controlId) ?? "",
+        };
+      });
+      contract.expectedSaves = contract.expectedSaves.map((save) => ({
+        ...save,
+        stepId: stepIds.get(save.stepId) ?? save.stepId,
+        operation:
+          number === 6
+            ? ("delete" as const)
+            : number >= 4
+              ? ("update" as const)
+              : save.operation,
+        producedReference: `errand-workflow-${number}-record`,
+      }));
+      contract.dependencies = {
+        ...contract.dependencies,
+        workflowIds: number === 1 ? [] : [`errand-workflow-${number - 1}`],
+      };
+      contract.handoffs = [];
+      contract.source = {
+        ...contract.source,
+        workflowName: contract.name,
+      };
+      return contract;
+    });
+    const finalReader = architecture.workflowContracts[6];
+    const entityKey = finalReader?.requiredData[0]?.entityKey;
+    if (!finalReader || !entityKey) {
+      throw new Error("Final read-only workflow missing");
+    }
+    finalReader.controls = [];
+    finalReader.steps = [
+      {
+        id: "view-remaining-records",
+        description: "View the records that remain after deletion.",
+        kind: "result",
+        route: finalReader.start.route,
+        controlId: "",
+        reads: [entityKey],
+        writes: [],
+        visibleResult: "The remaining records are visible.",
+      },
+    ];
+    finalReader.expectedSaves = [];
+
+    const plan = synthesizeWorkflowAcceptancePlan(spec, architecture);
+    const compiled = compileAcceptanceTests({ spec, architecture });
+    const targetPlanJourney = plan.journeys.at(-1);
+    const targetManifestJourney = compiled.manifest.journeys.find(
+      (journey) => journey.id === targetPlanJourney?.id,
+    );
+    const directDependency = targetPlanJourney?.dependsOnJourneyIds[0];
+
+    expect(plan.journeys).toHaveLength(3);
+    expect(targetManifestJourney?.prerequisites).toHaveLength(1);
+    expect(targetManifestJourney?.prerequisites[0]?.journeyId).not.toBe(
+      directDependency,
+    );
+
+    const review = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: {
+        [ACCEPTANCE_COMPILED_SPEC_PATH]: compiled.compiledSource,
+        [ACCEPTANCE_MANIFEST_SOURCE_PATH]: compiled.manifestSource,
+        [ACCEPTANCE_ADAPTERS_PATH]: compiled.adapterSource,
+      },
+      requireStableControlLocators: true,
+    });
+
+    expect(review.blockingIssues).not.toContainEqual(
+      expect.stringContaining("must recreate"),
+    );
+    expect(review.blockingIssues).toEqual([]);
   });
 
   it("does not accept a labeled contract step without its UI action", () => {

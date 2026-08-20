@@ -1,5 +1,10 @@
 import type { ArchitecturePlan } from "../architecture";
 import type { AppSpec } from "../spec";
+import {
+  createAcceptanceTestManifest,
+  type AcceptanceManifestJourney,
+  type VoiceForgeAcceptanceManifest,
+} from "./acceptance-manifest";
 import type { FileMap } from "./template";
 import {
   extractAcceptanceTraceCalls,
@@ -107,6 +112,17 @@ export function analyzeGeneratedAcceptanceTests(input: {
       source,
       traceCalls: extractAcceptanceTraceCalls(source),
     }));
+  const deterministicManifest = input.files[
+    "e2e/generated/voiceforge-compiled.spec.ts"
+  ]
+    ? createAcceptanceTestManifest({
+        spec: input.spec,
+        architecture: input.architecture,
+        locatorMode: input.requireStableControlLocators
+          ? "contract"
+          : "accessible_name_fallback",
+      })
+    : null;
   const globalBlockingIssues = [
     ...planValidation.blockingIssues,
     ...reviewGlobalTestQuality(testEntries),
@@ -118,6 +134,7 @@ export function analyzeGeneratedAcceptanceTests(input: {
       plan,
       input.architecture,
       input.requireStableControlLocators ?? false,
+      deterministicManifest,
     ),
   );
   const blockingIssues = uniqueStrings([
@@ -180,20 +197,35 @@ function reviewJourney(
   plan: WorkflowAcceptancePlan,
   architecture: ArchitecturePlan,
   requireStableControlLocators: boolean,
+  deterministicManifest: VoiceForgeAcceptanceManifest | null,
 ): AcceptanceJourneyReview {
+  const manifestJourneys = manifestJourneysForPlanJourney(
+    deterministicManifest,
+    journey.id,
+  );
+  const executionJourneyIds =
+    manifestJourneys.length > 0
+      ? manifestJourneys.map((candidate) => candidate.id)
+      : [journey.id];
   const entries = allEntries.filter((entry) =>
-    hasHelperMarker(entry.traceCalls, "workflowJourneyTitle", [journey.id]),
+    executionJourneyIds.some((journeyId) =>
+      hasHelperMarker(entry.traceCalls, "workflowJourneyTitle", [journeyId]),
+    ),
   );
   const issues: string[] = [];
   const warnings: string[] = [];
   const source = entries.map((entry) => entry.source).join("\n");
   const traceCalls = extractAcceptanceTraceCalls(source);
-  const journeyWindow = helperMarkerWindow(
-    source,
-    traceCalls,
-    "workflowJourneyTitle",
-    [journey.id],
-  );
+  const journeyWindow = executionJourneyIds
+    .map((journeyId) =>
+      helperMarkerWindow(
+        source,
+        traceCalls,
+        "workflowJourneyTitle",
+        [journeyId],
+      ),
+    )
+    .join("\n");
   if (entries.length === 0) {
     issues.push(
       `acceptance_test:journey Missing generated Playwright journey ${journey.id} (${journey.name}).`,
@@ -209,9 +241,17 @@ function reviewJourney(
     const sharedFiles = entries.filter((entry) =>
       dependencyEntries.some((dependency) => dependency.path === entry.path),
     );
-    if (sharedFiles.length === 0 || !/\btest\.describe\.serial\s*\(/.test(source)) {
+    const hasIsolatedSetups = hasIsolatedPrerequisiteSetups(
+      source,
+      journey,
+      dependentJourneys(plan, journey),
+      manifestJourneys,
+    );
+    const hasLegacySerialOrder =
+      sharedFiles.length > 0 && /\btest\.describe\.serial\s*\(/.test(source);
+    if (!hasIsolatedSetups && !hasLegacySerialOrder) {
       issues.push(
-        `acceptance_test:journey Dependent journey ${journey.id} must run after ${journey.dependsOnJourneyIds.join(", ")} in the same test.describe.serial suite.`,
+        `acceptance_test:journey Dependent journey ${journey.id} must recreate ${journey.dependsOnJourneyIds.join(", ")} through visible UI in its own test.`,
       );
     }
 
@@ -230,6 +270,7 @@ function reviewJourney(
     if (
       browserLocalDependencies.length > 0 &&
       !hasFreshContextPrerequisiteSetup(journeyPrelude) &&
+      !hasIsolatedSetups &&
       !hasCompiledSharedContextPrerequisites(
         source,
         journey,
@@ -715,6 +756,58 @@ function hasCompiledSharedContextPrerequisites(
     );
     return dependencyMarker >= 0 && dependencyMarker < journeyMarker;
   });
+}
+
+function hasIsolatedPrerequisiteSetups(
+  source: string,
+  journey: WorkflowAcceptanceJourney,
+  dependencies: readonly WorkflowAcceptanceJourney[],
+  manifestJourneys: readonly AcceptanceManifestJourney[],
+): boolean {
+  const calls = extractAcceptanceTraceCalls(source);
+  if (manifestJourneys.length > 0) {
+    return manifestJourneys.every((manifestJourney) => {
+      const journeyCall = findAcceptanceTraceCall(
+        calls,
+        "workflowJourneyTitle",
+        [manifestJourney.id],
+      );
+      if (!journeyCall) return false;
+      return manifestJourney.prerequisites.every((prerequisite) => {
+        const setupCall = findAcceptanceTraceCall(
+          calls,
+          "workflowFixtureSetupTitle",
+          [manifestJourney.id, prerequisite.journeyId],
+        );
+        return Boolean(setupCall && setupCall.index < journeyCall.index);
+      });
+    });
+  }
+  const journeyCall = findAcceptanceTraceCall(
+    calls,
+    "workflowJourneyTitle",
+    [journey.id],
+  );
+  if (!journeyCall) return false;
+  return dependencies.every((dependency) => {
+    const setupCall = findAcceptanceTraceCall(
+      calls,
+      "workflowFixtureSetupTitle",
+      [journey.id, dependency.id],
+    );
+    return Boolean(setupCall && setupCall.index < journeyCall.index);
+  });
+}
+
+function manifestJourneysForPlanJourney(
+  manifest: VoiceForgeAcceptanceManifest | null,
+  journeyId: string,
+): AcceptanceManifestJourney[] {
+  if (!manifest) return [];
+  return manifest.journeys.filter(
+    (journey) =>
+      journey.id === journeyId || journey.id.startsWith(`${journeyId}-part-`),
+  );
 }
 
 function reviewGlobalTestQuality(entries: SourceEntry[]): string[] {

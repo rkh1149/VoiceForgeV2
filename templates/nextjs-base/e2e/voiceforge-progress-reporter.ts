@@ -24,6 +24,18 @@ class VoiceForgeProgressReporter implements Reporter {
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
+    if (
+      process.env.VOICEFORGE_ACCEPTANCE_RETRY_PROBE === "1" &&
+      result.retry === 0 &&
+      result.errors.some((error) =>
+        error.message?.includes("[voiceforge-retry-probe:"),
+      )
+    ) {
+      console.log(
+        `${PREFIX} Retry isolation probe completed for ${testLabel(test)}; Playwright is recreating its fixtures.`,
+      );
+      return;
+    }
     console.log(
       `${PREFIX} ${statusLabel(result.status)} ${testLabel(test)} in ${formatDuration(result.duration)}.`,
     );

@@ -126,6 +126,10 @@ describe("coder shared rules", () => {
     expect(source).toContain("scope the locator to the named form or dialog");
     expect(source).toContain("audit the rest of that journey");
     expect(source).toContain("a failing standard compiled primitive");
+    expect(source).toContain("STAGE 14I ISOLATED FIXTURES");
+    expect(source).toContain("self-contained test");
+    expect(source).toContain("mutable module variables");
+    expect(source).toContain("run-scoped fixture values");
   });
 
   it("requires stable Stage 14G contract controls and record scoping", () => {

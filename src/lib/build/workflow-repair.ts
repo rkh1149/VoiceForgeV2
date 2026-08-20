@@ -180,6 +180,7 @@ const LOCKED_REPAIR_PATHS = new Set([
   "e2e/smoke.spec.ts",
   "e2e/voiceforge-acceptance.ts",
   "e2e/voiceforge-progress-reporter.ts",
+  "e2e/voiceforge-isolation-runner.mjs",
   ACCEPTANCE_MANIFEST_SOURCE_PATH,
   ACCEPTANCE_COMPILED_SPEC_PATH,
 ]);
@@ -487,7 +488,7 @@ export function classifyWorkflowRepairFailure(input: {
     staticBlockers.length === 0 &&
     (generatedTestPathOnly || /expect\(locator\)|locator\.|strict mode violation|toBeVisible|toHaveURL/i.test(text))
   ) {
-    const subtype = /localstorage|sessionstorage|fresh browser context|describe\.serial/i.test(lower)
+    const subtype = /localstorage|sessionstorage|fresh browser context|describe\.serial|fixture isolation|voiceforge-retry-probe|test namespace|parallel worker/i.test(lower)
       ? "test_isolation"
       : /mark as watched|delete|remove|archive|complete|finish|state.*clear/i.test(lower)
         ? "state_capture_after_clearing_action"

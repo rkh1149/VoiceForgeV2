@@ -42,6 +42,7 @@ describe("template loader", () => {
       "e2e/smoke.spec.ts": "old smoke test",
       "e2e/voiceforge-acceptance.ts": "old helper",
       "e2e/voiceforge-progress-reporter.ts": "old reporter",
+      "e2e/voiceforge-isolation-runner.mjs": "old isolation runner",
       "playwright.config.ts": "old config",
       "src/app/page.tsx": "generated app source",
     };
@@ -58,6 +59,7 @@ describe("template loader", () => {
       "e2e/smoke.spec.ts",
       "e2e/voiceforge-acceptance.ts",
       "e2e/voiceforge-progress-reporter.ts",
+      "e2e/voiceforge-isolation-runner.mjs",
       "playwright.config.ts",
     ]);
     expect(files["src/lib/platform-data.ts"]).toContain(
@@ -77,6 +79,9 @@ describe("template loader", () => {
     );
     expect(files["e2e/voiceforge-progress-reporter.ts"]).toContain(
       "class VoiceForgeProgressReporter",
+    );
+    expect(files["e2e/voiceforge-isolation-runner.mjs"]).toContain(
+      "Stage 14I isolation matrix passed",
     );
     expect(files["playwright.config.ts"]).toContain("actionTimeout: 12_000");
     expect(files["e2e/smoke.spec.ts"]).toContain("node.failureSummary");

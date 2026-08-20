@@ -66,6 +66,8 @@ describe("code generation specialist phases", () => {
     );
     expect(browserTests?.objective).toContain("exact quoted adapter id");
     expect(browserTests?.objective).toContain("dragAcceptanceControl");
+    expect(browserTests?.objective).toContain("independently reproducible");
+    expect(browserTests?.objective).toContain("transitive prerequisite chain");
   });
 
   it("keeps change mode diagnostic, implementation, test, and final review phases separate", () => {

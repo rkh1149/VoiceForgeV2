@@ -1200,7 +1200,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         failed: acceptanceCompilation.blockingIssues.length > 0,
         warnings: acceptanceCompilation.warnings,
       }),
-      summary: `Acceptance manifest v${acceptanceCompilation.manifest.version}: ${acceptanceCompilation.manifest.summary.journeys} journey(s), ${acceptanceCompilation.manifest.summary.steps} step(s), ${acceptanceCompilation.manifest.summary.saves} save check(s), and ${acceptanceCompilation.manifest.summary.handoffs} handoff check(s).`,
+      summary: `Acceptance manifest v${acceptanceCompilation.manifest.version}: ${acceptanceCompilation.manifest.summary.journeys} isolated journey(s), ${acceptanceCompilation.manifest.summary.steps} step(s), ${acceptanceCompilation.manifest.summary.saves} save check(s), ${acceptanceCompilation.manifest.summary.handoffs} handoff check(s), and ${acceptanceCompilation.manifest.summary.prerequisites} visible prerequisite setup(s).`,
       payload: {
         manifest: acceptanceCompilation.manifest,
         blockingIssues: acceptanceCompilation.blockingIssues,
@@ -1227,13 +1227,14 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
         lineMap: acceptanceCompilation.lineMap,
         compiledSource: acceptanceCompilation.compiledSource,
         adapterRequirements: acceptanceCompilation.manifest.adapters,
+        isolationReview: acceptanceCompilation.isolationReview,
         blockingIssues: acceptanceCompilation.blockingIssues,
         warnings: acceptanceCompilation.warnings,
       },
     });
     await log(
       buildRunId,
-      `Acceptance compiler ready: ${acceptanceCompilation.manifest.summary.journeys} journey(s) and ${acceptanceCompilation.manifest.summary.steps} contract step(s) compiled deterministically${acceptanceCompilation.manifest.summary.adapterRequirements > 0 ? `; ${acceptanceCompilation.manifest.summary.adapterRequirements} app-specific adapter(s) required` : " with no app-specific adapters"}.`,
+      `Acceptance compiler ready: ${acceptanceCompilation.manifest.summary.journeys} self-contained journey(s), ${acceptanceCompilation.manifest.summary.prerequisites} visible prerequisite setup(s), and ${acceptanceCompilation.manifest.summary.parallelSafeJourneys} parallel-safe journey(s) compiled deterministically${acceptanceCompilation.manifest.summary.adapterRequirements > 0 ? `; ${acceptanceCompilation.manifest.summary.adapterRequirements} app-specific adapter(s) required` : " with no app-specific adapters"}.`,
     );
     await log(
       buildRunId,

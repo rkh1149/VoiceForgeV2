@@ -109,6 +109,7 @@ const LOCKED_PLATFORM_HELPERS = [
   "src/lib/voiceforge-modules.ts",
   "src/components/voiceforge-reusable.tsx",
   "e2e/voiceforge-acceptance.ts",
+  "e2e/voiceforge-isolation-runner.mjs",
   "e2e/generated/voiceforge-acceptance-manifest.ts",
   "e2e/generated/voiceforge-compiled.spec.ts",
 ];
@@ -286,7 +287,9 @@ export function selectDebugFileScope(input: {
   const preferred = new Set<string>();
   const acceptanceReviewFailure =
     input.classification.domain === "integration_review_gate" &&
-    /acceptance_(?:test|compiler):/.test(input.errorOutput.toLowerCase());
+    /acceptance_(?:test|compiler):|fixture_isolation:/.test(
+      input.errorOutput.toLowerCase(),
+    );
   const mentionedPaths = extractMentionedFilePaths(input.errorOutput).filter(
     (filePath) => input.files[filePath] !== undefined,
   );
@@ -897,7 +900,7 @@ function instructionsFor(
   if (classification.domain === "browser_accessibility") {
     common.push(
       "For browser/accessibility failures, inspect pages and components first; edit generated e2e tests only when the test assertion is brittle.",
-      "Every Playwright test receives a fresh browser context even inside test.describe.serial. If a dependent test cannot find an option or record backed by localStorage/sessionStorage, recreate its prerequisites through visible UI in that same test; do not rely on data or mutable module variables from an earlier test.",
+      "Every Playwright journey receives a fresh browser context and a unique Stage 14I attempt namespace. If a dependent test cannot find an option or record, repair its visible prerequisite setup or producer-to-consumer handoff; never rely on data or mutable module variables from an earlier test.",
       "When a locator matches both a form/filter control and a saved result, scope the assertion to the specific row, card, list item, or heading identified by the run-scoped fixture instead of using unscoped page text or inventing an ARIA role the app does not render.",
       "If the page snapshot shows a successful completion/delete/status change but the test cannot find the prior selected result, treat the missing result as expected mutation behavior: capture the required title/id/date before clicking the state-clearing action, then assert the success state and use the captured value downstream.",
       "If a contextual result link disappears after mutation, inspect the rendered navigation and use a stable visible route link with its actual accessible name; do not invent or keep waiting for an optional contextual link.",
@@ -911,6 +914,7 @@ function instructionsFor(
   if (classification.domain === "unit_test") {
     common.push(
       "For unit/workflow failures, inspect the failing test and source together; avoid only weakening assertions when user-visible behavior is broken.",
+      "When a repeated record renders data-vf-entity/data-vf-record instead of data-testid, query the real attributes with document.querySelector<HTMLElement>(selector), explicitly fail when it returns null, and only then pass the HTMLElement to within(...). Do not invent a test id or pass an untyped Element/null locator into Testing Library.",
     );
   }
   if (
@@ -960,7 +964,7 @@ function instructionsFor(
     }
     if (responsiblePhase.id === "browser-acceptance-tests") {
       common.push(
-        "For Stage 14H acceptance findings, never edit the protected compiled manifest or Playwright spec. Repair the named application workflow, or implement the exact required key in e2e/generated/voiceforge-acceptance-adapters.ts when the manifest classifies the interaction as app-specific.",
+        "For Stage 14H/14I acceptance findings, never edit the protected compiled manifest or Playwright spec. Repair the named application workflow or visible prerequisite setup, or implement the exact required key in e2e/generated/voiceforge-acceptance-adapters.ts when the manifest classifies the interaction as app-specific.",
         "Do not remove or skip a required journey, bypass its UI with direct API/localStorage setup, or replace save/reload/handoff assertions with generic page-render checks.",
       );
     }

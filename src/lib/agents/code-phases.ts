@@ -65,9 +65,9 @@ export const CODE_GENERATION_PHASES: GenerationPhase[] = [
     label: "Acceptance adapters",
     agentKey: "test_agent",
     specialistRole:
-      "Acceptance adapter agent: inspect the app and implement only the small app-specific adapters explicitly required by the deterministic Stage 14H manifest. VoiceForge owns the Playwright journey structure.",
+      "Acceptance adapter agent: inspect the app and implement only the small app-specific adapters explicitly required by the deterministic Stage 14I manifest. VoiceForge owns the isolated Playwright journey structure.",
     objective:
-      "Do not write Playwright spec files. VoiceForge will compile routes, fixtures, steps, saves, reloads, handoffs, roles, downloads, uploads, and geolocation deterministically. If the supplied manifest declares adapter requirements, create or update only e2e/generated/voiceforge-acceptance-adapters.ts with each exact quoted adapter id and implement that interaction through visible UI. Use locked helpers such as dragAcceptanceControl when useful. If no adapters are required, inspect the relevant UI and report that the deterministic compiler needs no app-specific adapter.",
+      "Do not write Playwright spec files. VoiceForge will compile routes, fixtures, steps, saves, reloads, handoffs, roles, downloads, uploads, and geolocation deterministically. If the supplied manifest declares adapter requirements, create or update only e2e/generated/voiceforge-acceptance-adapters.ts with each exact quoted adapter id and implement that interaction through visible UI. Use locked helpers such as dragAcceptanceControl when useful. If no adapters are required, inspect the relevant UI and report that the deterministic compiler needs no app-specific adapter. Every workflow must be independently reproducible through visible UI. Do not rely on records, localStorage, ids, or mutable variables created by another Playwright test; VoiceForge will replay the transitive prerequisite chain with unique retry- and worker-scoped values.",
     maxTurns: 18,
   },
   {

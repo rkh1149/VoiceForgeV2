@@ -12,12 +12,17 @@ import {
   type AcceptanceManifestFixture,
   type AcceptanceManifestHandoff,
   type AcceptanceManifestJourney,
+  type AcceptanceManifestPrerequisite,
   type AcceptanceManifestRoleCheck,
   type AcceptanceManifestSave,
   type AcceptanceManifestStep,
   type VoiceForgeAcceptanceManifest,
 } from "./acceptance-manifest";
 import { synthesizeWorkflowAcceptancePlan } from "./workflow-acceptance-plan";
+import {
+  analyzeFixtureIsolation,
+  type FixtureIsolationReview,
+} from "./fixture-isolation-review";
 
 export const ACCEPTANCE_COMPILED_SPEC_PATH =
   "e2e/generated/voiceforge-compiled.spec.ts";
@@ -39,6 +44,7 @@ export type CompiledAcceptanceTests = {
   adapterSource: string;
   compilerHash: string;
   lineMap: AcceptanceCompilerLine[];
+  isolationReview: FixtureIsolationReview;
   blockingIssues: string[];
   warnings: string[];
 };
@@ -55,6 +61,7 @@ export type AcceptanceCompilerReview = {
     id: string;
     status: "resolved" | "missing";
   }>;
+  isolationReview: FixtureIsolationReview;
   summary: {
     components: number;
     journeys: number;
@@ -63,6 +70,9 @@ export type AcceptanceCompilerReview = {
     handoffsCompiled: number;
     adaptersRequired: number;
     adaptersResolved: number;
+    prerequisiteSetups: number;
+    runScopedFixtures: number;
+    parallelSafeJourneys: number;
   };
   warnings: string[];
   blockingIssues: string[];
@@ -88,6 +98,10 @@ export function compileAcceptanceTests(input: {
   const missingAdapters = missingAcceptanceAdapters(manifest, adapterSource);
   const manifestSource = acceptanceManifestSource(manifest);
   const compiledSource = acceptanceSpecSource(manifest);
+  const isolationReview = analyzeFixtureIsolation({
+    manifest,
+    compiledSource,
+  });
   const lineMap = acceptanceCompilerLineMap(compiledSource, manifest);
   const compilerHash = sourceHash(
     `${JSON.stringify(manifest)}\n${compiledSource}`,
@@ -99,14 +113,19 @@ export function compileAcceptanceTests(input: {
     adapterSource,
     compilerHash,
     lineMap,
+    isolationReview,
     blockingIssues: uniqueStrings([
       ...validation.blockingIssues,
+      ...isolationReview.blockingIssues,
       ...missingAdapters.map(
         (adapter) =>
           `acceptance_compiler: Required adapter ${adapter.id} is unresolved for ${adapter.workflowId}/${adapter.contractStepId}. Implement that exact quoted key in ${ACCEPTANCE_ADAPTERS_PATH} before browser tests begin.`,
       ),
     ]),
-    warnings: validation.warnings,
+    warnings: uniqueStrings([
+      ...validation.warnings,
+      ...isolationReview.warnings,
+    ]),
   };
 }
 
@@ -250,6 +269,7 @@ export function reviewAcceptanceCompiler(input: {
     ],
     lineMap: compiled.lineMap,
     adapterRequirements,
+    isolationReview: compiled.isolationReview,
     summary: {
       components: compiled.manifest.summary.components,
       journeys: compiled.manifest.summary.journeys,
@@ -258,6 +278,10 @@ export function reviewAcceptanceCompiler(input: {
       handoffsCompiled: compiled.manifest.summary.handoffs,
       adaptersRequired: adapterRequirements.length,
       adaptersResolved,
+      prerequisiteSetups: compiled.isolationReview.summary.prerequisiteSetups,
+      runScopedFixtures: compiled.isolationReview.summary.runScopedFixtures,
+      parallelSafeJourneys:
+        compiled.isolationReview.summary.parallelSafeJourneys,
     },
     warnings: compiled.warnings,
     blockingIssues: uniqueStrings(blockingIssues),
@@ -297,18 +321,14 @@ export const voiceForgeAcceptanceManifest = ${JSON.stringify(manifest, null, 2)}
 }
 
 function acceptanceSpecSource(manifest: VoiceForgeAcceptanceManifest): string {
-  const componentIds = uniqueStrings(
-    manifest.journeys.map((journey) => journey.componentId),
-  );
-  const components = componentIds
-    .map((componentId) =>
-      compileComponent(
-        componentId,
-        manifest.journeys.filter(
-          (journey) => journey.componentId === componentId,
-        ),
-      ),
+  const journeys = [...manifest.journeys]
+    .sort(
+      (left, right) =>
+        left.componentId.localeCompare(right.componentId) ||
+        left.sequence - right.sequence ||
+        left.id.localeCompare(right.id),
     )
+    .map((journey) => compileIsolatedJourneyTest(journey, manifest))
     .join("\n\n");
   const imports = acceptanceRuntimeImports(manifest)
     .map((name) => `  ${name},`)
@@ -317,7 +337,7 @@ function acceptanceSpecSource(manifest: VoiceForgeAcceptanceManifest): string {
     ? 'import { acceptanceAdapters } from "./voiceforge-acceptance-adapters";\n'
     : "";
   return `/**
- * LOCKED GENERATED FILE - deterministic Stage 14H acceptance test output.
+ * LOCKED GENERATED FILE - deterministic Stage 14I isolated acceptance output.
  * Application-specific behavior belongs in voiceforge-acceptance-adapters.ts.
  */
 import { test, expect } from "@playwright/test";
@@ -328,130 +348,271 @@ ${adapterImport}import { voiceForgeAcceptanceManifest } from "./voiceforge-accep
 
 void voiceForgeAcceptanceManifest;
 
-test.describe.serial("VoiceForge compiled workflow acceptance", () => {
-${indent(components, 2)}
+test.describe("VoiceForge compiled workflow acceptance", () => {
+${indent(journeys, 2)}
 });
 `;
 }
 
-function compileComponent(
-  componentId: string,
-  journeys: AcceptanceManifestJourney[],
+function compileIsolatedJourneyTest(
+  journey: AcceptanceManifestJourney,
+  manifest: VoiceForgeAcceptanceManifest,
 ): string {
-  const ordered = [...journeys].sort(
-    (left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id),
+  const journeyById = new Map(
+    manifest.journeys.map((candidate) => [candidate.id, candidate]),
   );
-  const title = `[voiceforge-compiled-component:${componentId}] ${ordered
-    .map((journey) => journey.name)
-    .join(" -> ")}`;
-  const needsGeolocation = ordered.some((journey) => journey.requiresGeolocation);
-  const referencedFixtureIds = new Set(
-    ordered.flatMap((journey) => [
-      ...journey.steps.flatMap((step) => [
-        ...(stepUsesFixtureValues(step) ? step.fixtureIds : []),
-        ...(step.assertionFixtureId ? [step.assertionFixtureId] : []),
-        ...(step.assertionScope ? [step.assertionScope.fixtureId] : []),
-        ...(step.control?.recordScope
-          ? [step.control.recordScope.fixtureId]
-          : []),
-      ]),
-      ...journey.saves.flatMap((save) =>
-        save.fixtureId ? [save.fixtureId] : [],
-      ),
-      ...journey.handoffs.flatMap((handoff) =>
-        handoff.fixtureId ? [handoff.fixtureId] : [],
-      ),
-    ]),
+  const prerequisites = journey.prerequisites.flatMap((configuration) => {
+    const prerequisite = journeyById.get(configuration.journeyId);
+    return prerequisite ? [{ configuration, journey: prerequisite }] : [];
+  });
+  const executionJourneys = [
+    ...prerequisites.map((prerequisite) => prerequisite.journey),
+    journey,
+  ];
+  const title = [
+    `[voiceforge-isolated-journey:${journey.id}]`,
+    `[voiceforge-journey:${journey.id}]`,
+    journey.isolation.parallelSafe ? "[voiceforge-parallel]" : "",
+    journey.name,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const needsGeolocation = executionJourneys.some(
+    (candidate) => candidate.requiresGeolocation,
   );
   const fixtures = uniqueFixtures(
-    ordered
-      .flatMap((journey) => journey.fixtures)
-      .filter((fixture) => referencedFixtureIds.has(fixture.id)),
+    executionJourneys.flatMap((candidate) => candidate.fixtures),
   );
   const fixtureNames = fixtureVariableNames(fixtures);
-  const body = ordered
-    .map((journey) => compileJourney(journey, fixtureNames))
+  const setup = prerequisites
+    .map((prerequisite) =>
+      compilePrerequisiteSetup(
+        journey,
+        prerequisite.journey,
+        prerequisite.configuration,
+        fixtureNames,
+        manifest,
+      ),
+    )
     .join("\n");
-  return `test(${JSON.stringify(title)}, async ({ page, context, browser, baseURL }) => {
-  const runSuffix = acceptanceRunSuffix();
+  return `test(${JSON.stringify(title)}, async ({ page, context, browser, baseURL }, testInfo) => {
+  const runSuffix = acceptanceRunSuffix(testInfo, ${JSON.stringify(
+    journey.isolation.fixtureNamespace,
+  )});
 ${indent(compileFixtureDeclarations(fixtures, fixtureNames), 2)}
-  await context.setExtraHTTPHeaders(voiceForgeRoleHeaders(${JSON.stringify(
-    preferredComponentRole(ordered),
-  )}));
+  await context.setExtraHTTPHeaders(voiceForgeIsolationHeaders(${JSON.stringify(
+    preferredComponentRole(executionJourneys),
+  )}, runSuffix));
 ${
   needsGeolocation
     ? `  await context.grantPermissions(["geolocation"], { origin: baseURL ?? "http://localhost:4321" });
   await context.setGeolocation({ latitude: 43.6532, longitude: -79.3832 });\n`
     : ""
-}${indent(body, 2)}
+}${indent(setup, 2)}
+  acceptanceRetryProbe(testInfo, ${JSON.stringify(journey.id)});
+${indent(compileJourney(journey, fixtureNames, manifest), 2)}
 });`;
 }
+
+function compilePrerequisiteSetup(
+  target: AcceptanceManifestJourney,
+  prerequisite: AcceptanceManifestJourney,
+  configuration: AcceptanceManifestPrerequisite,
+  fixtureNames: Map<string, string>,
+  manifest: VoiceForgeAcceptanceManifest,
+): string {
+  const body = compileJourneyActions(
+    prerequisite,
+    fixtureNames,
+    {
+      targetJourneyId: target.id,
+      sourceJourneyId: prerequisite.id,
+    },
+    manifest,
+    new Set(configuration.workflowIds),
+  );
+  return `await test.step(workflowFixtureSetupTitle(${JSON.stringify(
+    target.id,
+  )}, ${JSON.stringify(prerequisite.id)}), async () => {
+  await page.goto(${JSON.stringify(prerequisite.startRoute)});
+  await expect(page).toHaveURL(${routeRegex(prerequisite.startRoute)});
+${indent(body, 2)}
+});`;
+}
+
+type FixtureSetupMarker = {
+  targetJourneyId: string;
+  sourceJourneyId: string;
+};
 
 function compileJourney(
   journey: AcceptanceManifestJourney,
   fixtureNames: Map<string, string>,
+  manifest: VoiceForgeAcceptanceManifest,
 ): string {
-  const body: string[] = [];
-  const emittedSaves = new Set<string>();
-  const emittedHandoffs = new Set<string>();
-  const workflowIds = new Set(journey.steps.map((step) => step.workflowId));
-
-  for (const handoff of journey.handoffs) {
-    if (workflowIds.has(handoff.producerWorkflowId)) continue;
-    body.push(compileHandoff(handoff, fixtureNames));
-    emittedHandoffs.add(handoff.id);
-  }
-
-  journey.steps.forEach((step, index) => {
-    body.push(compileStep(step, journey, fixtureNames));
-    for (const save of journey.saves.filter(
-      (candidate) =>
-        candidate.workflowId === step.workflowId &&
-        candidate.stepId === step.contractStepId,
-    )) {
-      body.push(compileSave(save, fixtureNames));
-      emittedSaves.add(save.id);
-    }
-    const nextWorkflowId = journey.steps[index + 1]?.workflowId;
-    if (nextWorkflowId === step.workflowId) return;
-    for (const handoff of journey.handoffs.filter(
-      (candidate) => candidate.producerWorkflowId === step.workflowId,
-    )) {
-      body.push(compileHandoff(handoff, fixtureNames));
-      emittedHandoffs.add(handoff.id);
-    }
-  });
-
-  for (const save of journey.saves) {
-    if (!emittedSaves.has(save.id)) body.push(compileSave(save, fixtureNames));
-  }
-  for (const handoff of journey.handoffs) {
-    if (!emittedHandoffs.has(handoff.id)) {
-      body.push(compileHandoff(handoff, fixtureNames));
-    }
-  }
-  journey.roleChecks.forEach((roleCheck, index) => {
-    body.push(compileRoleCheck(roleCheck, index));
-  });
+  const body = compileJourneyActions(journey, fixtureNames, null, manifest);
   return `await test.step(workflowJourneyTitle(${JSON.stringify(
     journey.id,
   )}, ${JSON.stringify(journey.name)}), async () => {
   await page.goto(${JSON.stringify(journey.startRoute)});
   await expect(page).toHaveURL(${routeRegex(journey.startRoute)});
-${indent(body.join("\n"), 2)}
+${indent(body, 2)}
 });`;
+}
+
+function compileJourneyActions(
+  journey: AcceptanceManifestJourney,
+  fixtureNames: Map<string, string>,
+  setup: FixtureSetupMarker | null,
+  manifest: VoiceForgeAcceptanceManifest,
+  allowedWorkflowIds?: Set<string>,
+): string {
+  const body: string[] = [];
+  const emittedSaves = new Set<string>();
+  const emittedHandoffs = new Set<string>();
+  const steps = journey.steps.filter(
+    (step) => !allowedWorkflowIds || allowedWorkflowIds.has(step.workflowId),
+  );
+  const saves = journey.saves.filter(
+    (save) => !allowedWorkflowIds || allowedWorkflowIds.has(save.workflowId),
+  );
+  const handoffs = journey.handoffs.filter(
+    (handoff) =>
+      !allowedWorkflowIds ||
+      (allowedWorkflowIds.has(handoff.producerWorkflowId) &&
+        allowedWorkflowIds.has(handoff.consumerWorkflowId)),
+  );
+  const workflowIds = new Set(steps.map((step) => step.workflowId));
+  const handoffEmissionSteps = new Map(
+    handoffs.map((handoff) => [
+      handoff.id,
+      handoffEmissionStepKey(handoff, journey, manifest, steps, saves),
+    ]),
+  );
+
+  for (const handoff of handoffs) {
+    if (workflowIds.has(handoff.producerWorkflowId)) continue;
+    body.push(compileHandoff(handoff, manifest, fixtureNames, setup));
+    emittedHandoffs.add(handoff.id);
+  }
+
+  steps.forEach((step, index) => {
+    if (index === 0 || steps[index - 1]?.workflowId !== step.workflowId) {
+      body.push(`await page.goto(${JSON.stringify(step.route)});
+await expect(page).toHaveURL(${routeRegex(step.route)});`);
+    }
+    body.push(compileStep(step, journey, fixtureNames, setup));
+    for (const save of saves.filter(
+      (candidate) =>
+        candidate.workflowId === step.workflowId &&
+        candidate.stepId === step.contractStepId,
+    )) {
+      body.push(compileSave(save, fixtureNames, setup));
+      emittedSaves.add(save.id);
+    }
+    for (const handoff of handoffs.filter(
+      (candidate) =>
+        handoffEmissionSteps.get(candidate.id) === stepKey(step) &&
+        !emittedHandoffs.has(candidate.id),
+    )) {
+      body.push(compileHandoff(handoff, manifest, fixtureNames, setup));
+      emittedHandoffs.add(handoff.id);
+    }
+  });
+
+  for (const save of saves) {
+    if (!emittedSaves.has(save.id)) {
+      body.push(compileSave(save, fixtureNames, setup));
+    }
+  }
+  for (const handoff of handoffs) {
+    if (!emittedHandoffs.has(handoff.id)) {
+      body.push(compileHandoff(handoff, manifest, fixtureNames, setup));
+    }
+  }
+  if (!setup) {
+    journey.roleChecks.forEach((roleCheck, index) => {
+      body.push(compileRoleCheck(roleCheck, index));
+    });
+  }
+  return body.join("\n");
+}
+
+function handoffEmissionStepKey(
+  handoff: AcceptanceManifestHandoff,
+  journey: AcceptanceManifestJourney,
+  manifest: VoiceForgeAcceptanceManifest,
+  steps: AcceptanceManifestStep[],
+  saves: AcceptanceManifestSave[],
+): string {
+  let emissionIndex = steps.findIndex(
+    (step) =>
+      step.workflowId === handoff.producerWorkflowId &&
+      step.contractStepId === handoff.fromStepId,
+  );
+  const consumerJourney = manifest.journeys.find((candidate) =>
+    candidate.steps.some(
+      (step) => step.workflowId === handoff.consumerWorkflowId,
+    ),
+  );
+  const consumerSteps =
+    consumerJourney?.steps.filter(
+      (step) => step.workflowId === handoff.consumerWorkflowId,
+    ) ?? [];
+  const targetIndex = consumerSteps.findIndex(
+    (step) => step.control?.controlId === handoff.consumerControl?.controlId,
+  );
+  const requiredRecordEntities = new Set(
+    consumerSteps
+      .slice(0, targetIndex >= 0 ? targetIndex + 1 : 0)
+      .flatMap((step) =>
+        step.control?.recordScope ? [step.control.recordScope.entityKey] : [],
+      ),
+  );
+  const consumerStartIndex = steps.findIndex(
+    (step) => step.workflowId === handoff.consumerWorkflowId,
+  );
+  const latestPrerequisiteIndex =
+    consumerStartIndex >= 0 ? consumerStartIndex - 1 : steps.length - 1;
+  for (const entityKey of requiredRecordEntities) {
+    for (const save of saves.filter(
+      (candidate) =>
+        candidate.entityKey === entityKey && candidate.expectedPresence,
+    )) {
+      const saveIndex = steps.findIndex(
+        (step) =>
+          step.workflowId === save.workflowId &&
+          step.contractStepId === save.stepId,
+      );
+      if (saveIndex <= latestPrerequisiteIndex) {
+        emissionIndex = Math.max(emissionIndex, saveIndex);
+      }
+    }
+  }
+  const emissionStep = steps[Math.max(emissionIndex, 0)];
+  return emissionStep ? stepKey(emissionStep) : "";
+}
+
+function stepKey(step: AcceptanceManifestStep): string {
+  return `${step.workflowId}:${step.contractStepId}`;
 }
 
 function compileSave(
   save: AcceptanceManifestSave,
   fixtureNames: Map<string, string>,
+  setup: FixtureSetupMarker | null,
 ): string {
   const fixture = save.fixtureId ? fixtureNames.get(save.fixtureId) : null;
   const expected = fixture ?? JSON.stringify(save.expectedText);
   const assertion = save.expectedPresence
     ? `await expect(page.locator("body")).toContainText(${expected});`
     : `await expect(page.locator("body")).not.toContainText(${expected});`;
-  return `await test.step(workflowSaveTitle(${JSON.stringify(save.id)}), async () => {
+  const marker = setup
+    ? `workflowFixtureSaveTitle(${JSON.stringify(
+        setup.targetJourneyId,
+      )}, ${JSON.stringify(setup.sourceJourneyId)}, ${JSON.stringify(save.id)})`
+    : `workflowSaveTitle(${JSON.stringify(save.id)})`;
+  return `await test.step(${marker}, async () => {
   await page.reload();
   ${assertion}
 });`;
@@ -459,12 +620,17 @@ function compileSave(
 
 function compileHandoff(
   handoff: AcceptanceManifestHandoff,
+  manifest: VoiceForgeAcceptanceManifest,
   fixtureNames: Map<string, string>,
+  setup: FixtureSetupMarker | null,
 ): string {
   const fixture = handoff.fixtureId
     ? fixtureNames.get(handoff.fixtureId)
     : null;
   const expected = fixture ?? JSON.stringify(handoff.expectedText);
+  const assertion = handoff.expectedPresence
+    ? `await expect(page.locator("body")).toContainText(${expected});`
+    : `await expect(page.locator("body")).not.toContainText(${expected});`;
   const consumer = handoff.consumerControl
     ? `${compileControlDeclaration(
         handoff.consumerControl,
@@ -476,14 +642,152 @@ function compileHandoff(
     handoff.consumerControl.accessibleName,
   )});`
     : "";
-  return `await test.step(workflowHandoffTitle(${JSON.stringify(
-    handoff.id,
-  )}), async () => {
+  const consumerJourney = manifest.journeys.find((journey) =>
+    journey.steps.some(
+      (step) => step.workflowId === handoff.consumerWorkflowId,
+    ),
+  );
+  const revealPath = consumerJourney
+    ? compileHandoffRevealPath(handoff, consumerJourney, fixtureNames)
+    : "";
+  const continuation = consumerJourney
+    ? compileHandoffConsumerContinuation(
+        handoff,
+        consumerJourney,
+        fixtureNames,
+      )
+    : "";
+  const marker = setup
+    ? `workflowFixtureHandoffTitle(${JSON.stringify(
+        setup.targetJourneyId,
+      )}, ${JSON.stringify(setup.sourceJourneyId)}, ${JSON.stringify(
+        handoff.id,
+      )})`
+    : `workflowHandoffTitle(${JSON.stringify(handoff.id)})`;
+  return `await test.step(${marker}, async () => {
   await page.goto(${JSON.stringify(handoff.consumerRoute)});
   await expect(page).toHaveURL(${routeRegex(handoff.consumerRoute)});
+  ${revealPath}
   ${consumer}
-  await expect(page.locator("body")).toContainText(${expected});
+  ${continuation}
+  ${assertion}
 });`;
+}
+
+function compileHandoffConsumerContinuation(
+  handoff: AcceptanceManifestHandoff,
+  journey: AcceptanceManifestJourney,
+  fixtureNames: Map<string, string>,
+): string {
+  if (!handoff.consumerControl) return "";
+  const consumerSteps = journey.steps.filter(
+    (step) => step.workflowId === handoff.consumerWorkflowId,
+  );
+  const targetIndex = consumerSteps.findIndex(
+    (step) => step.control?.controlId === handoff.consumerControl?.controlId,
+  );
+  const lines: string[] = [];
+  const target = targetIndex >= 0 ? consumerSteps[targetIndex] : null;
+  if (
+    (target && isSafeHandoffNavigationStep(target)) ||
+    isSafeStandaloneNavigationControl(handoff.consumerControl)
+  ) {
+    lines.push("await consumer.click();");
+  }
+  const seen = new Set<string>();
+  for (const [index, step] of consumerSteps
+    .slice(targetIndex >= 0 ? targetIndex + 1 : 0)
+    .entries()) {
+    if (!isSafeHandoffNavigationStep(step)) continue;
+    if (!step.control) {
+      lines.push(`await page.goto(${JSON.stringify(step.expectedRoute)});`);
+      continue;
+    }
+    const key = `${step.control.workflowId}:${step.control.controlId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const controlName = `consumerPathControl${index}`;
+    lines.push(
+      compileControlDeclaration(
+        step.control,
+        fixtureNames,
+        controlName,
+        `consumerPathRecord${index}`,
+      ),
+      `await expectContractControl(${controlName}, ${JSON.stringify(
+        step.control.accessibleName,
+      )});`,
+      `await ${controlName}.click();`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function isSafeStandaloneNavigationControl(
+  control: AcceptanceManifestControl,
+): boolean {
+  const identity = `${control.controlId} ${control.accessibleName}`;
+  return (
+    /\b(nav|navigate|open|view|go|back|next|previous|screen|page)\b/i.test(
+      identity.replaceAll("-", " "),
+    ) &&
+    !/\b(add|create|save|edit|update|delete|remove|archive|complete|finish|submit|confirm|cancel)\b/i.test(
+      identity,
+    )
+  );
+}
+
+function isSafeHandoffNavigationStep(step: AcceptanceManifestStep): boolean {
+  if (step.primitive !== "navigate") return false;
+  if (!step.control) return true;
+  return !/\b(save|update|delete|remove|archive|complete|finish|submit|confirm|cancel)\b/i.test(
+    `${step.control.controlId} ${step.control.accessibleName}`,
+  );
+}
+
+function compileHandoffRevealPath(
+  handoff: AcceptanceManifestHandoff,
+  journey: AcceptanceManifestJourney,
+  fixtureNames: Map<string, string>,
+): string {
+  if (!handoff.consumerControl) return "";
+  const consumerSteps = journey.steps.filter(
+    (step) => step.workflowId === handoff.consumerWorkflowId,
+  );
+  const targetIndex = consumerSteps.findIndex(
+    (step) => step.control?.controlId === handoff.consumerControl?.controlId,
+  );
+  if (targetIndex <= 0) return "";
+  const seen = new Set<string>();
+  return consumerSteps
+    .slice(0, targetIndex)
+    .flatMap((step, index) => {
+      if (step.primitive === "navigate" && !step.control) {
+        return [
+          `await page.goto(${JSON.stringify(step.expectedRoute)});\nawait expect(page).toHaveURL(${routeRegex(step.expectedRoute)});`,
+        ];
+      }
+      if (
+        !step.control ||
+        !["click", "navigate"].includes(step.primitive) ||
+        seen.has(`${step.control.workflowId}:${step.control.controlId}`)
+      ) {
+        return [];
+      }
+      seen.add(`${step.control.workflowId}:${step.control.controlId}`);
+      const controlName = `revealControl${index}`;
+      return [
+        `${compileControlDeclaration(
+          step.control,
+          fixtureNames,
+          controlName,
+          `revealRecord${index}`,
+        )}\nawait expectContractControl(${controlName}, ${JSON.stringify(
+          step.control.accessibleName,
+        )});\nawait ${controlName}.click();`,
+      ];
+    })
+    .join("\n");
 }
 
 function compileRoleCheck(
@@ -518,12 +822,21 @@ function compileStep(
   step: AcceptanceManifestStep,
   journey: AcceptanceManifestJourney,
   fixtureNames: Map<string, string>,
+  setup: FixtureSetupMarker | null,
 ): string {
-  const marker = `workflowStepTitle(${JSON.stringify(
-    step.workflowId,
-  )}, ${JSON.stringify(step.contractStepId)}, ${JSON.stringify(
-    step.description,
-  )})`;
+  const marker = setup
+    ? `workflowFixtureStepTitle(${JSON.stringify(
+        setup.targetJourneyId,
+      )}, ${JSON.stringify(setup.sourceJourneyId)}, ${JSON.stringify(
+        step.workflowId,
+      )}, ${JSON.stringify(step.contractStepId)}, ${JSON.stringify(
+        step.description,
+      )})`
+    : `workflowStepTitle(${JSON.stringify(
+        step.workflowId,
+      )}, ${JSON.stringify(step.contractStepId)}, ${JSON.stringify(
+        step.description,
+      )})`;
   const control = step.control
     ? compileControlDeclaration(step.control, fixtureNames)
     : "";
@@ -592,8 +905,10 @@ ${assertionForStep(step, fixtureNames)}`;
       break;
     case "click":
     default:
-      action = `await control.click();
-${assertionForStep(step, fixtureNames)}`;
+      action = step.control
+        ? `await control.click();
+${assertionForStep(step, fixtureNames)}`
+        : assertionForStep(step, fixtureNames);
       break;
   }
   const accessible = step.control?.accessibleName
@@ -618,7 +933,7 @@ function compileControlDeclaration(
       fixtureNames.get(control.recordScope.fixtureId) ?? JSON.stringify("");
     const locator =
       control.locatorMode === "accessible_name_fallback"
-        ? `resolveAcceptanceControl(${recordName}, ${JSON.stringify(
+        ? `await resolveUniqueAcceptanceControl(${recordName}, ${JSON.stringify(
             control.workflowId,
           )}, ${JSON.stringify(control.controlId)}, ${JSON.stringify(
             control.accessibleName,
@@ -632,7 +947,7 @@ function compileControlDeclaration(
 const ${controlName} = ${locator};`;
   }
   if (control.locatorMode === "accessible_name_fallback") {
-    return `const ${controlName} = resolveAcceptanceControl(page, ${JSON.stringify(
+    return `const ${controlName} = await resolveUniqueAcceptanceControl(page, ${JSON.stringify(
       control.workflowId,
     )}, ${JSON.stringify(control.controlId)}, ${JSON.stringify(
       control.accessibleName,
@@ -706,25 +1021,51 @@ function compileFixtureDeclarations(
   fixtureNames: Map<string, string>,
 ): string {
   if (fixtures.length === 0) return "void runSuffix;";
-  return fixtures
+  return orderRelationFixtures(fixtures)
     .map((fixture) => {
       const name = fixtureNames.get(fixture.id)!;
-      return `const ${name} = ${fixtureExpression(fixture)};`;
+      return `const ${name} = ${fixtureExpression(fixture, fixtureNames)};`;
     })
     .join("\n");
 }
 
-function fixtureExpression(fixture: AcceptanceManifestFixture): string {
+function fixtureExpression(
+  fixture: AcceptanceManifestFixture,
+  fixtureNames: Map<string, string>,
+): string {
+  if (fixture.relationFixtureId) {
+    return fixtureNames.get(fixture.relationFixtureId) ?? JSON.stringify(fixture.value);
+  }
+  if (fixture.type === "file" || fixture.type === "image") {
+    return `\`voiceforge-\${runSuffix}.png\``;
+  }
   if (fixture.runScoped && typeof fixture.value === "string") {
     if (/email/i.test(`${fixture.fieldKey} ${fixture.label}`)) {
       return `\`vf-\${runSuffix}@example.com\``;
     }
     return `${JSON.stringify(fixture.value)} + " " + runSuffix`;
   }
-  if (fixture.type === "file" || fixture.type === "image") {
-    return `\`voiceforge-\${runSuffix}.png\``;
-  }
   return JSON.stringify(fixture.value);
+}
+
+function orderRelationFixtures(
+  fixtures: AcceptanceManifestFixture[],
+): AcceptanceManifestFixture[] {
+  const byId = new Map(fixtures.map((fixture) => [fixture.id, fixture]));
+  const ordered: AcceptanceManifestFixture[] = [];
+  const visited = new Set<string>();
+  const visit = (fixture: AcceptanceManifestFixture, active: Set<string>) => {
+    if (visited.has(fixture.id) || active.has(fixture.id)) return;
+    const nextActive = new Set(active).add(fixture.id);
+    const relation = fixture.relationFixtureId
+      ? byId.get(fixture.relationFixtureId)
+      : null;
+    if (relation) visit(relation, nextActive);
+    visited.add(fixture.id);
+    ordered.push(fixture);
+  };
+  fixtures.forEach((fixture) => visit(fixture, new Set()));
+  return ordered;
 }
 
 function fixtureVariableNames(
@@ -771,23 +1112,32 @@ function acceptanceRuntimeImports(
   manifest: VoiceForgeAcceptanceManifest,
 ): string[] {
   const steps = manifest.journeys.flatMap((journey) => journey.steps);
-  const controls = [
+  const interactionControls = [
     ...steps.flatMap((step) => (step.control ? [step.control] : [])),
     ...manifest.journeys.flatMap((journey) =>
       journey.handoffs.flatMap((handoff) =>
         handoff.consumerControl ? [handoff.consumerControl] : [],
       ),
     ),
-    ...manifest.journeys.flatMap((journey) =>
-      journey.roleChecks.map((role) => role.hiddenControl),
-    ),
   ];
+  const roleControls = manifest.journeys.flatMap((journey) =>
+    journey.roleChecks.map((role) => role.hiddenControl),
+  );
+  const controls = [...interactionControls, ...roleControls];
   const names = new Set<string>([
+    "acceptanceRetryProbe",
     "acceptanceRunSuffix",
     "voiceForgeRoleHeaders",
+    "voiceForgeIsolationHeaders",
     "workflowJourneyTitle",
     "workflowStepTitle",
   ]);
+  if (manifest.journeys.some((journey) => journey.prerequisites.length > 0)) {
+    names.add("workflowFixtureSetupTitle");
+    names.add("workflowFixtureStepTitle");
+    names.add("workflowFixtureSaveTitle");
+    names.add("workflowFixtureHandoffTitle");
+  }
   if (controls.length > 0) {
     names.add("expectContractControl");
   }
@@ -795,8 +1145,15 @@ function acceptanceRuntimeImports(
     names.add("vfControl");
   }
   if (
-    controls.some((control) =>
+    interactionControls.some((control) =>
       control.locatorMode === "accessible_name_fallback",
+    )
+  ) {
+    names.add("resolveUniqueAcceptanceControl");
+  }
+  if (
+    roleControls.some(
+      (control) => control.locatorMode === "accessible_name_fallback",
     )
   ) {
     names.add("resolveAcceptanceControl");
@@ -838,12 +1195,6 @@ function acceptanceRuntimeImports(
   return [...names].sort();
 }
 
-function stepUsesFixtureValues(step: AcceptanceManifestStep): boolean {
-  return ["fill", "complete_form", "select", "upload", "adapter"].includes(
-    step.primitive,
-  );
-}
-
 function compilerPhase(input: {
   filesWritten: string[];
   deletedFiles: string[];
@@ -855,7 +1206,7 @@ function compilerPhase(input: {
     filesWritten: input.filesWritten,
     filesDeleted: input.deletedFiles,
     notes:
-      "Compiled the workflow acceptance manifest into protected Playwright structure and retained only the app-specific adapter boundary.",
+      "Compiled each workflow journey with visible prerequisite setup, per-attempt fixture namespaces, retry validation, and a protected app-specific adapter boundary.",
     turnContinuations: 0,
     turnLimit: 0,
   };

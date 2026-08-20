@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright install chromium && playwright test"
+    "test:e2e": "playwright install chromium && node e2e/voiceforge-isolation-runner.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "6.3.1",

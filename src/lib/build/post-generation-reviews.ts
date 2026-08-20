@@ -68,6 +68,7 @@ const PROTECTED_TEMPLATE_FILES = new Set([
   "e2e/smoke.spec.ts",
   "e2e/voiceforge-acceptance.ts",
   "e2e/voiceforge-progress-reporter.ts",
+  "e2e/voiceforge-isolation-runner.mjs",
   "e2e/generated/voiceforge-acceptance-manifest.ts",
   "e2e/generated/voiceforge-compiled.spec.ts",
 ]);
@@ -260,7 +261,7 @@ function reviewCompiledAcceptanceManifest(
     summary:
       report.blockingIssues.length > 0
         ? `Deterministic acceptance compilation found ${report.blockingIssues.length} blocking issue${report.blockingIssues.length === 1 ? "" : "s"}; ${report.summary.adaptersResolved}/${report.summary.adaptersRequired} app-specific adapters are resolved.`
-        : `Deterministic acceptance compiler verified ${report.summary.journeys} journey(s), ${report.summary.stepsCompiled} step(s), ${report.summary.savesCompiled} save check(s), and ${report.summary.handoffsCompiled} handoff check(s).`,
+        : `Deterministic acceptance compiler verified ${report.summary.journeys} self-contained journey(s), ${report.summary.stepsCompiled} step(s), ${report.summary.prerequisiteSetups} visible prerequisite setup(s), and ${report.summary.parallelSafeJourneys} parallel-safe journey(s).`,
     warnings: report.warnings,
     blockingIssues: report.blockingIssues,
     payload: { ...report },
@@ -542,7 +543,12 @@ export function postGenerationRepairDomain(
     return "interface";
   }
   if (issue.startsWith("persistence_handoff:")) return "persistence";
-  if (issue.startsWith("acceptance_compiler:")) return "acceptance";
+  if (
+    issue.startsWith("acceptance_compiler:") ||
+    issue.startsWith("fixture_isolation:")
+  ) {
+    return "acceptance";
+  }
   if (issue.startsWith("acceptance_test:")) return "acceptance";
   if (issue.startsWith("human_completeness:")) return "completeness";
   return "implementation";
@@ -640,7 +646,11 @@ export function createPostGenerationRepairEvidence(input: {
       : input.domain === "persistence"
         ? "persistence_handoff_reviewer"
         : input.domain === "acceptance" &&
-            input.issues.some((issue) => issue.startsWith("acceptance_compiler:"))
+            input.issues.some(
+              (issue) =>
+                issue.startsWith("acceptance_compiler:") ||
+                issue.startsWith("fixture_isolation:"),
+            )
           ? "acceptance_compiler"
       : input.domain === "acceptance"
           ? "acceptance_test_reviewer"
@@ -726,6 +736,15 @@ function compactReviewPayload(
       "summary",
       "generatedTestFiles",
       "journeys",
+    ]);
+  }
+  if (review.agentKey === "acceptance_compiler") {
+    return pickPayload(payload, [
+      "summary",
+      "isolationReview",
+      "adapterRequirements",
+      "warnings",
+      "blockingIssues",
     ]);
   }
   if (review.agentKey === "product_completeness_reviewer") {

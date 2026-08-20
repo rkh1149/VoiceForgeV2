@@ -65,6 +65,9 @@ describe("agent file tool path policy", () => {
       isAgentWritablePath("e2e/voiceforge-progress-reporter.ts").ok,
     ).toBe(false);
     expect(
+      isAgentWritablePath("e2e/voiceforge-isolation-runner.mjs").ok,
+    ).toBe(false);
+    expect(
       isAgentWritablePath(
         "e2e/generated/voiceforge-acceptance-manifest.ts",
       ).ok,

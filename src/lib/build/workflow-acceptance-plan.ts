@@ -514,7 +514,7 @@ function buildJourney(input: {
       ...contracts.flatMap((contract) => contract.start.preconditions),
       ...input.dependsOnJourneyIds.map(
         (dependency) =>
-          `Run after ${dependency} in the same serial Playwright suite. Recreate any browser-local prerequisites through visible UI inside this test because Playwright tests do not share localStorage or sessionStorage.`,
+          `Recreate ${dependency} and its prerequisite records through visible UI inside this journey test; Playwright tests do not share localStorage or sessionStorage, so do not depend on execution order or browser state from another test.`,
       ),
     ]),
     steps,

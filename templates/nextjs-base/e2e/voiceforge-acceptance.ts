@@ -8,6 +8,7 @@ import {
   type Download,
   type Locator,
   type Page,
+  type TestInfo,
 } from "@playwright/test";
 
 type ContractLocatorScope = Page | Locator;
@@ -53,10 +54,45 @@ export type VoiceForgeAcceptanceFormFixture = {
   value: unknown;
 };
 
-const ACCEPTANCE_RUN_SUFFIX = `${process.pid}-${Date.now().toString(36)}`;
+export function acceptanceRunSuffix(
+  testInfo?: TestInfo,
+  fixtureNamespace = "legacy",
+): string {
+  if (!testInfo) {
+    return [
+      "vf",
+      acceptanceIdentityHash(fixtureNamespace),
+      process.pid.toString(36),
+      Date.now().toString(36).slice(-7),
+      Math.random().toString(36).slice(2, 7),
+    ].join("-");
+  }
+  return [
+    "vf",
+    acceptanceIdentityHash(fixtureNamespace),
+    acceptanceIdentityHash(testInfo.project.name || "project"),
+    acceptanceIdentityHash(testInfo.testId),
+    `w${testInfo.workerIndex}`,
+    `p${testInfo.parallelIndex}`,
+    `r${testInfo.retry}`,
+    `n${testInfo.repeatEachIndex}`,
+    process.pid.toString(36),
+    Date.now().toString(36).slice(-7),
+  ].join("-");
+}
 
-export function acceptanceRunSuffix(): string {
-  return ACCEPTANCE_RUN_SUFFIX;
+export function acceptanceRetryProbe(
+  testInfo: TestInfo,
+  journeyId: string,
+): void {
+  if (
+    process.env.VOICEFORGE_ACCEPTANCE_RETRY_PROBE === "1" &&
+    testInfo.retry === 0
+  ) {
+    throw new Error(
+      `[voiceforge-retry-probe:${journeyId}] Intentional first-attempt failure after visible prerequisite setup.`,
+    );
+  }
 }
 
 export function workflowJourneyTitle(journeyId: string, name: string): string {
@@ -77,6 +113,39 @@ export function workflowSaveTitle(saveId: string): string {
 
 export function workflowHandoffTitle(handoffId: string): string {
   return `[voiceforge-handoff:${handoffId}] reaches its consumer`;
+}
+
+export function workflowFixtureSetupTitle(
+  targetJourneyId: string,
+  sourceJourneyId: string,
+): string {
+  return `[voiceforge-fixture-setup:${targetJourneyId}:${sourceJourneyId}] recreate prerequisite through visible UI`;
+}
+
+export function workflowFixtureStepTitle(
+  targetJourneyId: string,
+  sourceJourneyId: string,
+  workflowId: string,
+  stepId: string,
+  description: string,
+): string {
+  return `[voiceforge-fixture-step:${targetJourneyId}:${sourceJourneyId}:${workflowId}:${stepId}] ${description}`;
+}
+
+export function workflowFixtureSaveTitle(
+  targetJourneyId: string,
+  sourceJourneyId: string,
+  saveId: string,
+): string {
+  return `[voiceforge-fixture-save:${targetJourneyId}:${sourceJourneyId}:${saveId}] prerequisite persists`;
+}
+
+export function workflowFixtureHandoffTitle(
+  targetJourneyId: string,
+  sourceJourneyId: string,
+  handoffId: string,
+): string {
+  return `[voiceforge-fixture-handoff:${targetJourneyId}:${sourceJourneyId}:${handoffId}] prerequisite reaches its consumer`;
 }
 
 export function vfControl(
@@ -123,11 +192,30 @@ export function resolveAcceptanceControl(
   accessibleName: string,
 ): Locator {
   const stable = vfControl(scope, workflowId, controlId);
-  return stable.or(
+  return stable
+    .or(scope.getByRole("button", { name: accessibleName, exact: true }))
+    .or(scope.getByRole("link", { name: accessibleName, exact: true }))
+    .or(scope.getByLabel(accessibleName, { exact: true }))
+    .first();
+}
+
+export async function resolveUniqueAcceptanceControl(
+  scope: ContractLocatorScope,
+  workflowId: string,
+  controlId: string,
+  accessibleName: string,
+): Promise<Locator> {
+  const stable = vfControl(scope, workflowId, controlId);
+  if ((await stable.count()) === 1) return stable;
+  const accessible = [
     scope.getByRole("button", { name: accessibleName, exact: true }),
-  ).or(scope.getByRole("link", { name: accessibleName, exact: true })).or(
+    scope.getByRole("link", { name: accessibleName, exact: true }),
     scope.getByLabel(accessibleName, { exact: true }),
-  );
+  ];
+  for (const candidate of accessible) {
+    if ((await candidate.count()) === 1) return candidate;
+  }
+  return stable.or(accessible[0]).or(accessible[1]).or(accessible[2]).first();
 }
 
 export async function expectContractControl(
@@ -143,6 +231,16 @@ export function voiceForgeRoleHeaders(
   role: VoiceForgeAcceptanceRole,
 ): Record<string, string> {
   return { "x-voiceforge-test-role": role };
+}
+
+export function voiceForgeIsolationHeaders(
+  role: VoiceForgeAcceptanceRole,
+  runSuffix: string,
+): Record<string, string> {
+  return {
+    ...voiceForgeRoleHeaders(role),
+    "x-voiceforge-test-namespace": runSuffix,
+  };
 }
 
 export async function expectPersistedAfterReload(
@@ -295,6 +393,15 @@ function cssAttributeValue(value: string): string {
     return `\\${character}`;
   });
   return `"${escaped}"`;
+}
+
+function acceptanceIdentityHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).padStart(7, "0").slice(-7);
 }
 
 async function firstUsableOptionValue(control: Locator): Promise<string> {

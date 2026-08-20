@@ -113,8 +113,8 @@ const ACTIONS = new Set<DataAction>([
 ]);
 
 const globalStore = globalThis as typeof globalThis & {
-  __voiceforgeLocalData?: Map<string, LocalRecord>;
-  __voiceforgeLocalSavedFilters?: Map<string, LocalSavedFilter>;
+  __voiceforgeLocalData?: Map<string, Map<string, LocalRecord>>;
+  __voiceforgeLocalSavedFilters?: Map<string, Map<string, LocalSavedFilter>>;
 };
 
 export async function POST(req: Request) {
@@ -127,6 +127,7 @@ export async function POST(req: Request) {
     return handleLocalData(
       body as DataBody & { action: DataAction },
       req.headers.get("x-voiceforge-test-role"),
+      req.headers.get("x-voiceforge-test-namespace"),
     );
   }
 
@@ -219,8 +220,11 @@ export async function POST(req: Request) {
 function handleLocalData(
   body: DataBody & { action: DataAction },
   requestedRole: string | null,
+  requestedNamespace: string | null,
 ) {
-  const records = getLocalRecords();
+  const namespace = localAcceptanceNamespace(requestedNamespace);
+  const records = getLocalRecords(namespace);
+  const savedFilters = getLocalSavedFilters(namespace);
   const now = new Date().toISOString();
 
   switch (body.action) {
@@ -292,7 +296,12 @@ function handleLocalData(
         );
       }
       return NextResponse.json(
-        searchLocalRecords(entity, body.query, body.includeDeleted === true),
+        searchLocalRecords(
+          records,
+          entity,
+          body.query,
+          body.includeDeleted === true,
+        ),
       );
     }
     case "getRecord": {
@@ -409,7 +418,7 @@ function handleLocalData(
       return NextResponse.json({ configs });
     }
     case "listSavedFilters": {
-      const filters = [...getLocalSavedFilters().values()]
+      const filters = [...savedFilters.values()]
         .filter(
           (filter) =>
             typeof body.entityKey !== "string" ||
@@ -433,7 +442,7 @@ function handleLocalData(
       const definition = isPlainObject(body.definition) ? body.definition : {};
       const name = body.name.trim().slice(0, 120);
       if (!name) return localPlatformError(400, "invalid_filter_name", "Saved filter name is required.");
-      const existing = [...getLocalSavedFilters().values()].find(
+      const existing = [...savedFilters.values()].find(
         (filter) => filter.entityKey === entity.key && filter.name === name,
       );
       const filter: LocalSavedFilter = {
@@ -447,18 +456,18 @@ function handleLocalData(
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
       };
-      getLocalSavedFilters().set(filter.id, filter);
+      savedFilters.set(filter.id, filter);
       return NextResponse.json({ filter }, { status: 201 });
     }
     case "deleteSavedFilter": {
       if (typeof body.filterId !== "string") {
         return localPlatformError(400, "invalid_request", "filterId required.");
       }
-      const filter = getLocalSavedFilters().get(body.filterId);
+      const filter = savedFilters.get(body.filterId);
       if (!filter) {
         return localPlatformError(404, "saved_filter_not_found", "Saved filter not found.");
       }
-      getLocalSavedFilters().delete(body.filterId);
+      savedFilters.delete(body.filterId);
       return NextResponse.json({ filter });
     }
     case "runReport": {
@@ -474,7 +483,7 @@ function handleLocalData(
         );
       }
       return NextResponse.json({
-        report: buildLocalReport(entity, body.report, now),
+        report: buildLocalReport(records, entity, body.report, now),
       });
     }
     case "exportRecordsCsv": {
@@ -489,7 +498,7 @@ function handleLocalData(
           `Data entity "${normalizeEntityKey(body.entityKey)}" is not defined for this app.`,
         );
       }
-      const result = searchLocalRecords(entity, body.query, false);
+      const result = searchLocalRecords(records, entity, body.query, false);
       const fileName = `${normalizeFileName(
         typeof body.fileName === "string" ? body.fileName : entity.key,
       )}.csv`;
@@ -513,17 +522,34 @@ function localAcceptanceRole(
     : "owner";
 }
 
-function getLocalRecords(): Map<string, LocalRecord> {
-  globalStore.__voiceforgeLocalData ??= new Map<string, LocalRecord>();
-  return globalStore.__voiceforgeLocalData;
+function localAcceptanceNamespace(value: string | null): string {
+  if (!value) return "default";
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 160);
+  return normalized || "default";
 }
 
-function getLocalSavedFilters(): Map<string, LocalSavedFilter> {
-  globalStore.__voiceforgeLocalSavedFilters ??= new Map<string, LocalSavedFilter>();
-  return globalStore.__voiceforgeLocalSavedFilters;
+function getLocalRecords(namespace: string): Map<string, LocalRecord> {
+  globalStore.__voiceforgeLocalData ??= new Map();
+  const records = globalStore.__voiceforgeLocalData.get(namespace) ?? new Map();
+  globalStore.__voiceforgeLocalData.set(namespace, records);
+  return records;
+}
+
+function getLocalSavedFilters(namespace: string): Map<string, LocalSavedFilter> {
+  globalStore.__voiceforgeLocalSavedFilters ??= new Map();
+  const filters =
+    globalStore.__voiceforgeLocalSavedFilters.get(namespace) ?? new Map();
+  globalStore.__voiceforgeLocalSavedFilters.set(namespace, filters);
+  return filters;
 }
 
 function searchLocalRecords(
+  records: Map<string, LocalRecord>,
   entity: NormalizedLocalEntitySchema,
   queryInput: unknown,
   includeDeleted: boolean,
@@ -548,7 +574,7 @@ function searchLocalRecords(
     typeof query.limit === "number" && Number.isFinite(query.limit)
       ? Math.min(Math.max(Math.floor(query.limit), 1), 500)
       : 500;
-  const filtered = [...getLocalRecords().values()]
+  const filtered = [...records.values()]
     .filter(
       (record) =>
         record.entityKey === entity.key &&
@@ -571,6 +597,7 @@ function searchLocalRecords(
 }
 
 function buildLocalReport(
+  records: Map<string, LocalRecord>,
   entity: NormalizedLocalEntitySchema,
   reportInput: unknown,
   now: string,
@@ -586,7 +613,7 @@ function buildLocalReport(
     typeof report.metricFieldKey === "string"
       ? normalizeEntityKey(report.metricFieldKey)
       : null;
-  const matching = searchLocalRecords(entity, report, false).records;
+  const matching = searchLocalRecords(records, entity, report, false).records;
   const groups = new Map<string, { count: number; sum: number }>();
   for (const record of matching) {
     const label = groupByFieldKey
