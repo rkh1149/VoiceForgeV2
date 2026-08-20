@@ -23,10 +23,13 @@
     "@vercel/functions": "^3.7.5",
     "@vercel/sandbox": "^2.5.0",
     "drizzle-orm": "^0.45.2",
+    "lucide-react": "^1.33.0",
     "next": "^15.5.18",
+    "pdfjs-dist": "^4.10.38",
     "react": "~19.2.3",
     "react-dom": "~19.2.3",
     "typescript": "^5.9.3",
+    "word-extractor": "^1.0.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -35,6 +38,7 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/word-extractor": "^1.0.6",
     "drizzle-kit": "^0.31.10",
     "eslint": "^9",
     "eslint-config-next": "^15.5.18",

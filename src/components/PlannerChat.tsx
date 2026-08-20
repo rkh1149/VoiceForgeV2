@@ -1,8 +1,14 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
+import { FileText, Paperclip, X } from "lucide-react";
 import { CHAT_MESSAGE_MAX_LENGTH } from "@/lib/chat-limits";
+import {
+  formatRequirementsFileSize,
+  REQUIREMENTS_FILE_ACCEPT,
+  validateRequirementsFileSelection,
+} from "@/lib/requirements-file";
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
 
@@ -32,6 +38,7 @@ export default function PlannerChat({
   const router = useRouter();
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [input, setInput] = useState("");
+  const [requirementsFile, setRequirementsFile] = useState<File | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(
     initialConversationId ?? null,
   );
@@ -41,6 +48,7 @@ export default function PlannerChat({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollDown = () =>
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
@@ -63,23 +71,43 @@ export default function PlannerChat({
 
   async function send() {
     const message = input.trim();
-    if (!message || busy) return;
+    const attachedFile = appId ? null : requirementsFile;
+    if ((!message && !attachedFile) || busy) return;
+    const displayedMessage = [
+      message,
+      attachedFile ? `Requirements file: ${attachedFile.name}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
     setError(null);
     setBusy(true);
     setInput("");
-    setMessages((m) => [...m, { role: "user", content: message }]);
+    setMessages((m) => [
+      ...m,
+      {
+        role: "user",
+        content: displayedMessage,
+      },
+    ]);
     scrollDown();
 
     try {
+      const requestBody = attachedFile
+        ? createRequirementsFormData({
+            conversationId,
+            message,
+            requirementsFile: attachedFile,
+          })
+        : JSON.stringify({
+            conversationId,
+            message,
+            appId,
+            forceDeepDiagnostic: appId ? forceDeepDiagnostic : false,
+          });
       const res = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          conversationId,
-          message,
-          appId,
-          forceDeepDiagnostic: appId ? forceDeepDiagnostic : false,
-        }),
+        headers: attachedFile ? undefined : { "Content-Type": "application/json" },
+        body: requestBody,
       });
       const data = await readJsonResponse(res);
       if (!res.ok) throw new Error(data.error ?? "Something went wrong.");
@@ -93,16 +121,43 @@ export default function PlannerChat({
       setConversationId(nextConversationId);
       rememberCreateConversation(nextConversationId);
       setMessages((m) => [...m, { role: "assistant", content: reply }]);
+      clearRequirementsFile();
       if (data.proposal) {
         setProposal(data.proposal);
         setDecision(null); // a revised spec resets any earlier decision
       }
     } catch (e) {
+      setMessages((current) => {
+        const last = current.at(-1);
+        return last?.role === "user" && last.content === displayedMessage
+          ? current.slice(0, -1)
+          : current;
+      });
+      setInput(message);
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setBusy(false);
       scrollDown();
     }
+  }
+
+  function chooseRequirementsFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    if (!file) return;
+    const validationError = validateRequirementsFileSelection(file);
+    if (validationError) {
+      setRequirementsFile(null);
+      setError(validationError);
+      event.target.value = "";
+      return;
+    }
+    setError(null);
+    setRequirementsFile(file);
+  }
+
+  function clearRequirementsFile() {
+    setRequirementsFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   async function decide(d: "approved" | "rejected") {
@@ -250,6 +305,51 @@ export default function PlannerChat({
             </span>
           </label>
         )}
+        {!appId && (
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={REQUIREMENTS_FILE_ACCEPT}
+              onChange={chooseRequirementsFile}
+              disabled={busy}
+              className="sr-only"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={busy}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-40"
+            >
+              <Paperclip aria-hidden="true" className="h-4 w-4" />
+              Choose requirements file
+            </button>
+            <span className="text-xs text-slate-500">
+              TXT, PDF, DOC, or DOCX, up to 4 MB
+            </span>
+          </div>
+        )}
+        {!appId && requirementsFile && (
+          <div className="mb-3 flex min-w-0 items-center gap-3 rounded-lg border border-forge-200 bg-forge-50 px-3 py-2 text-sm text-forge-900">
+            <FileText aria-hidden="true" className="h-4 w-4 shrink-0" />
+            <span className="min-w-0 flex-1 truncate font-medium">
+              {requirementsFile.name}
+            </span>
+            <span className="shrink-0 text-xs text-slate-500">
+              {formatRequirementsFileSize(requirementsFile.size)}
+            </span>
+            <button
+              type="button"
+              onClick={clearRequirementsFile}
+              disabled={busy}
+              aria-label={`Remove ${requirementsFile.name}`}
+              title="Remove requirements file"
+              className="shrink-0 rounded p-1 text-slate-500 transition hover:bg-white hover:text-slate-800 disabled:opacity-40"
+            >
+              <X aria-hidden="true" className="h-4 w-4" />
+            </button>
+          </div>
+        )}
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <textarea
             value={input}
@@ -267,7 +367,7 @@ export default function PlannerChat({
           />
           <button
             onClick={send}
-            disabled={busy || !input.trim()}
+            disabled={busy || (!input.trim() && !requirementsFile)}
             className="self-end rounded-xl bg-forge-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-forge-700 disabled:opacity-40"
           >
             Send
@@ -276,6 +376,21 @@ export default function PlannerChat({
       </div>
     </div>
   );
+}
+
+function createRequirementsFormData(input: {
+  conversationId: string | null;
+  message: string;
+  requirementsFile: File;
+}): FormData {
+  const formData = new FormData();
+  formData.set("message", input.message);
+  if (input.conversationId) {
+    formData.set("conversationId", input.conversationId);
+  }
+  formData.set("forceDeepDiagnostic", "false");
+  formData.set("requirementsFile", input.requirementsFile);
+  return formData;
 }
 
 async function readJsonResponse(res: Response): Promise<{
