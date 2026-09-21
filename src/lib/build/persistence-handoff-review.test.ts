@@ -640,6 +640,52 @@ export default function RecipesPage() {
     expect(result.summary.reloadPathsVerified).toBe(1);
   });
 
+  it("accepts sessionStorage for an explicitly temporary no-history workflow", () => {
+    const localArchitecture = architecture();
+    localArchitecture.workflowContracts = [
+      {
+        ...producerContract,
+        expectedSaves: producerContract.expectedSaves.map((save) => ({
+          ...save,
+          storage: "localStorage" as const,
+        })),
+        handoffs: [],
+      },
+    ];
+    const transientSpec = {
+      ...spec,
+      purpose: "Compare temporary recipe ideas during the current session.",
+      dataToStore: [],
+      needsLogin: false,
+      sharingModel: "private" as const,
+      privacyRequirements: ["No recipe history or favourites are saved."],
+      dataEntities: spec.dataEntities.map((entity) => ({
+        ...entity,
+        ownership: "per_user" as const,
+        description: "A temporary recipe result that is not saved after the session.",
+      })),
+    };
+    const result = analyzePersistenceHandoffs({
+      spec: transientSpec,
+      architecture: localArchitecture,
+      files: {
+        "src/app/recipes/page.tsx": `"use client";
+import { useEffect, useState } from "react";
+export default function RecipesPage() {
+  const [recipes, setRecipes] = useState([]);
+  useEffect(() => { setRecipes(JSON.parse(sessionStorage.getItem("recipe") ?? "[]")); }, []);
+  function saveRecipe() { const savedRecipe = { id: crypto.randomUUID(), recipe_title: "Soup", ingredients: "Stock" }; sessionStorage.setItem("recipe", JSON.stringify([...recipes, savedRecipe])); setRecipes([...recipes, savedRecipe]); }
+  return <button onClick={saveRecipe}>Save recipe</button>;
+}`,
+        "src/components/recipe-session.test.tsx": `describe("Create and save a recipe", () => { it("uses sessionStorage and survives refresh", () => { expect(sessionStorage.setItem).toHaveBeenCalledWith("recipe", expect.stringContaining("recipe_title")); expect(ingredients).toEqual("Stock"); unmount(); remountRecipes(); expect(sessionStorage.getItem).toHaveBeenCalledWith("recipe"); }); it("keeps values after failed save", () => expect(true).toEqual(true)); });`,
+      },
+    });
+
+    expect(result.blockingIssues).toEqual([]);
+    expect(result.summary.savesVerified).toBe(1);
+    expect(result.summary.reloadPathsVerified).toBe(1);
+  });
+
   it("recognizes collection deletes and selects the handoff's originating save", () => {
     const localArchitecture = structuredClone(architecture());
     const producer = localArchitecture.workflowContracts[0];

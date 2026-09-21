@@ -171,6 +171,7 @@ type DurableBuildMetadata = {
   metrics: BuildMetrics;
   seededPlatformEntities: unknown[];
   workflowRepairs?: WorkflowRepairPackage[];
+  approvedCompiledSpecHash?: string;
 };
 
 type SerializedReviewProgress = {
@@ -246,6 +247,7 @@ function durableMetadata(input: {
   metrics: BuildMetrics;
   seededPlatformEntities: unknown[];
   workflowRepairs?: WorkflowRepairPackage[];
+  approvedCompiledSpecHash?: string;
 }): Record<string, unknown> {
   const metadata: DurableBuildMetadata = {
     generated: {
@@ -260,6 +262,7 @@ function durableMetadata(input: {
     metrics: input.metrics,
     seededPlatformEntities: input.seededPlatformEntities,
     workflowRepairs: input.workflowRepairs ?? [],
+    approvedCompiledSpecHash: input.approvedCompiledSpecHash,
   };
   return metadata as unknown as Record<string, unknown>;
 }
@@ -3468,6 +3471,10 @@ export async function resumeBuildPipelineContinuation(
       files: checkpoint.files,
       generated,
       changeMode: Boolean(app.githubRepoUrl && requirement.version > 1),
+      approvedCompiledSpecHash:
+        typeof metadata.approvedCompiledSpecHash === "string"
+          ? metadata.approvedCompiledSpecHash
+          : undefined,
     });
     if (refreshedAcceptance.refreshedPaths.length > 0) {
       await log(
@@ -3571,6 +3578,10 @@ export async function resumeBuildPipelineContinuation(
         metrics,
         seededPlatformEntities,
         workflowRepairs,
+        approvedCompiledSpecHash:
+          typeof metadata.approvedCompiledSpecHash === "string"
+            ? metadata.approvedCompiledSpecHash
+            : undefined,
       }),
     });
     await log(

@@ -186,6 +186,8 @@ export function synthesizeWorkflowAcceptancePlan(
           orderById,
           entityDefinitions,
           appRoles,
+          anonymousSharedWrite:
+            spec.sharingModel === "shared" && !spec.needsLogin,
           deviceLocationRequired,
         }),
       );
@@ -369,6 +371,7 @@ function buildJourney(input: {
     ReturnType<typeof platformEntityFromSpec>
   >;
   appRoles: WorkflowContractRole[];
+  anonymousSharedWrite: boolean;
   deviceLocationRequired: boolean;
 }): WorkflowAcceptanceJourney {
   const contracts = topologicalContractOrder(
@@ -524,6 +527,10 @@ function buildJourney(input: {
     roleScenarios: contracts.map((contract) => {
       const explicitReadOnlyRoles =
         contract.expectedSaves.length === 0 &&
+        !(
+          input.anonymousSharedWrite &&
+          contract.actor.roles.includes("public")
+        ) &&
         contract.actor.roles.every(
           (role) => role === "viewer" || role === "public",
         ) &&
@@ -547,6 +554,7 @@ function buildJourney(input: {
           ? input.appRoles.filter(
               (role) =>
                 (role === "viewer" || role === "public") &&
+                !(role === "public" && input.anonymousSharedWrite) &&
                 !contract.actor.roles.includes(role) &&
                 !dedicatedReadOnlyContracts.some((readOnlyContract) =>
                   readOnlyContractCoversContract(

@@ -415,7 +415,10 @@ export function classifyWorkflowRepairFailure(input: {
   reviews?: readonly ReviewLike[];
   hasGeneratedJourney?: boolean;
 }): WorkflowRepairPackage["classification"] {
-  const text = [input.errorOutput, ...(input.blockingIssues ?? [])].join("\n");
+  const text =
+    input.blockingIssues && input.blockingIssues.length > 0
+      ? input.blockingIssues.join("\n")
+      : input.errorOutput;
   const lower = text.toLowerCase();
   const reasons: string[] = [];
   const result = (
@@ -432,11 +435,7 @@ export function classifyWorkflowRepairFailure(input: {
     reasons: uniqueStrings([...reasons, reason]),
   });
 
-  if (
-    /\b(?:http\s*)?(?:429|502|503)\b|rate limit|quota exceeded|service unavailable|temporarily unavailable|external service/i.test(
-      text,
-    )
-  ) {
+  if (isExternalServiceFailure(text)) {
     return result(
       "external_service_failure",
       /429|rate limit|quota/i.test(text) ? "rate_limit_or_quota" : "provider_unavailable",
@@ -585,6 +584,20 @@ export function classifyWorkflowRepairFailure(input: {
     "application_source",
     "low",
     "The failure is workflow-linked but does not yet match a more specific deterministic category.",
+  );
+}
+
+function isExternalServiceFailure(errorOutput: string): boolean {
+  return (
+    /\b(?:http\s*)?(?:429|502|503)\b|rate limits?|quota exceeded/i.test(
+      errorOutput,
+    ) ||
+    /\b(?:service|provider)(?:\s+is|\s+was)?\s+(?:temporarily\s+)?unavailable\b/i.test(
+      errorOutput,
+    ) ||
+    /\bexternal service(?: request)?\s+(?:failed|failure|error|unavailable|timed out)\b/i.test(
+      errorOutput,
+    )
   );
 }
 

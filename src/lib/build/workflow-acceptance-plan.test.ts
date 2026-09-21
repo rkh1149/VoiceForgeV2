@@ -280,6 +280,45 @@ describe("workflow acceptance plan", () => {
     ]);
   });
 
+  it("does not treat shared-link collaborators as read-only public users", () => {
+    const { spec: signedInSpec, architecture } = bikePlan();
+    const spec: AppSpec = {
+      ...signedInSpec,
+      needsLogin: false,
+      sharingModel: "shared",
+      userRoles: [{
+        name: "Link collaborator",
+        description: "Anyone with the link can edit.",
+        permissions: ["Create and edit shared records"],
+      }],
+    };
+    const mutableWorkflow = architecture.workflowContracts.find(
+      (contract) => contract.name === "Save a bicycle route",
+    )!;
+    mutableWorkflow.actor = { persona: "Link collaborator", roles: ["public"] };
+    const readWorkflow = structuredClone(mutableWorkflow);
+    readWorkflow.id = "view-saved-routes";
+    readWorkflow.name = "View saved routes";
+    readWorkflow.expectedSaves = [];
+    readWorkflow.handoffs = [];
+    readWorkflow.requiredData = readWorkflow.requiredData.map((data) => ({
+      ...data,
+      operations: ["read"],
+    }));
+    readWorkflow.steps = readWorkflow.steps.slice(0, 1).map((step) => ({
+      ...step,
+      writes: [],
+    }));
+    architecture.workflowContracts.push(readWorkflow);
+
+    const plan = synthesizeWorkflowAcceptancePlan(spec, architecture);
+    expect(
+      plan.journeys.flatMap((journey) =>
+        journey.roleScenarios.flatMap((scenario) => scenario.readOnlyRoles),
+      ),
+    ).not.toContain("public");
+  });
+
   it("classifies scheduled and system workflows instead of pretending they are browser actions", () => {
     const { spec, architecture } = bikePlan();
     const plan = synthesizeWorkflowAcceptancePlan(spec, architecture);

@@ -823,7 +823,7 @@ function reviewGeneratedCode(
     );
   }
 
-  if (requiresGeneratedAppSession(input.spec, input.architecture)) {
+  if (requiresGeneratedAppSession(input.spec)) {
     const hasReusableGate = combinedSource.includes("PlatformSignInGate");
     const hasRouteStableSession = combinedSource.includes(
       "usePlatformSessionState",
@@ -938,6 +938,7 @@ function reviewGeneratedCode(
     ),
   );
   blockingIssues.push(...detectFakeMemberAccessIssues(appSource));
+  blockingIssues.push(...detectMutableClientModuleState(appSource));
   blockingIssues.push(
     ...detectGoogleMapsImplementationIssues(input.spec, appSource),
   );
@@ -968,6 +969,22 @@ function reviewGeneratedCode(
       ),
     },
   });
+}
+
+function detectMutableClientModuleState(
+  entries: Array<[string, string]>,
+): string[] {
+  return entries
+    .filter(
+      ([path, source]) =>
+        !PROTECTED_TEMPLATE_FILES.has(path) &&
+        /^\s*["']use client["'];/m.test(source) &&
+        /^(?:export\s+)?(?:let|var)\s+[A-Za-z_$][\w$]*/m.test(source),
+    )
+    .map(
+      ([path]) =>
+        `code_review: ${path} stores mutable state at module scope in a client module. Use React state/context in a shared layout provider so browser sessions cannot leak across requests or cause hydration mismatches.`,
+    );
 }
 
 function reviewGeneratedTests(
@@ -1413,17 +1430,8 @@ function requiresPlatformData(architecture: ArchitecturePlan): boolean {
   );
 }
 
-function requiresGeneratedAppSession(
-  spec: AppSpec,
-  architecture: ArchitecturePlan,
-): boolean {
-  return (
-    spec.needsLogin ||
-    architecture.permissionModel.some(
-      (permission) => permission.enforcement !== "notNeeded",
-    ) ||
-    requiresService(architecture, "users")
-  );
+function requiresGeneratedAppSession(spec: AppSpec): boolean {
+  return spec.needsLogin;
 }
 
 function requiresService(
@@ -1733,6 +1741,11 @@ function detectGoogleMapsImplementationIssues(
     !hasGoogleMapsAction(
       sourceText,
       "getGoogleMapsElevationProfile",
+      "get_elevation_profile",
+    ) &&
+    !hasGoogleMapsAction(
+      sourceText,
+      "getGoogleMapsElevationProfileForRoute",
       "get_elevation_profile",
     )
   ) {

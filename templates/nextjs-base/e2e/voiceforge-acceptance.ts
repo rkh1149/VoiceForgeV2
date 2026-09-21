@@ -288,6 +288,9 @@ export async function selectAcceptanceOption(
   await control.click();
   const requested = String(requestedValue ?? "");
   const page = control.page();
+  if ((tagName === "input" || tagName === "textarea") && requested) {
+    await control.fill(requested);
+  }
   const requestedOption = requested
     ? page.getByRole("option", { name: requested, exact: true })
     : null;
@@ -296,6 +299,14 @@ export async function selectAcceptanceOption(
     return;
   }
   const firstOption = page.getByRole("option").filter({ visible: true }).first();
+  if (await firstOption.isVisible({ timeout: 2_000 }).catch(() => false)) {
+    await firstOption.click();
+    return;
+  }
+  if (tagName === "input" || tagName === "textarea") {
+    await control.press("Enter");
+    return;
+  }
   await expect(firstOption).toBeVisible();
   await firstOption.click();
 }

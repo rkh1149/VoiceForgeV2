@@ -5,7 +5,7 @@ import type { FileInspection } from "../agents/file-tools";
 import type { PostGenerationReview } from "./post-generation-reviews";
 import type { FileMap } from "./template";
 
-export const HUMAN_COMPLETENESS_REVIEW_VERSION = 1 as const;
+export const HUMAN_COMPLETENESS_REVIEW_VERSION = 2 as const;
 export const HUMAN_COMPLETENESS_MAX_BLOCKING_ISSUES = 5;
 
 export type HumanCompletenessSourceContext = {
@@ -49,6 +49,11 @@ export type HumanCompletenessEvidence = {
   promises: HumanCompletenessPromise[];
   architecture: {
     summary: string;
+    plannedLimitations: Array<{
+      id: string;
+      source: "risk_note" | "capability_warning";
+      statement: string;
+    }>;
     pages: Array<{
       route: string;
       name: string;
@@ -100,6 +105,13 @@ export const humanCompletenessAssessmentCandidateSchema = z.object({
   promiseId: z.string().min(1),
   verdict: z.enum(["supported", "partially_supported", "missing", "unclear"]),
   confidence: z.enum(["high", "medium", "low"]),
+  gapCause: z.enum([
+    "implementation_gap",
+    "test_coverage_gap",
+    "disclosed_platform_limitation",
+    "runtime_uncertainty",
+  ]),
+  plannedLimitationIds: z.array(z.string()),
   finding: z.string(),
   userImpact: z.string(),
   repairRecommendation: z.string(),
@@ -121,6 +133,12 @@ export type HumanCompletenessReviewCandidate = z.infer<
 export type HumanCompletenessAssessment = HumanCompletenessPromise & {
   verdict: "supported" | "partially_supported" | "missing" | "unclear";
   confidence: "high" | "medium" | "low";
+  gapCause:
+    | "implementation_gap"
+    | "test_coverage_gap"
+    | "disclosed_platform_limitation"
+    | "runtime_uncertainty";
+  plannedLimitationIds: string[];
   finding: string;
   userImpact: string;
   repairRecommendation: string;
@@ -183,6 +201,7 @@ export function createHumanCompletenessEvidence(input: {
     promises: collectPromises(input.spec, input.architecture, source),
     architecture: {
       summary: input.architecture.summary,
+      plannedLimitations: collectPlannedLimitations(input.architecture),
       pages: input.architecture.pageMap.map((page) => ({
         route: page.route,
         name: page.name,
@@ -255,6 +274,9 @@ export function normalizeHumanCompletenessReview(input: {
   );
   const warnings: string[] = [];
   const blockingIssues: string[] = [];
+  const plannedLimitationIds = new Set(
+    input.evidence.architecture.plannedLimitations.map((item) => item.id),
+  );
 
   const assessments = input.evidence.promises.map((promise) => {
     const candidate = candidateByPromise.get(promise.id);
@@ -266,6 +288,8 @@ export function normalizeHumanCompletenessReview(input: {
         ...promise,
         verdict: "unclear" as const,
         confidence: "low" as const,
+        gapCause: "runtime_uncertainty" as const,
+        plannedLimitationIds: [],
         finding: "The reviewer did not return an assessment for this promise.",
         userImpact: "VoiceForge cannot confirm this promise from the review output.",
         repairRecommendation: "Confirm this promise during browser testing.",
@@ -286,10 +310,29 @@ export function normalizeHumanCompletenessReview(input: {
       inspectedSet,
       true,
     );
+    const citedPlannedLimitationIds = uniqueStrings(
+      candidate.plannedLimitationIds.filter((id) => plannedLimitationIds.has(id)),
+    );
+    const inferredPlannedLimitationIds = inferHandledPlannedLimitations(
+      candidate,
+      input.evidence.architecture.plannedLimitations,
+    );
+    const validPlannedLimitationIds = uniqueStrings([
+      ...citedPlannedLimitationIds,
+      ...inferredPlannedLimitationIds,
+    ]);
+    const gapCause =
+      validPlannedLimitationIds.length > 0
+        ? "disclosed_platform_limitation"
+        : candidate.gapCause === "disclosed_platform_limitation"
+          ? "implementation_gap"
+          : candidate.gapCause;
     const assessment: HumanCompletenessAssessment = {
       ...promise,
       verdict: candidate.verdict,
       confidence: candidate.confidence,
+      gapCause,
+      plannedLimitationIds: validPlannedLimitationIds,
       finding: normalizeText(candidate.finding),
       userImpact: normalizeText(candidate.userImpact),
       repairRecommendation: normalizeText(candidate.repairRecommendation),
@@ -330,6 +373,7 @@ export function normalizeHumanCompletenessReview(input: {
     const isHighConfidenceCoreGap =
       promise.criticality === "core" &&
       candidate.confidence === "high" &&
+      gapCause === "implementation_gap" &&
       (candidate.verdict === "missing" ||
         candidate.verdict === "partially_supported") &&
       codeEvidence.length > 0 &&
@@ -695,6 +739,110 @@ function compactDeterministicReviewEvidence(
     keys.filter((key) => key in review.payload).map((key) => [key, review.payload[key]]),
   );
   return truncate(JSON.stringify(selected), 6_000);
+}
+
+function collectPlannedLimitations(
+  architecture: ArchitecturePlan,
+): HumanCompletenessEvidence["architecture"]["plannedLimitations"] {
+  const limitations = [
+    ...architecture.riskNotes.map((statement, index) => ({
+      id: `risk-note:${index + 1}`,
+      source: "risk_note" as const,
+      statement: truncate(normalizeText(statement), 600),
+    })),
+    ...architecture.capabilityValidation.warnings.map((statement, index) => ({
+      id: `capability-warning:${index + 1}`,
+      source: "capability_warning" as const,
+      statement: truncate(normalizeText(statement), 600),
+    })),
+  ];
+  return limitations.filter(
+    (item, index) =>
+      item.statement.length > 0 &&
+      limitations.findIndex(
+        (candidate) => candidate.statement === item.statement,
+      ) === index,
+  );
+}
+
+function inferHandledPlannedLimitations(
+  candidate: HumanCompletenessReviewCandidate["assessments"][number],
+  limitations: HumanCompletenessEvidence["architecture"]["plannedLimitations"],
+): string[] {
+  if (candidate.verdict !== "partially_supported") return [];
+
+  const candidateText = normalizeText(
+    [
+      candidate.finding,
+      candidate.userImpact,
+      candidate.repairRecommendation,
+      ...candidate.codeEvidence.map((item) => item.explanation),
+    ].join(" "),
+  ).toLowerCase();
+  const visiblyHandled =
+    /\b(?:warn(?:ing)?|disclos(?:e|ed|ure)|label(?:s|led)?|notice|unconfirm(?:ed)?|unavailable|fallback|no[- ]match|unable)\b/.test(
+      candidateText,
+    );
+  if (!visiblyHandled) return [];
+
+  const candidateTokens = meaningfulTokens(candidateText);
+  return limitations
+    .filter((limitation) => {
+      const limitationText = limitation.statement.toLowerCase();
+      if (
+        !/\b(?:cannot|can't|does not|doesn't|may not|not reliably|unavailable|varies)\b/.test(
+          limitationText,
+        )
+      ) {
+        return false;
+      }
+      const overlap = [...meaningfulTokens(limitationText)].filter((token) =>
+        candidateTokens.has(token),
+      );
+      return overlap.length >= 3;
+    })
+    .map((limitation) => limitation.id);
+}
+
+function meaningfulTokens(value: string): Set<string> {
+  const ignored = new Set([
+    "about",
+    "after",
+    "again",
+    "also",
+    "because",
+    "before",
+    "being",
+    "cannot",
+    "could",
+    "does",
+    "every",
+    "from",
+    "have",
+    "into",
+    "must",
+    "only",
+    "other",
+    "should",
+    "that",
+    "their",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
+    "when",
+    "where",
+    "which",
+    "while",
+    "with",
+  ]);
+  return new Set(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length >= 4 && !ignored.has(token)),
+  );
 }
 
 function promiseSlug(value: string, index: number): string {

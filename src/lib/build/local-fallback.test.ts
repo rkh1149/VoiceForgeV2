@@ -578,6 +578,53 @@ describe("generated app local platform fallback", () => {
       },
     });
 
+    const oxfordSearch = await integrationsPOST(
+      new Request("http://local.test/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "invoke",
+          providerKey: "google_maps",
+          actionKey: "search_places",
+          input: { textQuery: "Oxford, England", maxResultCount: 1 },
+        }),
+      }),
+    );
+    await expect(oxfordSearch.json()).resolves.toMatchObject({
+      result: {
+        places: [
+          expect.objectContaining({
+            placeId: "local-oxford",
+            location: { latitude: 51.752, longitude: -1.2577 },
+          }),
+        ],
+      },
+    });
+
+    const oxfordLoop = await integrationsPOST(
+      new Request("http://local.test/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "invoke",
+          providerKey: "google_maps",
+          actionKey: "compute_route",
+          input: {
+            origin: { placeId: "local-oxford" },
+            destination: { placeId: "local-oxford" },
+            travelMode: "BICYCLE",
+            computeAlternativeRoutes: true,
+          },
+        }),
+      }),
+    );
+    await expect(oxfordLoop.json()).resolves.toMatchObject({
+      result: {
+        routes: [
+          expect.objectContaining({ distanceMeters: 16_093 }),
+          expect.objectContaining({ distanceMeters: 16_093 }),
+        ],
+      },
+    });
+
     const elevation = await integrationsPOST(
       new Request("http://local.test/api/integrations", {
         method: "POST",

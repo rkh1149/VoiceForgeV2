@@ -1697,14 +1697,59 @@ function jsxContractBinding(
     attribute?.initializer && ts.isJsxExpression(attribute.initializer)
       ? attribute.initializer.expression
       : undefined;
-  if (!expression || !ts.isObjectLiteralExpression(expression)) {
+  const contractObject = expression
+    ? resolveContractObject(expression, sourceFile)
+    : null;
+  if (!contractObject) {
     return { workflowId: null, controlId: null, entityKey: null };
   }
   return {
-    workflowId: objectStringProperty(expression, ["workflowId"], sourceFile),
-    controlId: objectStringProperty(expression, ["controlId"], sourceFile),
-    entityKey: objectStringProperty(expression, ["entityKey"], sourceFile),
+    workflowId: objectStringProperty(contractObject, ["workflowId"], sourceFile),
+    controlId: objectStringProperty(contractObject, ["controlId"], sourceFile),
+    entityKey: objectStringProperty(contractObject, ["entityKey"], sourceFile),
   };
+}
+
+function resolveContractObject(
+  expression: ts.Expression,
+  sourceFile: ts.SourceFile,
+): ts.ObjectLiteralExpression | null {
+  const unwrapped = unwrapContractExpression(expression);
+  if (ts.isObjectLiteralExpression(unwrapped)) return unwrapped;
+  if (!ts.isIdentifier(unwrapped)) return null;
+
+  let resolved: ts.ObjectLiteralExpression | null = null;
+  const visit = (node: ts.Node) => {
+    if (resolved) return;
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === unwrapped.text &&
+      node.initializer
+    ) {
+      const initializer = unwrapContractExpression(node.initializer);
+      if (ts.isObjectLiteralExpression(initializer)) {
+        resolved = initializer;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return resolved;
+}
+
+function unwrapContractExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isParenthesizedExpression(current) ||
+    ts.isSatisfiesExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
 }
 
 function nearestRecordScope(
@@ -2138,6 +2183,9 @@ function collectRenderedEvidence(
   while (queue.length > 0) {
     const instance = queue.shift();
     if (!instance) continue;
+    if (instance.path !== startPath && LOCKED_SOURCE_FILES.has(instance.path)) {
+      continue;
+    }
     const moduleAnalysis = modules.get(instance.path);
     if (!moduleAnalysis) continue;
     const component =
@@ -2538,6 +2586,12 @@ function compatibleControlKind(
 ): boolean {
   if (expected === actual) return true;
   if (expected === "form" && actual === "button") return true;
+  if (
+    ["textbox", "combobox"].includes(expected) &&
+    ["textbox", "combobox"].includes(actual)
+  ) {
+    return true;
+  }
   if (
     ["button", "link", "menu"].includes(expected) &&
     ["button", "link", "menu"].includes(actual)

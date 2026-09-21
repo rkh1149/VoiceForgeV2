@@ -1742,6 +1742,11 @@ function inferPlatformServices(
 ): WorkflowContract["dependencies"]["platformServices"] {
   const text = workflowText(workflow).toLowerCase();
   const requested = new Set<z.infer<typeof workflowPlatformServiceSchema>>();
+  const planned = new Set(
+    architecture.platformServices
+      .filter((service) => service.required)
+      .map((service) => service.service),
+  );
   if (requiredData.length > 0) {
     const usesPlatformData = requiredData.some((data) =>
       architecture.dataModel.some(
@@ -1776,7 +1781,7 @@ function inferPlatformServices(
   if (/\b(search|filter|sort|find)\b/.test(text)) requested.add("search");
   if (/\b(report|dashboard|chart|export)\b/.test(text)) requested.add("reports");
   if (/\b(ai|generate|suggest|summarize)\b/.test(text)) requested.add("ai");
-  return [...requested];
+  return [...requested].filter((service) => planned.has(service));
 }
 
 function inferPreconditions(

@@ -593,6 +593,65 @@ describe("workflow-aware repairs", () => {
     expect(classification.targetSurface).toBe("external_environment");
   });
 
+  it("does not mistake an external-integration fixture warning for a provider outage", () => {
+    const classification = classifyWorkflowRepairFailure({
+      failedStep: "review_gate",
+      errorOutput: [
+        "persistence_handoff:save Find routes has no browser-storage write.",
+        'fixture_isolation: parallel execution is disabled: external service integrations.',
+      ].join("\n"),
+      blockingIssues: [
+        "persistence_handoff:save Find routes has no browser-storage write.",
+      ],
+    });
+
+    expect(classification).toMatchObject({
+      category: "broken_save",
+      targetSurface: "application_source",
+    });
+  });
+
+  it("does not classify an anonymous sign-in review finding as an AI outage", () => {
+    const issue =
+      "code_review: Sign-in or role-aware app did not provide a usable locked platform sign-in action.";
+    const classification = classifyWorkflowRepairFailure({
+      failedStep: "review_gate",
+      errorOutput: `${issue}\n\nSTRUCTURED REVIEW EVIDENCE:\nfixture_isolation: parallel execution is disabled: external service ai.`,
+      blockingIssues: [issue],
+    });
+
+    expect(classification.targetSurface).not.toBe("external_environment");
+    expect(classification.category).not.toBe("external_service_failure");
+  });
+
+  it("classifies the selected reload finding instead of unrelated structured handoff evidence", () => {
+    const reloadIssue =
+      'persistence_handoff:reload Workflow "Find paved cycling routes" can read route_result, but the success screen does not reload it on a fresh screen entry or mount.';
+    const classification = classifyWorkflowRepairFailure({
+      failedStep: "review_gate",
+      errorOutput: [
+        reloadIssue,
+        "STRUCTURED REVIEW EVIDENCE:",
+        JSON.stringify({
+          handoffs: [
+            {
+              producerWorkflowId: "find-routes",
+              consumerWorkflowId: "review-route",
+              status: "verified",
+            },
+          ],
+        }),
+      ].join("\n"),
+      blockingIssues: [reloadIssue],
+    });
+
+    expect(classification).toMatchObject({
+      category: "broken_refresh_persistence",
+      subtype: "saved_record_not_reloaded",
+      targetSurface: "application_source",
+    });
+  });
+
   it("classifies exact platform key validation failures", () => {
     const classification = classifyWorkflowRepairFailure({
       failedStep: "e2e",

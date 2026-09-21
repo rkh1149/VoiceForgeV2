@@ -146,6 +146,16 @@ const betaRouteSafetyNotice =
 
 const localPlaces: LocalPlace[] = [
   {
+    placeId: "local-oxford",
+    name: "Oxford",
+    formattedAddress: "Oxford, England, United Kingdom",
+    location: { latitude: 51.752, longitude: -1.2577 },
+    rating: 4.8,
+    userRatingCount: 12000,
+    types: ["locality", "political"],
+    googleMapsUri: "https://maps.google.com/?q=Oxford%2C+England",
+  },
+  {
     placeId: "local-cn-tower",
     name: "CN Tower",
     formattedAddress: "290 Bremner Blvd, Toronto, ON M5V 3L9, Canada",
@@ -546,7 +556,9 @@ function createLocalRoute(input: {
     input.destination,
   ];
   const distanceMeters = Math.max(
-    600,
+    sameLocalPlace(input.origin, input.destination) && input.travelMode === "BICYCLE"
+      ? 16_093
+      : 600,
     Math.round(pathDistanceMeters(points) * input.distanceScale),
   );
   const durationSeconds = Math.round(
@@ -569,6 +581,14 @@ function createLocalRoute(input: {
     viewport: localViewport(points),
     legs: localRouteLegs(input),
   };
+}
+
+function sameLocalPlace(left: LocalPlace, right: LocalPlace) {
+  return (
+    left.placeId === right.placeId ||
+    (left.location.latitude === right.location.latitude &&
+      left.location.longitude === right.location.longitude)
+  );
 }
 
 function localRouteLegs(input: {

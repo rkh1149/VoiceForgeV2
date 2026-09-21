@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createFallbackArchitecturePlan } from "../architecture";
 import type { CodegenResult } from "../agents/coder";
@@ -218,13 +219,46 @@ describe("Stage 14I isolated acceptance compiler", () => {
       ACCEPTANCE_MANIFEST_SOURCE_PATH,
       ACCEPTANCE_COMPILED_SPEC_PATH,
     ]);
-    expect(files[ACCEPTANCE_MANIFEST_SOURCE_PATH]).toContain('"version": 3');
+    expect(files[ACCEPTANCE_MANIFEST_SOURCE_PATH]).toContain('"version": 4');
     expect(files[ACCEPTANCE_COMPILED_SPEC_PATH]).toContain(
       "VoiceForge compiled workflow acceptance",
     );
     expect(generated.files[ACCEPTANCE_COMPILED_SPEC_PATH]).toBe(
       files[ACCEPTANCE_COMPILED_SPEC_PATH],
     );
+  });
+
+  it("preserves only a checksum-pinned manually repaired browser spec", () => {
+    const input = golden("shared-platform-data");
+    const compiled = compileAcceptanceTests(input);
+    const manualSource = compiled.manifest.journeys
+      .map((journey) => `test("[voiceforge-journey:${journey.id}] verified flow", async () => {});`)
+      .join("\n");
+    const files: FileMap = { [ACCEPTANCE_COMPILED_SPEC_PATH]: manualSource };
+    const generated: CodegenResult = {
+      files: { ...files },
+      deletedFiles: [],
+      notes: "manually verified",
+      filesWritten: Object.keys(files),
+      phases: [],
+      operations: [],
+    };
+
+    refreshDeterministicAcceptanceCompiler({
+      ...input,
+      files,
+      generated,
+      approvedCompiledSpecHash: createHash("sha256").update(manualSource).digest("hex"),
+    });
+    expect(files[ACCEPTANCE_COMPILED_SPEC_PATH]).toBe(manualSource);
+
+    refreshDeterministicAcceptanceCompiler({
+      ...input,
+      files,
+      generated,
+      approvedCompiledSpecHash: "wrong-hash",
+    });
+    expect(files[ACCEPTANCE_COMPILED_SPEC_PATH]).toBe(compiled.compiledSource);
   });
 
   it("orders a create-to-complete handoff before the consumer mutation", () => {
@@ -962,6 +996,81 @@ describe("Stage 14I isolated acceptance compiler", () => {
       );
 
     expect(manifestStep?.primitive).toBe("select");
+  });
+
+  it("uses typed fixtureless values and compiles dynamic routes as patterns", () => {
+    const input = golden("simple-local-storage");
+    const contract = input.architecture.workflowContracts[0];
+    const controlTemplate = contract?.controls[0];
+    const stepTemplate = contract?.steps[0];
+    if (!contract || !controlTemplate || !stepTemplate) {
+      throw new Error("Golden workflow control fixture missing");
+    }
+    input.spec.dataEntities = [];
+    contract.requiredData = [];
+    contract.expectedSaves = [];
+    contract.handoffs = [];
+    contract.controls = [
+      {
+        ...controlTemplate,
+        id: "preferred-distance",
+        kind: "textbox",
+        accessibleName: "Preferred distance in miles",
+        route: "/",
+      },
+      {
+        ...controlTemplate,
+        id: "view-route-details",
+        kind: "link",
+        accessibleName: "View route details",
+        route: "/routes/[routeIndex]",
+      },
+    ];
+    contract.steps = [
+      {
+        ...stepTemplate,
+        id: "enter-distance",
+        description: "Enter a positive preferred distance in miles.",
+        kind: "input",
+        route: "/",
+        controlId: "preferred-distance",
+        reads: [],
+        writes: [],
+      },
+      {
+        ...stepTemplate,
+        id: "open-route",
+        description: "Open one returned route.",
+        kind: "navigate",
+        route: "/routes/[routeIndex]",
+        controlId: "view-route-details",
+        reads: [],
+        writes: [],
+      },
+      {
+        ...stepTemplate,
+        id: "show-route",
+        description: "Show the selected route details.",
+        kind: "result",
+        route: "/routes/[routeIndex]",
+        controlId: "",
+        reads: [],
+        writes: [],
+      },
+    ];
+    contract.success.route = "/routes/[routeIndex]";
+
+    const compiled = compileAcceptanceTests(input);
+    const distanceStep = compiled.manifest.journeys[0]?.steps.find(
+      (step) => step.contractStepId === "enter-distance",
+    );
+
+    expect(distanceStep?.interactionValue).toBe(10);
+    expect(compiled.compiledSource).toContain("control.fill(String(10))");
+    expect(compiled.compiledSource).toContain("\\/routes\\/[^/?#]+");
+    expect(compiled.compiledSource).not.toContain(
+      'page.goto("/routes/[routeIndex]")',
+    );
   });
 
   it("asserts the written record when a save result also names a related entity", () => {

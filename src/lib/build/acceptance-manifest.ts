@@ -9,8 +9,8 @@ import {
   type WorkflowAcceptanceStep,
 } from "./workflow-acceptance-plan";
 
-export const ACCEPTANCE_MANIFEST_VERSION = 3 as const;
-export const ACCEPTANCE_COMPILER_VERSION = 3 as const;
+export const ACCEPTANCE_MANIFEST_VERSION = 4 as const;
+export const ACCEPTANCE_COMPILER_VERSION = 4 as const;
 
 export type AcceptanceLocatorMode = "contract" | "accessible_name_fallback";
 
@@ -73,6 +73,7 @@ export type AcceptanceManifestStep = {
   primitive: AcceptancePrimitive;
   control: AcceptanceManifestControl | null;
   fixtureIds: string[];
+  interactionValue: unknown;
   expectedText: string;
   assertionFixtureId: string | null;
   assertionText: string;
@@ -545,6 +546,7 @@ function manifestStep(input: {
     success?.message ||
     success?.visibleResult ||
     fixtureText(fixtures[0]);
+  const interactionValue = interactionValueForStep(input.step, fixtures);
   const deleteStep = input.journey.saves.some(
     (save) =>
       save.workflowId === input.step.workflowId &&
@@ -600,6 +602,7 @@ function manifestStep(input: {
         }
       : null,
     fixtureIds: fixtures.map((fixture) => fixture.id),
+    interactionValue,
     expectedText,
     assertionFixtureId: assertionFixture?.id ?? null,
     assertionText: conciseStateText(input.step, input.fixtureByEntity),
@@ -613,6 +616,27 @@ function manifestStep(input: {
     expectedPresence: !deleteStep && !deletedBeforeOrAtStep,
     adapterId,
   };
+}
+
+function interactionValueForStep(
+  step: WorkflowAcceptanceStep,
+  fixtures: AcceptanceManifestFixture[],
+): unknown {
+  if (fixtures.length > 0) return fixtures[0].value;
+  const identity = normalizedPhrase(
+    `${step.controlId} ${step.accessibleName} ${step.description}`,
+  );
+  if (/\b(date|day)\b/.test(identity)) return "2030-06-15";
+  if (/\b(email)\b/.test(identity)) return "voiceforge@example.test";
+  if (/\b(phone|telephone)\b/.test(identity)) return "555-0100";
+  if (/\b(url|website|link)\b/.test(identity)) return "https://example.test";
+  if (/\b(distance|miles?|kilomet(?:er|re)s?|amount|count|number|quantity)\b/.test(identity)) {
+    return 10;
+  }
+  if (/\b(start|origin|destination|place|location|address)\b/.test(identity)) {
+    return /\boxford\b/.test(identity) ? "Oxford, England" : "Toronto, Canada";
+  }
+  return "VoiceForge acceptance value";
 }
 
 function primitiveForStep(

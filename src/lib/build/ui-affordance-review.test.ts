@@ -569,6 +569,68 @@ export default function GpsPage() { return <main><h1>GPS</h1><RideSearch query="
     });
   });
 
+  it("uses a locked place-search component contract without reviewing its internals twice", () => {
+    const contract: WorkflowContract = {
+      ...rideContract(["owner"]),
+      id: "find-cycle-routes",
+      name: "Find cycle routes",
+      start: { route: "/", screen: "Route Finder", preconditions: [] },
+      controls: [
+        {
+          id: "choose-start",
+          kind: "textbox",
+          accessibleName: "Starting point",
+          route: "/",
+          roles: ["owner"],
+          action: "Choose a starting point",
+        },
+      ],
+      steps: [
+        {
+          id: "choose-start-step",
+          description: "Choose a starting point",
+          kind: "input",
+          route: "/",
+          controlId: "choose-start",
+          reads: [],
+          writes: [],
+          visibleResult: "The starting point is selected.",
+        },
+      ],
+      requiredData: [],
+      expectedSaves: [],
+      handoffs: [],
+      dependencies: { workflowIds: [], platformServices: ["integrations"] },
+    };
+    const appArchitecture = architecture(contract);
+    appArchitecture.pageMap = [
+      {
+        route: "/",
+        name: "Route Finder",
+        purpose: "Find cycle routes.",
+        primaryComponents: ["Page"],
+        workflows: [contract.name],
+      },
+    ];
+    appArchitecture.dataModel = [];
+    const result = review(
+      {
+        "src/app/page.tsx": `import { GooglePlaceAutocomplete } from "@/components/voiceforge-google-map";
+const startContract = { workflowId: "find-cycle-routes", controlId: "choose-start" } as const;
+export default function Page() { return <main><h1>Route Finder</h1><GooglePlaceAutocomplete label="Starting point" inputContract={startContract} onPlaceSelect={() => undefined} /></main>; }`,
+        "src/components/voiceforge-google-map.tsx": `export function GooglePlaceAutocomplete() { const suggestions = ["Oxford"]; return <div><input aria-label="Starting point" />{suggestions.map((label) => <button key={label}>{label}</button>)}</div>; }`,
+      },
+      appArchitecture,
+      { ...spec, dataEntities: [] },
+    );
+
+    expect(result.workflows[0]).toMatchObject({
+      status: "discoverable",
+      missingControls: [],
+    });
+    expect(result.blockingIssues.join(" ")).not.toContain("unlabeled button");
+  });
+
   it("warns about unresolved runtime labels instead of claiming they are absent", () => {
     const result = review({
       "src/app/page.tsx": `import Link from "next/link";

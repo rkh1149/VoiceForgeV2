@@ -211,10 +211,14 @@ function inferFieldOptions(
   return [
     ...new Set(
       match[1]
-        .replace(/\bor\b/gi, ",")
-        .replace(/\band\b/gi, ",")
+        .replace(/\s+or\s+/gi, ",")
         .split(",")
-        .map((option) => option.trim().replace(/^["']|["']$/g, ""))
+        .map((option) =>
+          option
+            .trim()
+            .replace(/^(?:or|and)\s+/i, "")
+            .replace(/^["']|["']$/g, ""),
+        )
         .filter(Boolean),
     ),
   ];

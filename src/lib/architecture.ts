@@ -614,14 +614,11 @@ function hasDeviceLocation(spec: AppSpec): boolean {
     ...spec.features,
     ...spec.dataToStore,
     ...spec.testPlan,
-    ...spec.privacyRequirements,
-    ...spec.riskFlags,
     ...spec.workflows.flatMap((workflow) => [
       workflow.name,
       workflow.trigger,
       workflow.successOutcome,
       ...workflow.steps,
-      ...workflow.failureStates,
     ]),
     ...spec.dataEntities.flatMap((entity) => [
       entity.name,

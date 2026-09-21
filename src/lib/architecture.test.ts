@@ -397,6 +397,24 @@ describe("architecture planning", () => {
     );
   });
 
+  it("does not require GPS from a privacy-only optional-location note", () => {
+    const base = normalizeAppSpec(personalSpecInput);
+    const spec = {
+      ...base,
+      privacyRequirements: [
+        "Request current location only if a user later chooses that optional starting-point method.",
+      ],
+    };
+    const plan = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+
+    expect(plan.platformServices).not.toContainEqual(
+      expect.objectContaining({ service: "device_location" }),
+    );
+  });
+
   it("keeps unsupported external providers blocked after Stage 12C", () => {
     const base = normalizeAppSpec(personalSpecInput);
     const spec = {

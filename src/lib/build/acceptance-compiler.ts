@@ -195,6 +195,7 @@ export function refreshDeterministicAcceptanceCompiler(input: {
   files: FileMap;
   generated: CodegenResult;
   changeMode?: boolean;
+  approvedCompiledSpecHash?: string;
 }): { compilation: CompiledAcceptanceTests; refreshedPaths: string[] } {
   const compilation = compileAcceptanceTests({
     spec: input.spec,
@@ -202,9 +203,18 @@ export function refreshDeterministicAcceptanceCompiler(input: {
     existingAdapterSource: input.files[ACCEPTANCE_ADAPTERS_PATH],
     changeMode: input.changeMode,
   });
+  const approvedSource = input.files[ACCEPTANCE_COMPILED_SPEC_PATH];
+  const preserveApprovedSource = Boolean(
+    input.approvedCompiledSpecHash &&
+      approvedSource &&
+      sourceHash(approvedSource) === input.approvedCompiledSpecHash &&
+      compilation.manifest.journeys.every((journey) =>
+        approvedSource.includes(`[voiceforge-journey:${journey.id}]`),
+      ),
+  );
   const outputs: Array<[string, string]> = [
     [ACCEPTANCE_MANIFEST_SOURCE_PATH, compilation.manifestSource],
-    [ACCEPTANCE_COMPILED_SPEC_PATH, compilation.compiledSource],
+    [ACCEPTANCE_COMPILED_SPEC_PATH, preserveApprovedSource ? approvedSource : compilation.compiledSource],
     [ACCEPTANCE_ADAPTERS_PATH, compilation.adapterSource],
   ];
   const refreshedPaths: string[] = [];
@@ -497,11 +507,30 @@ function compileJourneyActions(
   }
 
   steps.forEach((step, index) => {
-    if (index === 0 || steps[index - 1]?.workflowId !== step.workflowId) {
+    const previousStep = steps[index - 1];
+    const continuesPreviousNavigation = Boolean(
+      previousStep &&
+        previousStep.primitive === "navigate" &&
+        sameRoutePattern(previousStep.expectedRoute, step.route),
+    );
+    if (
+      (index === 0 && !sameRoutePattern(step.route, journey.startRoute)) ||
+      (index > 0 &&
+        previousStep?.workflowId !== step.workflowId &&
+        !continuesPreviousNavigation)
+    ) {
       body.push(`await page.goto(${JSON.stringify(step.route)});
 await expect(page).toHaveURL(${routeRegex(step.route)});`);
     }
-    body.push(compileStep(step, journey, fixtureNames, setup));
+    body.push(
+      compileStep(
+        step,
+        journey,
+        fixtureNames,
+        setup,
+        continuesPreviousNavigation && step.primitive === "navigate",
+      ),
+    );
     for (const save of saves.filter(
       (candidate) =>
         candidate.workflowId === step.workflowId &&
@@ -823,6 +852,7 @@ function compileStep(
   journey: AcceptanceManifestJourney,
   fixtureNames: Map<string, string>,
   setup: FixtureSetupMarker | null,
+  redundantNavigation = false,
 ): string {
   const marker = setup
     ? `workflowFixtureStepTitle(${JSON.stringify(
@@ -837,17 +867,20 @@ function compileStep(
       )}, ${JSON.stringify(step.contractStepId)}, ${JSON.stringify(
         step.description,
       )})`;
-  const control = step.control
+  const control = step.control && !redundantNavigation
     ? compileControlDeclaration(step.control, fixtureNames)
     : "";
   const fixtures = step.fixtureIds
     .map((id) => fixtureNames.get(id))
     .filter((value): value is string => Boolean(value));
-  const primaryFixture = fixtures[0] ?? JSON.stringify(step.expectedText);
+  const primaryFixture =
+    fixtures[0] ?? JSON.stringify(step.interactionValue);
   let action: string;
   switch (step.primitive) {
     case "navigate":
-      action = step.control
+      action = redundantNavigation
+        ? `await expect(page).toHaveURL(${routeRegex(step.expectedRoute)});`
+        : step.control
         ? `await control.click();
 await expect(page).toHaveURL(${routeRegex(step.expectedRoute)});`
         : `await page.goto(${JSON.stringify(step.expectedRoute)});
@@ -911,7 +944,7 @@ ${assertionForStep(step, fixtureNames)}`
         : assertionForStep(step, fixtureNames);
       break;
   }
-  const accessible = step.control?.accessibleName
+  const accessible = step.control?.accessibleName && !redundantNavigation
     ? `await expectContractControl(control, ${JSON.stringify(
         step.control.accessibleName,
       )});\n`
@@ -1275,9 +1308,23 @@ function sourceHash(source: string): string {
 function routeRegex(route: string): string {
   const normalized = route === "/" ? "/" : route.replace(/\/+$/, "");
   const escaped = normalized
-    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .replaceAll("/", "\\/");
+    .split("/")
+    .map((segment) =>
+      /^\[[^\]]+\]$/.test(segment)
+        ? "[^/?#]+"
+        : segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    )
+    .join("\\/");
   return `/${escaped}(?:[?#].*)?$/`;
+}
+
+function sameRoutePattern(left: string, right: string): boolean {
+  const normalize = (value: string) =>
+    (value === "/" ? value : value.replace(/\/+$/, "")).replace(
+      /\[[^\]]+\]/g,
+      "[]",
+    );
+  return normalize(left) === normalize(right);
 }
 
 function identifier(value: string): string {

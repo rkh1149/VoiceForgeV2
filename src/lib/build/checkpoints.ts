@@ -8,7 +8,9 @@ export const BUILD_CHECKPOINT_ARTIFACT_TYPE = "checkpoint";
 export const BUILD_CHECKPOINT_AGENT_KEY = "pipeline_checkpoint";
 export const BUILD_CHECKPOINT_MAX_FILE_COUNT = 2_000;
 export const BUILD_CHECKPOINT_MAX_SOURCE_BYTES = 25 * 1024 * 1024;
-export const BUILD_CHECKPOINT_SCHEMA_VERSION = 2;
+// Reviewer semantics and workflow targeting changed; older architecture/checkpoint
+// pairs must restart cleanly instead of resuming against stale findings.
+export const BUILD_CHECKPOINT_SCHEMA_VERSION = 5;
 
 type BuildPipelineIdentity = {
   checkpointSchemaVersion: number;

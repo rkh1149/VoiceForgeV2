@@ -87,6 +87,66 @@ describe("platform entity seeding", () => {
     expect(entity.fields[0].options).toEqual(["Outdoors", "Food", "Games"]);
   });
 
+  it("keeps an option containing 'and' intact", () => {
+    const spec = normalizeAppSpec({
+      appName: "Research Notes",
+      purpose: "Save source-backed research.",
+      targetUsers: "A family",
+      screens: [{ name: "Home", description: "Read research." }],
+      features: ["Save a result"],
+      dataToStore: ["research results"],
+      needsLogin: false,
+      sharingModel: "shared",
+      aiFeatures: [],
+      testPlan: ["Save a result"],
+      deploymentNotes: "",
+    });
+    const entity = platformEntityFromSpec({
+      ...spec.dataEntities[0],
+      fields: [{
+        name: "evidenceType",
+        label: "Evidence label",
+        type: "select",
+        required: true,
+        validation: "Must be one of: Documented view, Mixed evidence and inference, or Informed estimate.",
+      }],
+    });
+
+    expect(entity.fields[0].options).toEqual([
+      "Documented view",
+      "Mixed evidence and inference",
+      "Informed estimate",
+    ]);
+  });
+
+  it("still separates a final option joined by 'or' without a serial comma", () => {
+    const spec = normalizeAppSpec({
+      appName: "Activity Planner",
+      purpose: "Plan activities together.",
+      targetUsers: "A family",
+      screens: [{ name: "Home", description: "Manage activities." }],
+      features: ["Add activities"],
+      dataToStore: ["activities"],
+      needsLogin: false,
+      sharingModel: "shared",
+      aiFeatures: [],
+      testPlan: ["Add an activity"],
+      deploymentNotes: "",
+    });
+    const entity = platformEntityFromSpec({
+      ...spec.dataEntities[0],
+      fields: [{
+        name: "category",
+        label: "Category",
+        type: "select",
+        required: true,
+        validation: "Choose one of: Outdoors, Food or Games.",
+      }],
+    });
+
+    expect(entity.fields[0].options).toEqual(["Outdoors", "Food", "Games"]);
+  });
+
   it("adds a relation field for belongs-to relationships", () => {
     const spec = normalizeAppSpec({
       appName: "Activity Planner",

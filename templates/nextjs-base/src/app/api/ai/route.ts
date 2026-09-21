@@ -12,6 +12,7 @@ import { NextResponse } from "next/server";
 const MAX_PROMPT_CHARS = 4000;
 const MAX_SYSTEM_CHARS = 1000;
 const MAX_OUTPUT_TOKENS = 1000;
+const MAX_RESEARCH_OUTPUT_TOKENS = 3600;
 
 type AiRequestBody = { prompt?: unknown; system?: unknown; mode?: unknown };
 type GateResponse = { allowed?: boolean; reason?: string; usageId?: string };
@@ -20,8 +21,24 @@ type ImagesBody = {
   usage?: ResponsesUsage;
 };
 type ResponsesUsage = { input_tokens?: number; output_tokens?: number };
-type ResponsesContent = { type?: string; text?: string };
-type ResponsesOutputItem = { content?: ResponsesContent[] };
+type UrlCitation = {
+  type?: string;
+  url?: string;
+  title?: string;
+  end_index?: number;
+};
+type SearchSource = { url?: string; title?: string };
+type ResponsesContent = {
+  type?: string;
+  text?: string;
+  annotations?: UrlCitation[];
+};
+type ResponsesOutputItem = {
+  type?: string;
+  status?: string;
+  content?: ResponsesContent[];
+  action?: { sources?: SearchSource[] };
+};
 type ResponsesBody = {
   output_text?: string;
   output?: ResponsesOutputItem[];
@@ -43,7 +60,12 @@ export async function POST(req: Request) {
     typeof body?.system === "string"
       ? body.system.slice(0, MAX_SYSTEM_CHARS)
       : undefined;
-  const mode = body?.mode === "image" ? "image" : "text";
+  const mode =
+    body?.mode === "image"
+      ? "image"
+      : body?.mode === "research"
+        ? "research"
+        : "text";
   if (!prompt || prompt.length > MAX_PROMPT_CHARS) {
     return NextResponse.json(
       { error: `Prompt must be 1–${MAX_PROMPT_CHARS} characters.` },
@@ -62,7 +84,11 @@ export async function POST(req: Request) {
       const res = await fetch(`${gateBase}/api/ai-usage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: gateToken, phase: "gate", kind: mode }),
+        body: JSON.stringify({
+          token: gateToken,
+          phase: "gate",
+          kind: mode === "image" ? "image" : "text",
+        }),
       });
       gate = (await res.json()) as GateResponse;
     } catch {
@@ -135,7 +161,16 @@ export async function POST(req: Request) {
       model,
       input: prompt,
       instructions: system,
-      max_output_tokens: MAX_OUTPUT_TOKENS,
+      max_output_tokens:
+        mode === "research" ? MAX_RESEARCH_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,
+      ...(mode === "research"
+        ? {
+            tools: [{ type: "web_search" }],
+            tool_choice: "required",
+            max_tool_calls: 3,
+            include: ["web_search_call.action.sources"],
+          }
+        : {}),
     }),
   });
   const data = (await aiRes.json().catch(() => ({}))) as ResponsesBody;
@@ -154,6 +189,71 @@ export async function POST(req: Request) {
       .map((c) => c.text as string)
       .join("");
 
+  const citations: Array<{ title: string; url: string; sourceNote?: string }> = [];
+  let researchText = "";
+  let researchCompleted = true;
+  if (mode === "research") {
+    const searched = (data.output ?? []).some(
+      (item) => item.type === "web_search_call" && item.status === "completed",
+    );
+    const blocks = (data.output ?? [])
+      .flatMap((item) => item.content ?? [])
+      .filter((content) => content.type === "output_text" && content.text);
+    researchText = blocks
+      .map((block) => {
+        let annotated = block.text ?? "";
+        const marks = (block.annotations ?? [])
+          .filter((annotation) => annotation.type === "url_citation")
+          .map((annotation) => {
+            let url: URL;
+            try {
+              url = new URL(annotation.url ?? "");
+            } catch {
+              return null;
+            }
+            if (url.protocol !== "https:") return null;
+            let index = citations.findIndex((item) => item.url === url.href);
+            if (index < 0) {
+              index = citations.length;
+              citations.push({
+                title: annotation.title?.trim() || url.hostname,
+                url: url.href,
+              });
+            }
+            return { index, end: annotation.end_index };
+          })
+          .filter((mark): mark is { index: number; end: number } =>
+            Boolean(mark && typeof mark.end === "number"),
+          )
+          .sort((left, right) => right.end - left.end);
+        for (const mark of marks) {
+          if (mark.end >= 0 && mark.end <= annotated.length) {
+            annotated = `${annotated.slice(0, mark.end)} [${mark.index + 1}]${annotated.slice(mark.end)}`;
+          }
+        }
+        return annotated;
+      })
+      .join("\n\n");
+    if (citations.length === 0) {
+      for (const source of (data.output ?? []).flatMap((item) => item.action?.sources ?? [])) {
+        let url: URL;
+        try {
+          url = new URL(source.url ?? "");
+        } catch {
+          continue;
+        }
+        if (url.protocol !== "https:" || citations.some((item) => item.url === url.href)) continue;
+        citations.push({
+          title: source.title?.trim() || url.hostname,
+          url: url.href,
+          sourceNote: "Research source consulted; not linked to a specific claim.",
+        });
+        if (citations.length >= 12) break;
+      }
+    }
+    researchCompleted = searched && Boolean(researchText.trim());
+  }
+
   // Report token usage (fire-and-forget; failures don't affect the user).
   if (gateBase && gateToken && usageId) {
     void fetch(`${gateBase}/api/ai-usage`, {
@@ -170,5 +270,16 @@ export async function POST(req: Request) {
     }).catch(() => {});
   }
 
-  return NextResponse.json({ text });
+  if (!researchCompleted) {
+    return NextResponse.json(
+      { error: "Research search did not complete. Please try again." },
+      { status: 502 },
+    );
+  }
+
+  return NextResponse.json(
+    mode === "research"
+      ? { text: researchText, citations, noSources: citations.length === 0 }
+      : { text },
+  );
 }

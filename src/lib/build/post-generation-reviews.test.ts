@@ -621,6 +621,43 @@ it("works", () => expect(true).toBe(true));`,
     );
   });
 
+  it("does not require sign-in for an anonymous shared-link app", () => {
+    const spec = normalizeAppSpec({
+      ...sharedSpecInput,
+      needsLogin: false,
+    });
+    const architecture = buildArchitecture(spec);
+    architecture.platformServices.push({
+      service: "users",
+      required: true,
+      availability: "available",
+      reason: "Owner manages access in VoiceForge.",
+    });
+    architecture.permissionModel.push({
+      role: "Link collaborator",
+      rules: ["Shared records can be edited by link holders."],
+      enforcement: "serverRequired",
+    });
+    const codeReview = findReview(
+      review({
+        spec,
+        architecture,
+        allFiles: {
+          "src/app/page.tsx": `import { listPlatformRecords } from "@/lib/platform-data";
+export default function Page() { void listPlatformRecords; return <main>Shared records</main>; }`,
+        },
+      }),
+      "code_reviewer",
+    );
+
+    expect(codeReview.blockingIssues.join(" ")).not.toContain(
+      "locked platform sign-in action",
+    );
+    expect(codeReview.warnings.join(" ")).not.toContain(
+      "route-stable reusable session helpers",
+    );
+  });
+
   it("blocks required platform search that is implemented only in React", () => {
     const spec = normalizeAppSpec(sharedSpecInput);
     const architecture = buildArchitecture(spec);
@@ -762,6 +799,32 @@ it("tests a planned meal", () => expect(true).toBe(true));`,
     );
   });
 
+  it("blocks mutable client session state stored at module scope", () => {
+    const spec = normalizeAppSpec(personalSpecInput);
+    const files: FileMap = {
+      "src/app/page.tsx": `"use client";
+import { useState } from "react";
+let transientSession = { selectedId: "" };
+export default function Page() {
+  const [selectedId] = useState(() => transientSession.selectedId);
+  return <main><h1>Packing Helper</h1><p>{selectedId}</p></main>;
+}`,
+      "src/lib/items.test.ts": `import { expect, it } from "vitest"; it("works", () => expect(true).toBe(true));`,
+    };
+
+    const codeReview = findReview(
+      review({ spec, architecture: buildArchitecture(spec), allFiles: files }),
+      "code_reviewer",
+    );
+
+    expect(codeReview.blockingIssues.join(" ")).toContain(
+      "stores mutable state at module scope",
+    );
+    expect(codeReview.blockingIssues.join(" ")).toContain(
+      "hydration mismatches",
+    );
+  });
+
   it("blocks advanced placeholder apps with incomplete workflow controls and type-only Google Maps references", () => {
     const spec = advancedBikeSpec();
     const files: FileMap = {
@@ -840,6 +903,32 @@ export default function Page() {
 
     expect(codeReview.blockingIssues.join(" ")).toContain(
       "navigation-only link to another map screen",
+    );
+  });
+
+  it("recognizes the approved route-aware Google Maps elevation helper", () => {
+    const spec = advancedBikeSpec();
+    const files: FileMap = {
+      "src/app/page.tsx": `"use client";
+import { GoogleMapsTripMap, GooglePlaceAutocomplete } from "@/components/voiceforge-google-map";
+import { computeGoogleMapsRoute, getGoogleMapsElevationProfileForRoute, searchGoogleMapsPlaces } from "@/lib/platform-integrations";
+export default function Page() {
+  async function findRoute() {
+    await searchGoogleMapsPlaces({ query: "Oxford" });
+    const result = await computeGoogleMapsRoute({ origin: { address: "Oxford" }, destination: { address: "Oxford" }, travelMode: "BICYCLE" });
+    if (result.route) await getGoogleMapsElevationProfileForRoute(result.route, { samples: 64 });
+  }
+  return <main><button onClick={() => void findRoute()}>Find routes</button><GooglePlaceAutocomplete label="Starting point" onPlaceSelect={() => undefined} /><GoogleMapsTripMap places={[]} /></main>;
+}`,
+    };
+
+    const codeReview = findReview(
+      review({ spec, architecture: buildArchitecture(spec), allFiles: files }),
+      "code_reviewer",
+    );
+
+    expect(codeReview.blockingIssues.join(" ")).not.toContain(
+      "Google Maps elevation profiles were requested",
     );
   });
 

@@ -110,6 +110,8 @@ function supportedCandidate(): HumanCompletenessReviewCandidate {
       promiseId: promise.id,
       verdict: "supported" as const,
       confidence: "high" as const,
+      gapCause: "implementation_gap" as const,
+      plannedLimitationIds: [],
       finding: "The visible workflow is implemented.",
       userImpact: "The child can complete the promised experience.",
       repairRecommendation: "No repair needed.",
@@ -246,5 +248,126 @@ describe("human completeness review", () => {
     expect(report.available).toBe(false);
     expect(report.blockingIssues).toEqual([]);
     expect(report.warnings[0]).toContain("review_unavailable");
+  });
+
+  it("does not rewrite an app for a disclosed provider limitation", () => {
+    const packet = evidence();
+    packet.architecture.plannedLimitations = [
+      {
+        id: "risk-note:1",
+        source: "risk_note",
+        statement:
+          "The map provider does not expose reliable road-surface classifications; disclose uncertainty.",
+      },
+    ];
+    const candidate = supportedCandidate();
+    const target = packet.promises.find(
+      (promise) => promise.kind === "original_request",
+    );
+    if (!target) throw new Error("Missing original request fixture");
+    const assessment = candidate.assessments.find(
+      (item) => item.promiseId === target.id,
+    );
+    if (!assessment) throw new Error("Missing original request assessment fixture");
+    Object.assign(assessment, {
+      verdict: "partially_supported",
+      confidence: "high",
+      gapCause: "disclosed_platform_limitation",
+      plannedLimitationIds: ["risk-note:1"],
+      finding: "Surface certainty is unavailable and visibly disclosed.",
+      userImpact: "The rider must confirm the surface before riding.",
+      repairRecommendation: "Keep the visible provider limitation.",
+    });
+
+    const report = normalizeHumanCompletenessReview({
+      evidence: packet,
+      files,
+      candidate,
+      inspections,
+    });
+
+    expect(report.blockingIssues).toEqual([]);
+    expect(report.verdict).toBe("complete_with_notes");
+    expect(report.warnings.some((warning) => warning.includes(target.id))).toBe(
+      true,
+    );
+  });
+
+  it("keeps invalid limitation claims blocking", () => {
+    const packet = evidence();
+    const candidate = supportedCandidate();
+    const target = packet.promises.find(
+      (promise) => promise.kind === "workflow",
+    );
+    if (!target) throw new Error("Missing workflow promise fixture");
+    const assessment = candidate.assessments.find(
+      (item) => item.promiseId === target.id,
+    );
+    if (!assessment) throw new Error("Missing workflow assessment fixture");
+    Object.assign(assessment, {
+      verdict: "missing",
+      confidence: "high",
+      gapCause: "disclosed_platform_limitation",
+      plannedLimitationIds: ["invented-limitation"],
+      finding: "The workflow is absent.",
+      userImpact: "The user cannot complete it.",
+      repairRecommendation: "Implement the workflow.",
+    });
+
+    const report = normalizeHumanCompletenessReview({
+      evidence: packet,
+      files,
+      candidate,
+      inspections,
+    });
+
+    expect(report.blockingIssues).toHaveLength(1);
+    expect(report.assessments.find((item) => item.id === target.id)?.gapCause).toBe(
+      "implementation_gap",
+    );
+  });
+
+  it("recognizes a visibly handled provider limitation the reviewer misclassified", () => {
+    const packet = evidence();
+    packet.architecture.plannedLimitations = [
+      {
+        id: "risk-note:1",
+        source: "risk_note",
+        statement:
+          "Google Maps may not reliably provide explicit road surface classifications; label surface uncertainty.",
+      },
+    ];
+    const candidate = supportedCandidate();
+    const target = packet.promises.find(
+      (promise) => promise.kind === "original_request",
+    );
+    if (!target) throw new Error("Missing original request fixture");
+    const assessment = candidate.assessments.find(
+      (item) => item.promiseId === target.id,
+    );
+    if (!assessment) throw new Error("Missing original request assessment fixture");
+    Object.assign(assessment, {
+      verdict: "partially_supported",
+      confidence: "high",
+      gapCause: "implementation_gap",
+      plannedLimitationIds: [],
+      finding:
+        "Google Maps route results are visibly labelled surface-unconfirmed because explicit surface classifications are unavailable.",
+      userImpact: "The rider must confirm the route surface.",
+      repairRecommendation:
+        "Keep the warning and classify a route only if Google Maps supplies surface evidence.",
+    });
+
+    const report = normalizeHumanCompletenessReview({
+      evidence: packet,
+      files,
+      candidate,
+      inspections,
+    });
+
+    const normalized = report.assessments.find((item) => item.id === target.id);
+    expect(normalized?.gapCause).toBe("disclosed_platform_limitation");
+    expect(normalized?.plannedLimitationIds).toEqual(["risk-note:1"]);
+    expect(report.blockingIssues).toEqual([]);
   });
 });

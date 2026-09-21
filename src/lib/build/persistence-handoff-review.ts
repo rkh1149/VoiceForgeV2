@@ -118,6 +118,7 @@ export function analyzePersistenceHandoffs(input: {
 }): PersistenceHandoffReview {
   const modules = analyzeModules(input.files);
   const testText = generatedTestText(input.files);
+  const allowSessionStorage = allowsSessionOnlyBrowserStorage(input.spec);
   const saves: PersistenceSaveEvidence[] = [];
   const reloads: PersistenceReloadEvidence[] = [];
   const savesByReference = new Map<string, PersistenceSaveEvidence[]>();
@@ -138,6 +139,7 @@ export function analyzePersistenceHandoffs(input: {
         source: routeSource.source,
         sourceFiles: routeSource.files,
         testText,
+        allowSessionStorage,
       });
       saves.push(saveEvidence);
       const referenceKey = `${contract.id}:${save.producedReference}`;
@@ -159,6 +161,7 @@ export function analyzePersistenceHandoffs(input: {
           source: reloadSource.source,
           sourceFiles: reloadSource.files,
           testText,
+          allowSessionStorage,
         }),
       );
     }
@@ -185,6 +188,7 @@ export function analyzePersistenceHandoffs(input: {
         consumerSource: consumerSource.source,
         consumerFiles: consumerSource.files,
         testText,
+        allowSessionStorage,
       });
     }),
   );
@@ -248,6 +252,7 @@ function reviewSave(input: {
   source: string;
   sourceFiles: string[];
   testText: string;
+  allowSessionStorage: boolean;
 }): PersistenceSaveEvidence {
   const schema = input.spec.dataEntities
     .map((entity) => platformEntityFromSpec(entity, input.spec))
@@ -257,7 +262,11 @@ function reviewSave(input: {
     input.save.storage === "platformData"
       ? hasExactToken(input.source, input.save.entityKey)
       : sourceMentionsEntity(input.source, input.save);
-  const writeFound = hasWriteOperation(input.source, input.save);
+  const writeFound = hasWriteOperation(
+    input.source,
+    input.save,
+    input.allowSessionStorage,
+  );
   const exactFieldKeysFound = input.save.fieldKeys.filter((field) =>
     hasExactToken(input.source, field),
   );
@@ -386,9 +395,20 @@ function reviewReload(input: {
   source: string;
   sourceFiles: string[];
   testText: string;
+  allowSessionStorage: boolean;
 }): PersistenceReloadEvidence {
-  const readFound = hasReadOperation(input.source, input.save);
-  const freshLoadFound = readFound && hasFreshLoadLifecycle(input.source, input.save.storage);
+  const readFound = hasReadOperation(
+    input.source,
+    input.save,
+    input.allowSessionStorage,
+  );
+  const freshLoadFound =
+    readFound &&
+    hasFreshLoadLifecycle(
+      input.source,
+      input.save.storage,
+      input.allowSessionStorage,
+    );
   const refreshTestFound = hasRefreshTest(
     input.testText,
     input.contract,
@@ -433,6 +453,7 @@ function reviewHandoff(input: {
   consumerSource: string;
   consumerFiles: string[];
   testText: string;
+  allowSessionStorage: boolean;
 }): PersistenceHandoffEvidence {
   const entityKey = input.handoff.produces.split(".", 1)[0] ?? "";
   const syntheticSave: SaveContract = {
@@ -445,10 +466,18 @@ function reviewHandoff(input: {
     producedReference: input.handoff.produces,
   };
   const producerSaveFound = input.producerSave?.writeFound ?? false;
-  const consumerReadFound = hasReadOperation(input.consumerSource, syntheticSave);
+  const consumerReadFound = hasReadOperation(
+    input.consumerSource,
+    syntheticSave,
+    input.allowSessionStorage,
+  );
   const consumerFreshLoadFound =
     consumerReadFound &&
-    hasFreshLoadLifecycle(input.consumerSource, input.handoff.storage);
+    hasFreshLoadLifecycle(
+      input.consumerSource,
+      input.handoff.storage,
+      input.allowSessionStorage,
+    );
   const aggregateConsumer = isAggregateCollectionConsumer(
     input.consumer,
     entityKey,
@@ -552,7 +581,11 @@ function isAggregateCollectionConsumer(
   );
 }
 
-function hasWriteOperation(source: string, save: SaveContract): boolean {
+function hasWriteOperation(
+  source: string,
+  save: SaveContract,
+  allowSessionStorage: boolean,
+): boolean {
   const entity = entityPattern(save.entityName, save.entityKey);
   if (save.storage === "platformData") {
     const direct =
@@ -579,10 +612,14 @@ function hasWriteOperation(source: string, save: SaveContract): boolean {
       ? /\bdeletePlatformFile\s*\(/.test(source)
       : /\buploadPlatformFile(?:Data)?\s*\(/.test(source);
   }
-  const durableWrite =
+  const storage = allowSessionStorage
+    ? "(?:localStorage|sessionStorage)"
+    : "localStorage";
+  const durableWrite = new RegExp(
     save.operation === "delete"
-      ? /\blocalStorage\.(?:removeItem|setItem)\s*\(/.test(source)
-      : /\blocalStorage\.setItem\s*\(/.test(source);
+      ? `\\b${storage}\\.(?:removeItem|setItem)\\s*\\(`
+      : `\\b${storage}\\.setItem\\s*\\(`,
+  ).test(source);
   return durableWrite && sourceMentionsEntity(source, save);
 }
 
@@ -595,7 +632,11 @@ function platformWriteIncludesRawBinary(source: string): boolean {
   return false;
 }
 
-function hasReadOperation(source: string, save: SaveContract): boolean {
+function hasReadOperation(
+  source: string,
+  save: SaveContract,
+  allowSessionStorage: boolean,
+): boolean {
   if (save.storage === "platformData") {
     const directRead =
       /\b(?:listPlatformRecords|searchPlatformRecords|getPlatformRecord)(?:\s*<[^;()]+>)?\s*\(/.test(
@@ -610,24 +651,45 @@ function hasReadOperation(source: string, save: SaveContract): boolean {
   if (save.storage === "platformFiles") {
     return /\b(listPlatformFiles|downloadPlatformFile)\s*\(/.test(source);
   }
-  return (
-    /\blocalStorage\.getItem\s*\(/.test(source) &&
-    sourceMentionsEntity(source, save)
-  );
+  const storage = allowSessionStorage
+    ? /\b(?:localStorage|sessionStorage)\.getItem\s*\(/
+    : /\blocalStorage\.getItem\s*\(/;
+  return storage.test(source) && sourceMentionsEntity(source, save);
 }
 
 function hasFreshLoadLifecycle(
   source: string,
   storage: SaveContract["storage"],
+  allowSessionStorage: boolean,
 ): boolean {
   if (storage === "localStorage") {
-    return /\buseEffect\s*\(/.test(source) && /\blocalStorage\.getItem\s*\(/.test(source);
+    const browserRead = allowSessionStorage
+      ? /\b(?:localStorage|sessionStorage)\.getItem\s*\(/
+      : /\blocalStorage\.getItem\s*\(/;
+    return /\buseEffect\s*\(/.test(source) && browserRead.test(source);
   }
   return (
     /\buseEffect\s*\(/.test(source) ||
     /\buse(?:Query|SWR)\s*\(/.test(source) ||
     (/\bexport\s+default\s+async\s+function\b/.test(source) &&
       /\bawait\b/.test(source))
+  );
+}
+
+function allowsSessionOnlyBrowserStorage(spec: AppSpec): boolean {
+  if (spec.dataToStore.length > 0) return false;
+  const text = [
+    spec.purpose,
+    spec.deploymentNotes,
+    ...spec.features,
+    ...spec.testPlan,
+    ...spec.privacyRequirements,
+    ...spec.dataEntities.flatMap((entity) => [entity.name, entity.description]),
+  ]
+    .join(" ")
+    .toLowerCase();
+  return /\btemporary\b|\bcurrent session\b|\bsession[- ]only\b|\bnot saved\b|\bdoes not save\b|\bdo not save\b|\bno (?:saved )?(?:search|route)?\s*history\b|\bno favou?rites?\b/.test(
+    text,
   );
 }
 

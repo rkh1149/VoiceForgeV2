@@ -83,4 +83,20 @@ describe("build checkpoints", () => {
       ),
     ).toBe(false);
   });
+
+  it("rejects checkpoints from an older workflow-review schema", () => {
+    const current = getBuildPipelineIdentity({});
+
+    expect(
+      isBuildCheckpointCompatible(
+        {
+          pipelineIdentity: {
+            checkpointSchemaVersion: BUILD_CHECKPOINT_SCHEMA_VERSION - 1,
+            deploymentRevision: null,
+          },
+        },
+        current,
+      ),
+    ).toBe(false);
+  });
 });
