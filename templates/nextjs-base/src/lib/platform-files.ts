@@ -153,6 +153,7 @@ function inferContentType(fileName: string): string | null {
   if (lower.endsWith(".json")) return "application/json";
   if (lower.endsWith(".pdf")) return "application/pdf";
   if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".tif") || lower.endsWith(".tiff")) return "image/tiff";
   if (lower.endsWith(".txt")) return "text/plain";
   if (lower.endsWith(".webp")) return "image/webp";
   if (lower.endsWith(".xls")) return "application/vnd.ms-excel";

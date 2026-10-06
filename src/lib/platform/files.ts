@@ -34,6 +34,7 @@ export const PLATFORM_FILES_RATE_LIMIT_MAX_REQUESTS = 60;
 export const PLATFORM_FILES_ALLOWED_CONTENT_TYPES = new Set([
   "application/json",
   "application/msword",
+  "application/octet-stream",
   "application/pdf",
   "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -41,6 +42,7 @@ export const PLATFORM_FILES_ALLOWED_CONTENT_TYPES = new Set([
   "image/gif",
   "image/jpeg",
   "image/png",
+  "image/tiff",
   "image/webp",
   "text/csv",
   "text/plain",

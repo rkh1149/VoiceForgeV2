@@ -51,6 +51,7 @@ const MAX_TOTAL_BYTES_PER_APP = 25 * 1024 * 1024;
 const ALLOWED_CONTENT_TYPES = new Set([
   "application/json",
   "application/msword",
+  "application/octet-stream",
   "application/pdf",
   "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -58,6 +59,7 @@ const ALLOWED_CONTENT_TYPES = new Set([
   "image/gif",
   "image/jpeg",
   "image/png",
+  "image/tiff",
   "image/webp",
   "text/csv",
   "text/plain",

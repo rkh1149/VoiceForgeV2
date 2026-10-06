@@ -54,6 +54,23 @@ describe("platform file validation", () => {
     expect(result.sizeBytes).toBeLessThan(PLATFORM_FILES_MAX_FILE_BYTES);
   });
 
+  it("accepts TIFF originals and binary archive chunks", () => {
+    const tiff = validatePlatformFileUpload({
+      fileName: "scanned-recipe.tiff",
+      contentType: "image/tiff",
+      dataBase64: Buffer.from("tiff-source").toString("base64"),
+    });
+    const archivePart = validatePlatformFileUpload({
+      fileName: "scanned-recipe.part-01-of-03",
+      contentType: "application/octet-stream",
+      dataBase64: Buffer.from([0, 1, 2, 3, 255]).toString("base64"),
+    });
+
+    expect(tiff.contentType).toBe("image/tiff");
+    expect(archivePart.contentType).toBe("application/octet-stream");
+    expect(archivePart.sizeBytes).toBe(5);
+  });
+
   it("rejects oversized uploads", () => {
     expect(() =>
       validatePlatformFileUpload({
