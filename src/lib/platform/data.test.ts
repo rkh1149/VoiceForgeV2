@@ -46,6 +46,45 @@ describe("platform data validation", () => {
       "done",
       "status",
     ]);
+    expect(choreEntity.mutationPolicy).toEqual({
+      create: { roles: ["owner", "editor"], condition: "none" },
+      update: { roles: ["owner", "editor"], condition: "none" },
+      delete: { roles: ["owner", "editor"], condition: "none" },
+    });
+  });
+
+  it("normalizes record and related-owner mutation policies", () => {
+    const entity = normalizeEntityDefinition({
+      name: "Suggestion",
+      fields: [
+        { label: "Recipe ID", type: "relation", required: true },
+        { label: "Message", type: "text", required: true },
+      ],
+      mutationPolicy: {
+        create: {
+          roles: ["owner", "editor", "viewer"],
+          condition: "not_related_record_owner",
+          relationField: "Recipe ID",
+          relationEntityKey: "Recipe",
+        },
+        update: {
+          roles: ["owner", "editor"],
+          condition: "related_record_owner",
+          relationField: "Recipe ID",
+          relationEntityKey: "Recipe",
+        },
+        delete: { roles: [], condition: "none" },
+      },
+    });
+
+    expect(entity.mutationPolicy.create).toEqual({
+      roles: ["owner", "editor", "viewer"],
+      condition: "not_related_record_owner",
+      relationField: "recipe_id",
+      relationEntityKey: "recipe",
+    });
+    expect(entity.mutationPolicy.update.condition).toBe("related_record_owner");
+    expect(entity.mutationPolicy.delete.roles).toEqual([]);
   });
 
   it("accepts records that match the entity metadata", () => {

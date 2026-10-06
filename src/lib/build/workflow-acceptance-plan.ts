@@ -380,18 +380,24 @@ function buildJourney(input: {
   );
   const journeyId = input.journeyId;
   const steps = contracts.flatMap((contract) => {
-    const role = preferredRole(contract.actor.roles);
+    let currentRole = preferredRole(contract.actor.roles);
     const controls = new Map(
       contract.controls.map((control) => [control.id, control]),
     );
     return contract.steps.map((step) => {
       const control = controls.get(step.controlId);
+      currentRole = acceptanceStepRole(
+        step.description,
+        control?.action ?? "",
+        control?.roles ?? contract.actor.roles,
+        currentRole,
+      );
       return {
         id: `${contract.id}:${step.id}`,
         workflowId: contract.id,
         workflowName: contract.name,
         contractStepId: step.id,
-        role,
+        role: currentRole,
         kind: step.kind,
         description: step.description,
         route: step.route,
@@ -603,6 +609,30 @@ function buildJourney(input: {
       contracts.flatMap((contract) => contract.source.testScenarios),
     ),
   };
+}
+
+function acceptanceStepRole(
+  description: string,
+  controlAction: string,
+  allowedRoles: readonly WorkflowContractRole[],
+  currentRole: WorkflowContractRole,
+): WorkflowContractRole {
+  const text = `${description} ${controlAction}`.toLowerCase();
+  if (
+    /\b(?:another|different)\s+(?:member|user|person)(?:'s)?\b|\bnon[- ]?(?:creator|owner)\b/.test(text)
+  ) {
+    return allowedRoles.includes("editor")
+      ? "editor"
+      : allowedRoles.includes("viewer")
+        ? "viewer"
+        : currentRole;
+  }
+  if (/\b(?:recipe\s+)?(?:creator|owner)\b/.test(text) && allowedRoles.includes("owner")) {
+    return "owner";
+  }
+  return allowedRoles.includes(currentRole)
+    ? currentRole
+    : preferredRole(allowedRoles);
 }
 
 function readOnlyContractCoversContract(

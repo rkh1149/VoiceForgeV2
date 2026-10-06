@@ -353,6 +353,40 @@ describe("generated acceptance test review", () => {
     );
   });
 
+  it("accepts deterministic compiler fixtures with named suffixes and form helpers", () => {
+    const { spec, architecture } = sharedApp();
+    const journey = synthesizeWorkflowAcceptancePlan(spec, architecture).journeys[0];
+    const fixture = journey.fixtures.find(
+      (candidate) =>
+        typeof candidate.value === "string" &&
+        !String(candidate.value).startsWith("@"),
+    );
+    const fixtureValue = String(fixture?.value ?? "VoiceForge acceptance record");
+    const source = compliantTest(journey)
+      .replace(
+        "async ({ page, browser }) => {",
+        "async ({ page, browser }, testInfo) => {",
+      )
+      .replace(
+        `const fixture = ${JSON.stringify(fixtureValue)};`,
+        `const runSuffix = acceptanceRunSuffix(testInfo, "compiled-journey");\n  const fixture = "VF compiled record " + runSuffix;`,
+      )
+      .replace(
+        `await page.getByLabel(${JSON.stringify(journey.steps.find((step) => step.kind === "input")?.accessibleName ?? "Title")}).fill(${JSON.stringify(fixtureValue)});`,
+        `await completeAcceptanceForm(page, page.locator("input"), [{ value: fixture }]);`,
+      )
+      .replaceAll(JSON.stringify(fixtureValue), "fixture");
+    const review = analyzeGeneratedAcceptanceTests({
+      spec,
+      architecture,
+      files: { "e2e/generated/compiler-run-scoped.spec.ts": source },
+    });
+
+    expect(review.blockingIssues.join(" ")).not.toContain(
+      "does not use its unique",
+    );
+  });
+
   it("accepts run-scoped values returned by a fixture factory", () => {
     const { spec, architecture } = sharedApp();
     const journey = synthesizeWorkflowAcceptancePlan(spec, architecture).journeys[0];

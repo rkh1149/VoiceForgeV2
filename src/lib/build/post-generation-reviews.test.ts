@@ -1121,7 +1121,8 @@ export default function Page() {
     const spec = advancedBikeSpec();
     const files: FileMap = {
       "src/lib/bike-journey.ts": `import { createPlatformRecord, updatePlatformRecord, deletePlatformRecord, searchPlatformRecords, exportPlatformRecordsCsv } from "@/lib/platform-data";
-export const ENTITY_KEYS = { trip: "trip", tripDay: "trip_day", tripStop: "trip_stop", routeOption: "route_option", savedPlace: "saved_place" } as const;
+export const ENTITY_KEYS = { trip: "trip", tripStop: "trip_stop", routeOption: "route_option", savedPlace: "saved_place" } as const;
+export const TRIP_DAY_ENTITY = "trip_day" as const;
 type TripData = { name: string };
 type TripDayData = { date: string };
 type TripStopData = { place_name: string };
@@ -1130,9 +1131,9 @@ type SavedPlaceData = { name: string };
 export function createTrip(data: TripData) { return createPlatformRecord<TripData>(ENTITY_KEYS.trip, data); }
 export function updateTrip(recordId: string, data: Partial<TripData>) { return updatePlatformRecord<Partial<TripData>>(recordId, data); }
 export function deleteTrip(recordId: string) { return deletePlatformRecord(recordId); }
-export function createTripDay(data: TripDayData) { return createPlatformRecord<TripDayData>(ENTITY_KEYS.tripDay, data); }
-export function updateTripDay(recordId: string, data: Partial<TripDayData>) { return updatePlatformRecord<Partial<TripDayData>>(recordId, data); }
-export function deleteTripDay(recordId: string) { return deletePlatformRecord(recordId); }
+export function createDay(data: TripDayData) { return createPlatformRecord<TripDayData>(TRIP_DAY_ENTITY, data); }
+export function updateDay(recordId: string, data: Partial<TripDayData>) { return updatePlatformRecord<Partial<TripDayData>>(recordId, data); }
+export function deleteDay(recordId: string) { return deletePlatformRecord(recordId); }
 export function createTripStop(data: TripStopData) { return createPlatformRecord<TripStopData>(ENTITY_KEYS.tripStop, data); }
 export function updateTripStop(recordId: string, data: Partial<TripStopData>) { return updatePlatformRecord<Partial<TripStopData>>(recordId, data); }
 export function deleteTripStop(recordId: string) { return deletePlatformRecord(recordId); }
@@ -1149,7 +1150,7 @@ import { PlatformSignInGate, usePlatformSessionState } from "@/components/voicef
 import { GoogleMapsTripMap, GooglePlaceAutocomplete } from "@/components/voiceforge-google-map";
 import { DeviceLocationTracker } from "@/lib/device-location";
 import { computeGoogleMapsRoute, getGoogleMapsElevationProfile, searchGoogleMapsPlaces } from "@/lib/platform-integrations";
-import { createTrip, updateTrip, deleteTrip, createTripDay, updateTripDay, deleteTripDay, createTripStop, updateTripStop, deleteTripStop, createRouteOption, updateRouteOption, deleteRouteOption, createSavedPlace, updateSavedPlace, deleteSavedPlace, exportTripPlanningCsv } from "@/lib/bike-journey";
+import { createTrip, updateTrip, deleteTrip, createDay, updateDay, deleteDay, createTripStop, updateTripStop, deleteTripStop, createRouteOption, updateRouteOption, deleteRouteOption, createSavedPlace, updateSavedPlace, deleteSavedPlace, exportTripPlanningCsv } from "@/lib/bike-journey";
 export default function Page() {
   usePlatformSessionState();
   void PlatformSignInGate;
@@ -1163,9 +1164,9 @@ export default function Page() {
     <button onClick={() => void createTrip({ name: "Tour" })}>Create multi-day trip</button>
     <button onClick={() => void updateTrip("trip-1", { name: "Updated tour" })}>Update trip</button>
     <button onClick={() => void deleteTrip("trip-1")}>Delete trip</button>
-    <button onClick={() => void createTripDay({ date: "2026-08-01" })}>Add trip day</button>
-    <button onClick={() => void updateTripDay("day-1", { date: "2026-08-02" })}>Update trip day</button>
-    <button onClick={() => void deleteTripDay("day-1")}>Delete trip day</button>
+    <button onClick={() => void createDay({ date: "2026-08-01" })}>Add trip day</button>
+    <button onClick={() => void updateDay("day-1", { date: "2026-08-02" })}>Update trip day</button>
+    <button onClick={() => void deleteDay("day-1")}>Delete trip day</button>
     <button onClick={() => void createTripStop({ place_name: "Start" })}>Add trip stop</button>
     <button onClick={() => void updateTripStop("stop-1", { place_name: "Cafe" })}>Update trip stop</button>
     <button onClick={() => void deleteTripStop("stop-1")}>Delete trip stop</button>

@@ -120,6 +120,80 @@ describe("generated app local platform fallback", () => {
     expect(valid.status).toBe(201);
   });
 
+  it("enforces creator and related-record ownership during isolated browser tests", async () => {
+    process.env.VOICEFORGE_DATA_LOCAL_FALLBACK = "1";
+    process.env.VOICEFORGE_PLATFORM_SCHEMA_JSON = JSON.stringify([
+      {
+        key: "recipe",
+        name: "Recipe",
+        fields: [{ key: "name", label: "Name", type: "text", required: true }],
+        mutationPolicy: {
+          create: { roles: ["owner", "editor"], condition: "none" },
+          update: { roles: ["owner", "editor"], condition: "record_owner" },
+          delete: { roles: ["owner", "editor"], condition: "record_owner" },
+        },
+      },
+      {
+        key: "recipe_suggestion",
+        name: "Recipe suggestion",
+        fields: [
+          { key: "recipe_id", label: "Recipe", type: "relation", required: true },
+          { key: "message", label: "Message", type: "text", required: true },
+        ],
+        mutationPolicy: {
+          create: {
+            roles: ["owner", "editor", "viewer"],
+            condition: "not_related_record_owner",
+            relationField: "recipe_id",
+            relationEntityKey: "recipe",
+          },
+          update: {
+            roles: ["owner", "editor"],
+            condition: "related_record_owner",
+            relationField: "recipe_id",
+            relationEntityKey: "recipe",
+          },
+          delete: { roles: [], condition: "none" },
+        },
+      },
+    ]);
+    const request = (role: "owner" | "editor" | "viewer", body: object) =>
+      dataPOST(new Request("http://local.test/api/data", {
+        method: "POST",
+        headers: {
+          "x-voiceforge-test-role": role,
+          "x-voiceforge-test-namespace": "ownership-policy",
+        },
+        body: JSON.stringify(body),
+      }));
+
+    const createdRecipe = await request("owner", {
+      action: "createRecord",
+      entityKey: "recipe",
+      data: { name: "Family soup" },
+    });
+    const recipePayload = (await createdRecipe.json()) as { record: { id: string } };
+    const viewerSuggestion = await request("viewer", {
+      action: "createRecord",
+      entityKey: "recipe_suggestion",
+      data: { recipe_id: recipePayload.record.id, message: "Add lemon" },
+    });
+    const ownerSuggestion = await request("owner", {
+      action: "createRecord",
+      entityKey: "recipe_suggestion",
+      data: { recipe_id: recipePayload.record.id, message: "My own idea" },
+    });
+    const editorUpdate = await request("editor", {
+      action: "updateRecord",
+      recordId: recipePayload.record.id,
+      data: { name: "Changed by someone else" },
+    });
+
+    expect(viewerSuggestion.status).toBe(201);
+    expect(ownerSuggestion.status).toBe(403);
+    expect(editorUpdate.status).toBe(403);
+  });
+
   it("preserves required record fields when applying a partial local update", async () => {
     process.env.VOICEFORGE_DATA_LOCAL_FALLBACK = "1";
     process.env.VOICEFORGE_PLATFORM_SCHEMA_JSON = JSON.stringify(schema);

@@ -17,6 +17,7 @@ describe("Stage 14I locked acceptance runtime", () => {
     expect(source).toContain(".first();");
     expect(source).toContain("selectAcceptanceOption");
     expect(source).toContain("completeAcceptanceForm");
+    expect(source).toContain("directControlFixture");
     expect(source).toContain("runAcceptanceAdapter");
     expect(source).toContain("dragAcceptanceControl");
     expect(source).toContain("new DataTransfer()");

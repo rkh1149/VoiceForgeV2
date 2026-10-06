@@ -21,11 +21,12 @@ import type { FileMap } from "./template";
 function golden(id: (typeof GOLDEN_REGRESSION_SPECS)[number]["id"]) {
   const item = GOLDEN_REGRESSION_SPECS.find((candidate) => candidate.id === id);
   if (!item) throw new Error(`Missing golden spec ${id}`);
+  const spec = structuredClone(item.spec);
   const architecture = createFallbackArchitecturePlan(
-    item.spec,
-    computeSpecComplexity(item.spec),
+    spec,
+    computeSpecComplexity(spec),
   );
-  return { spec: item.spec, architecture };
+  return { spec, architecture };
 }
 
 describe("Stage 14I isolated acceptance compiler", () => {
@@ -39,6 +40,147 @@ describe("Stage 14I isolated acceptance compiler", () => {
     expect(second.compiledSource).toBe(first.compiledSource);
     expect(second.compilerHash).toBe(first.compilerHash);
     expect(second.lineMap).toEqual(first.lineMap);
+    expect(second.compiledSource).toContain(".test(page.url())");
+  });
+
+  it("asserts a human-visible business field instead of an internal id", () => {
+    const input = golden("shared-platform-data");
+    input.spec.dataEntities[0].fields = [
+      {
+        name: "Editor User Id",
+        label: "Editor user id",
+        type: "text",
+        required: true,
+        validation: "",
+      },
+      {
+        name: "Editor Display Name",
+        label: "Editor display name",
+        type: "text",
+        required: true,
+        validation: "",
+      },
+      {
+        name: "Change Description",
+        label: "Change description",
+        type: "long_text",
+        required: true,
+        validation: "",
+      },
+      {
+        name: "Timestamp",
+        label: "Timestamp",
+        type: "datetime",
+        required: true,
+        validation: "",
+      },
+    ];
+    input.architecture = createFallbackArchitecturePlan(
+      input.spec,
+      computeSpecComplexity(input.spec),
+    );
+
+    const compiled = compileAcceptanceTests(input);
+    const save = compiled.manifest.journeys[0]?.saves[0];
+    const fixture = compiled.manifest.journeys[0]?.fixtures.find(
+      (candidate) => candidate.id === save?.fixtureId,
+    );
+
+    expect(fixture?.fieldKey).toBe("editor_display_name");
+    expect(fixture?.fieldKey).not.toContain("user_id");
+    expect(fixture?.value).toBe("Local editor tester");
+    expect(fixture?.runScoped).toBe(false);
+  });
+
+  it("compiles a file control as an upload even when the step has several fixtures", () => {
+    const input = golden("shared-platform-data");
+    const contract = input.architecture.workflowContracts[0];
+    const inputStep = contract.steps.find((step) => step.kind === "input");
+    const control = contract.controls.find(
+      (candidate) => candidate.id === inputStep?.controlId,
+    );
+    if (!inputStep || !control) throw new Error("Golden contract has no input control");
+    control.kind = "file";
+    control.accessibleName = "Recipe image";
+
+    const compiled = compileAcceptanceTests(input);
+    const manifestStep = compiled.manifest.journeys
+      .flatMap((journey) => journey.steps)
+      .find((step) => step.contractStepId === inputStep.id);
+
+    expect(manifestStep?.primitive).toBe("upload");
+    expect(compiled.compiledSource).toContain("control.setInputFiles(tinyPngUpload");
+  });
+
+  it("switches acceptance identity for another-member ownership workflows", () => {
+    const input = golden("shared-platform-data");
+    const contract = input.architecture.workflowContracts[0];
+    const firstStep = contract.steps[0];
+    const firstControl = contract.controls.find(
+      (control) => control.id === firstStep?.controlId,
+    );
+    if (!firstStep || !firstControl) throw new Error("Golden contract has no first control");
+    contract.actor.roles = ["owner", "editor", "viewer"];
+    firstControl.roles = ["owner", "editor", "viewer"];
+    firstControl.action = "Enter a suggestion for another member's record.";
+    firstStep.description = "A member enters a suggestion on another member's record.";
+
+    const compiled = compileAcceptanceTests(input);
+    const step = compiled.manifest.journeys
+      .flatMap((journey) => journey.steps)
+      .find((candidate) => candidate.contractStepId === firstStep.id);
+
+    expect(step?.role).toBe("editor");
+    expect(compiled.compiledSource).toContain(
+      'voiceForgeIsolationHeaders("editor", runSuffix)',
+    );
+  });
+
+  it("matches input fields across workflow entities without record-scoping textboxes", () => {
+    const input = golden("shared-platform-data");
+    input.spec.dataEntities.push({
+      name: "Recipe Suggestion",
+      description: "A suggestion prepared from a recipe screen.",
+      ownership: "shared",
+      fields: [
+        {
+          name: "Message",
+          label: "Suggestion message",
+          type: "long_text",
+          required: true,
+          validation: "",
+        },
+      ],
+      relationships: [],
+    });
+    const contract = input.architecture.workflowContracts[0];
+    contract.requiredData.push({
+      entityName: "Recipe Suggestion",
+      entityKey: "recipe_suggestion",
+      operations: ["create"],
+      requiredFieldKeys: ["message"],
+    });
+    const inputStep = contract.steps.find((step) => step.kind === "input");
+    const control = contract.controls.find(
+      (candidate) => candidate.id === inputStep?.controlId,
+    );
+    if (!inputStep || !control) throw new Error("Golden contract has no input control");
+    control.accessibleName = "Suggestion message";
+    control.kind = "textbox";
+    control.id = "edit-recipe-name";
+    inputStep.controlId = control.id;
+
+    const compiled = compileAcceptanceTests(input);
+    const manifestStep = compiled.manifest.journeys
+      .flatMap((journey) => journey.steps)
+      .find((step) => step.contractStepId === inputStep.id);
+    const fixture = compiled.manifest.journeys
+      .flatMap((journey) => journey.fixtures)
+      .find((candidate) => candidate.id === manifestStep?.fixtureIds[0]);
+
+    expect(fixture?.entityKey).toBe("recipe_suggestion");
+    expect(fixture?.fieldKey).toBe("message");
+    expect(manifestStep?.control?.recordScope).toBeNull();
   });
 
   it("compiles every planned journey step, save, and handoff exactly once", () => {

@@ -79,6 +79,19 @@ type LocalEntitySchema = {
   name?: unknown;
   displayName?: unknown;
   fields?: unknown;
+  mutationPolicy?: unknown;
+};
+
+type LocalMutationAction = "create" | "update" | "delete";
+type LocalMutationRule = {
+  roles: Array<"owner" | "editor" | "viewer">;
+  condition:
+    | "none"
+    | "record_owner"
+    | "related_record_owner"
+    | "not_related_record_owner";
+  relationField?: string;
+  relationEntityKey?: string;
 };
 
 type NormalizedLocalFieldSchema = {
@@ -93,6 +106,7 @@ type NormalizedLocalEntitySchema = {
   key: string;
   name: string;
   fields: NormalizedLocalFieldSchema[];
+  mutationPolicy: Record<LocalMutationAction, LocalMutationRule>;
 };
 
 const ACTIONS = new Set<DataAction>([
@@ -223,13 +237,15 @@ function handleLocalData(
   requestedNamespace: string | null,
 ) {
   const namespace = localAcceptanceNamespace(requestedNamespace);
+  const localRole = localAcceptanceRole(requestedRole);
+  const localUserId = localRole === "public" ? null : `local-${localRole}`;
   const records = getLocalRecords(namespace);
   const savedFilters = getLocalSavedFilters(namespace);
   const now = new Date().toISOString();
 
   switch (body.action) {
     case "session": {
-      const role = localAcceptanceRole(requestedRole);
+      const role = localRole;
       return NextResponse.json({
         session: {
           status: role === "public" ? "anonymous" : "signed_in",
@@ -335,11 +351,20 @@ function handleLocalData(
           validation.issues,
         );
       }
+      const mutationError = authorizeLocalMutation(
+        entity,
+        "create",
+        localRole,
+        localUserId,
+        records,
+        validation.data,
+      );
+      if (mutationError) return mutationError;
       const record: LocalRecord = {
         id: crypto.randomUUID(),
         appId: "local",
         entityKey: entity.key,
-        ownerId: null,
+        ownerId: localUserId,
         data: validation.data,
         version: 1,
         deletedAt: null,
@@ -365,6 +390,16 @@ function handleLocalData(
           `Data entity "${normalizeEntityKey(record.entityKey)}" is not defined for this app.`,
         );
       }
+      const mutationError = authorizeLocalMutation(
+        entity,
+        "update",
+        localRole,
+        localUserId,
+        records,
+        record.data,
+        record,
+      );
+      if (mutationError) return mutationError;
       const validation = validateLocalRecordData(
         entity,
         mergeLocalRecordUpdate(record.data, body.data),
@@ -394,6 +429,20 @@ function handleLocalData(
       if (!record || record.deletedAt) {
         return NextResponse.json({ error: "Record not found." }, { status: 404 });
       }
+      const entity = getLocalEntity(record.entityKey);
+      if (!entity) {
+        return localPlatformError(404, "entity_not_found", "Data entity is not defined for this app.");
+      }
+      const mutationError = authorizeLocalMutation(
+        entity,
+        "delete",
+        localRole,
+        localUserId,
+        records,
+        record.data,
+        record,
+      );
+      if (mutationError) return mutationError;
       const deleted = { ...record, deletedAt: now, updatedAt: now };
       records.set(deleted.id, deleted);
       return NextResponse.json({ record: deleted });
@@ -829,6 +878,7 @@ function getLocalEntity(entityKey: string): NormalizedLocalEntitySchema | null {
       key: normalizeEntityKey(entityKey),
       name: entityKey,
       fields: [],
+      mutationPolicy: defaultLocalMutationPolicy(),
     };
   }
   const normalizedKey = normalizeEntityKey(entityKey);
@@ -851,7 +901,100 @@ function normalizeLocalEntitySchema(
     key,
     name: stringValue(entity.name) || stringValue(entity.displayName) || key,
     fields,
+    mutationPolicy: normalizeLocalMutationPolicy(entity.mutationPolicy),
   };
+}
+
+function defaultLocalMutationPolicy(): Record<LocalMutationAction, LocalMutationRule> {
+  const rule = (): LocalMutationRule => ({
+    roles: ["owner", "editor"],
+    condition: "none",
+  });
+  return { create: rule(), update: rule(), delete: rule() };
+}
+
+function normalizeLocalMutationPolicy(
+  input: unknown,
+): Record<LocalMutationAction, LocalMutationRule> {
+  if (!isPlainObject(input)) return defaultLocalMutationPolicy();
+  const normalizeRule = (value: unknown): LocalMutationRule => {
+    if (!isPlainObject(value)) return defaultLocalMutationPolicy().create;
+    const roles: Array<"owner" | "editor" | "viewer"> = Array.isArray(value.roles)
+      ? value.roles.filter(
+          (role): role is "owner" | "editor" | "viewer" =>
+            role === "owner" || role === "editor" || role === "viewer",
+        )
+      : ["owner", "editor"];
+    const condition =
+      value.condition === "record_owner" ||
+      value.condition === "related_record_owner" ||
+      value.condition === "not_related_record_owner"
+        ? value.condition
+        : "none";
+    return {
+      roles,
+      condition,
+      relationField:
+        typeof value.relationField === "string"
+          ? normalizeEntityKey(value.relationField)
+          : undefined,
+      relationEntityKey:
+        typeof value.relationEntityKey === "string"
+          ? normalizeEntityKey(value.relationEntityKey)
+          : undefined,
+    };
+  };
+  return {
+    create: normalizeRule(input.create),
+    update: normalizeRule(input.update),
+    delete: normalizeRule(input.delete),
+  };
+}
+
+function authorizeLocalMutation(
+  entity: NormalizedLocalEntitySchema,
+  action: LocalMutationAction,
+  role: "owner" | "editor" | "viewer" | "public",
+  userId: string | null,
+  records: Map<string, LocalRecord>,
+  data: unknown,
+  record?: LocalRecord,
+): NextResponse | null {
+  const rule = entity.mutationPolicy[action];
+  if (role === "public" || !userId || !rule.roles.includes(role)) {
+    return localPlatformError(403, "entity_action_forbidden", `Your role cannot ${action} ${entity.name} records.`);
+  }
+  if (rule.condition === "none") return null;
+  if (rule.condition === "record_owner") {
+    return record?.ownerId === userId
+      ? null
+      : localPlatformError(403, "record_owner_required", `Only the person who created this ${entity.name} can ${action} it.`);
+  }
+  const relationValue =
+    rule.relationField && isPlainObject(data)
+      ? data[rule.relationField]
+      : undefined;
+  const relationId = typeof relationValue === "string" ? relationValue : "";
+  const related = relationId ? records.get(relationId) : undefined;
+  if (
+    !related ||
+    related.deletedAt ||
+    (rule.relationEntityKey && related.entityKey !== rule.relationEntityKey)
+  ) {
+    return localPlatformError(404, "related_record_not_found", "The related record was not found.");
+  }
+  const ownsRelated = related.ownerId === userId;
+  const allowed = rule.condition === "related_record_owner" ? ownsRelated : !ownsRelated;
+  if (allowed) return null;
+  return localPlatformError(
+    403,
+    rule.condition === "related_record_owner"
+      ? "related_record_owner_required"
+      : "different_related_record_owner_required",
+    rule.condition === "related_record_owner"
+      ? `Only the creator of the related record can ${action} this ${entity.name}.`
+      : `You cannot ${action} this ${entity.name} for your own related record.`,
+  );
 }
 
 function normalizeLocalFieldSchema(

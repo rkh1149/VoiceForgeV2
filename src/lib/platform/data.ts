@@ -86,6 +86,29 @@ const relationshipInputSchema = z
   })
   .strict();
 
+const appDataRoleInputSchema = z.enum(["owner", "editor", "viewer"]);
+const mutationConditionSchema = z.enum([
+  "none",
+  "record_owner",
+  "related_record_owner",
+  "not_related_record_owner",
+]);
+const mutationRuleInputSchema = z
+  .object({
+    roles: z.array(appDataRoleInputSchema).max(3),
+    condition: mutationConditionSchema.default("none"),
+    relationField: z.string().min(1).max(80).optional(),
+    relationEntityKey: z.string().min(1).max(80).optional(),
+  })
+  .strict();
+const mutationPolicyInputSchema = z
+  .object({
+    create: mutationRuleInputSchema,
+    update: mutationRuleInputSchema,
+    delete: mutationRuleInputSchema,
+  })
+  .strict();
+
 export const platformEntityInputSchema = z
   .object({
     key: z.string().min(1).max(80).optional(),
@@ -93,10 +116,11 @@ export const platformEntityInputSchema = z
     description: z.string().max(800).default(""),
     fields: z.array(fieldInputSchema).min(1).max(100),
     relationships: z.array(relationshipInputSchema).max(50).default([]),
+    mutationPolicy: mutationPolicyInputSchema.optional(),
   })
   .strict();
 
-export const membershipRoleSchema = z.enum(["owner", "editor", "viewer"]);
+export const membershipRoleSchema = appDataRoleInputSchema;
 
 export type PlatformFieldDefinition = {
   key: string;
@@ -114,12 +138,27 @@ export type PlatformRelationshipDefinition = {
   description: string;
 };
 
+export type PlatformMutationCondition = z.infer<typeof mutationConditionSchema>;
+export type PlatformMutationRule = {
+  roles: AppDataRole[];
+  condition: PlatformMutationCondition;
+  relationField?: string;
+  relationEntityKey?: string;
+};
+
+export type PlatformMutationPolicy = {
+  create: PlatformMutationRule;
+  update: PlatformMutationRule;
+  delete: PlatformMutationRule;
+};
+
 export type PlatformEntityDefinition = {
   key: string;
   name: string;
   description: string;
   fields: PlatformFieldDefinition[];
   relationships: PlatformRelationshipDefinition[];
+  mutationPolicy: PlatformMutationPolicy;
 };
 
 export type PlatformRecordSearchConfig = Omit<
@@ -218,6 +257,40 @@ export function normalizeEntityDefinition(
       targetEntityKey: normalizeEntityKey(relationship.targetEntityKey),
       description: relationship.description.trim(),
     })),
+    mutationPolicy: normalizeMutationPolicy(parsed.mutationPolicy),
+  };
+}
+
+function normalizeMutationPolicy(
+  input: z.infer<typeof mutationPolicyInputSchema> | undefined,
+): PlatformMutationPolicy {
+  const fallback: PlatformMutationRule = {
+    roles: ["owner", "editor"],
+    condition: "none",
+  };
+  if (!input) {
+    return {
+      create: { ...fallback },
+      update: { ...fallback },
+      delete: { ...fallback },
+    };
+  }
+  const normalizeRule = (
+    rule: z.infer<typeof mutationRuleInputSchema>,
+  ): PlatformMutationRule => ({
+    roles: [...new Set(rule.roles)],
+    condition: rule.condition,
+    relationField: rule.relationField
+      ? normalizeEntityKey(rule.relationField)
+      : undefined,
+    relationEntityKey: rule.relationEntityKey
+      ? normalizeEntityKey(rule.relationEntityKey)
+      : undefined,
+  });
+  return {
+    create: normalizeRule(input.create),
+    update: normalizeRule(input.update),
+    delete: normalizeRule(input.delete),
   };
 }
 
@@ -808,7 +881,7 @@ export async function createRecord(
     data: unknown;
   },
 ) {
-  await assertCanWriteAppData(db, input.appId, input.user);
+  const role = await assertCanReadAppData(db, input.appId, input.user);
   const entity = await getEntityDefinition(db, input.appId, input.entityKey);
   const validation = validateRecordData(entity, input.data);
   if (!validation.ok) {
@@ -819,6 +892,14 @@ export async function createRecord(
       validation.issues,
     );
   }
+  await assertCanMutateEntityRecord(db, {
+    action: "create",
+    appId: input.appId,
+    entity,
+    role,
+    user: input.user,
+    data: validation.data,
+  });
 
   const [{ used }] = await db
     .select({ used: count() })
@@ -873,8 +954,17 @@ export async function updateRecord(
   if (!record || record.deletedAt) {
     throw new PlatformDataError(404, "record_not_found", "Record not found.");
   }
-  await assertCanWriteAppData(db, record.appId, input.user);
+  const role = await assertCanReadAppData(db, record.appId, input.user);
   const entity = await getEntityDefinition(db, record.appId, record.entityKey);
+  await assertCanMutateEntityRecord(db, {
+    action: "update",
+    appId: record.appId,
+    entity,
+    role,
+    user: input.user,
+    record,
+    data: record.data,
+  });
   const validation = validateRecordData(
     entity,
     mergePlatformRecordUpdate(record.data, input.data),
@@ -939,7 +1029,17 @@ export async function deleteRecord(
   if (!record || record.deletedAt) {
     throw new PlatformDataError(404, "record_not_found", "Record not found.");
   }
-  await assertCanWriteAppData(db, record.appId, input.user);
+  const role = await assertCanReadAppData(db, record.appId, input.user);
+  const entity = await getEntityDefinition(db, record.appId, record.entityKey);
+  await assertCanMutateEntityRecord(db, {
+    action: "delete",
+    appId: record.appId,
+    entity,
+    role,
+    user: input.user,
+    record,
+    data: record.data,
+  });
 
   const [deleted] = await db
     .update(appRecords)
@@ -954,6 +1054,95 @@ export async function deleteRecord(
     payload: { entityKey: record.entityKey, version: record.version },
   });
   return deleted;
+}
+
+async function assertCanMutateEntityRecord(
+  db: Database,
+  input: {
+    action: keyof PlatformMutationPolicy;
+    appId: string;
+    entity: PlatformEntityDefinition;
+    role: AppDataRole;
+    user: PlatformUser;
+    record?: { ownerId: string | null; data: unknown };
+    data: unknown;
+  },
+): Promise<void> {
+  const rule = input.entity.mutationPolicy[input.action];
+  if (!rule.roles.includes(input.role)) {
+    throw new PlatformDataError(
+      403,
+      "entity_action_forbidden",
+      `Your role cannot ${input.action} ${input.entity.name} records.`,
+    );
+  }
+  if (rule.condition === "none") return;
+  if (rule.condition === "record_owner") {
+    if (input.record?.ownerId === input.user.id) return;
+    throw new PlatformDataError(
+      403,
+      "record_owner_required",
+      `Only the person who created this ${input.entity.name} can ${input.action} it.`,
+    );
+  }
+
+  const relationField = rule.relationField;
+  const relationEntityKey = rule.relationEntityKey;
+  const relationId =
+    relationField && isPlainObject(input.data)
+      ? input.data[relationField]
+      : undefined;
+  if (
+    !relationField ||
+    !relationEntityKey ||
+    typeof relationId !== "string" ||
+    !relationId
+  ) {
+    throw new PlatformDataError(
+      403,
+      "related_record_required",
+      `This ${input.entity.name} must identify the related record before it can be changed.`,
+    );
+  }
+  const [relatedRecord] = await db
+    .select({
+      id: appRecords.id,
+      ownerId: appRecords.ownerId,
+      entityKey: appRecords.entityKey,
+      deletedAt: appRecords.deletedAt,
+    })
+    .from(appRecords)
+    .where(
+      and(
+        eq(appRecords.id, relationId),
+        eq(appRecords.appId, input.appId),
+        eq(appRecords.entityKey, relationEntityKey),
+      ),
+    )
+    .limit(1);
+  if (!relatedRecord || relatedRecord.deletedAt) {
+    throw new PlatformDataError(
+      404,
+      "related_record_not_found",
+      "The related record was not found.",
+    );
+  }
+  const ownsRelatedRecord = relatedRecord.ownerId === input.user.id;
+  const permitted =
+    rule.condition === "related_record_owner"
+      ? ownsRelatedRecord
+      : !ownsRelatedRecord;
+  if (!permitted) {
+    throw new PlatformDataError(
+      403,
+      rule.condition === "related_record_owner"
+        ? "related_record_owner_required"
+        : "different_related_record_owner_required",
+      rule.condition === "related_record_owner"
+        ? `Only the creator of the related ${relationEntityKey} can ${input.action} this ${input.entity.name}.`
+        : `You cannot ${input.action} this ${input.entity.name} for your own ${relationEntityKey}.`,
+    );
+  }
 }
 
 export async function listMemberships(

@@ -14,7 +14,12 @@ const MAX_SYSTEM_CHARS = 1000;
 const MAX_OUTPUT_TOKENS = 1000;
 const MAX_RESEARCH_OUTPUT_TOKENS = 3600;
 
-type AiRequestBody = { prompt?: unknown; system?: unknown; mode?: unknown };
+type AiRequestBody = {
+  prompt?: unknown;
+  system?: unknown;
+  mode?: unknown;
+  imageDataUrl?: unknown;
+};
 type GateResponse = { allowed?: boolean; reason?: string; usageId?: string };
 type ImagesBody = {
   data?: Array<{ b64_json?: string }>;
@@ -56,6 +61,8 @@ export async function POST(req: Request) {
 
   const body = (await req.json().catch(() => null)) as AiRequestBody | null;
   const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
+  const imageDataUrl =
+    typeof body?.imageDataUrl === "string" ? body.imageDataUrl.trim() : "";
   const system =
     typeof body?.system === "string"
       ? body.system.slice(0, MAX_SYSTEM_CHARS)
@@ -69,6 +76,18 @@ export async function POST(req: Request) {
   if (!prompt || prompt.length > MAX_PROMPT_CHARS) {
     return NextResponse.json(
       { error: `Prompt must be 1–${MAX_PROMPT_CHARS} characters.` },
+      { status: 400 },
+    );
+  }
+  if (
+    imageDataUrl &&
+    (!/^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/=]+$/i.test(
+      imageDataUrl,
+    ) ||
+      imageDataUrl.length > 4_000_000)
+  ) {
+    return NextResponse.json(
+      { error: "Image input must be a JPG, PNG, or WebP data URL under 3 MB." },
       { status: 400 },
     );
   }
@@ -159,7 +178,21 @@ export async function POST(req: Request) {
     },
     body: JSON.stringify({
       model,
-      input: prompt,
+      input: imageDataUrl
+        ? [
+            {
+              role: "user",
+              content: [
+                { type: "input_text", text: prompt },
+                {
+                  type: "input_image",
+                  image_url: imageDataUrl,
+                  detail: "high",
+                },
+              ],
+            },
+          ]
+        : prompt,
       instructions: system,
       max_output_tokens:
         mode === "research" ? MAX_RESEARCH_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,

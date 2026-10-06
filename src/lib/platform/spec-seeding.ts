@@ -96,6 +96,64 @@ export function platformEntityFromSpec(
       targetEntityKey: normalizeEntityKey(relationship.targetEntity),
       description: relationship.description,
     })),
+    mutationPolicy: mutationPolicyFromSpec(entity, spec),
+  };
+}
+
+function mutationPolicyFromSpec(
+  entity: AppSpec["dataEntities"][number],
+  spec?: AppSpec,
+): PlatformEntityDefinition["mutationPolicy"] {
+  const defaultRoles = ["owner", "editor"] as const;
+  const entityKey = normalizeEntityKey(entity.name);
+  const rules = (spec?.permissionRules ?? []).filter(
+    (rule) => normalizeEntityKey(rule.entity) === entityKey,
+  );
+  const belongsTo = entity.relationships.find(
+    (relationship) => relationship.type === "belongs_to",
+  );
+  const relationField = belongsTo
+    ? normalizeEntityKey(`${belongsTo.targetEntity} id`)
+    : undefined;
+  const relationEntityKey = belongsTo
+    ? normalizeEntityKey(belongsTo.targetEntity)
+    : undefined;
+  const roleName = (value: string): "owner" | "editor" | "viewer" | null => {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "owner" || normalized === "editor" || normalized === "viewer"
+      ? normalized
+      : null;
+  };
+
+  const actionRule = (
+    action: "create" | "update" | "delete",
+  ): PlatformEntityDefinition["mutationPolicy"][typeof action] => {
+    const matching = rules.filter((rule) => rule.actions.includes(action));
+    const roles = matching.length
+      ? [...new Set(matching.map((rule) => roleName(rule.role)).filter((role): role is "owner" | "editor" | "viewer" => Boolean(role)))]
+      : [...defaultRoles];
+    const conditions = matching.map((rule) => rule.condition.toLowerCase()).join(" ");
+    const condition =
+      relationField && /not\s+(?:created|owned)\s+by|different\s+(?:creator|owner)/i.test(conditions)
+        ? "not_related_record_owner"
+        : relationField && /(?:related|recipe|parent).*(?:creator|owned|owner)|(?:creator|owned|owner).*(?:related|recipe|parent)/i.test(conditions)
+          ? "related_record_owner"
+          : /creator(?:user)?id|person who created|record owner|owned by the signed-in|only where .*creator/i.test(conditions)
+            ? "record_owner"
+            : "none";
+    return {
+      roles,
+      condition,
+      ...(condition === "related_record_owner" || condition === "not_related_record_owner"
+        ? { relationField, relationEntityKey }
+        : {}),
+    };
+  };
+
+  return {
+    create: actionRule("create"),
+    update: actionRule("update"),
+    delete: actionRule("delete"),
   };
 }
 

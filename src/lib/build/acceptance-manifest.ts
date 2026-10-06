@@ -66,6 +66,7 @@ export type AcceptanceManifestStep = {
   id: string;
   workflowId: string;
   contractStepId: string;
+  role: WorkflowContractRole;
   description: string;
   route: string;
   reads: string[];
@@ -181,12 +182,17 @@ export function createAcceptanceTestManifest(input: {
   const componentIds = acceptanceComponentIds(plan);
 
   const plannedJourneys = plan.journeys.map((journey) => {
-    const fixtures = journey.fixtures.map((fixture) => ({
-      ...fixture,
-      id: fixtureId(journey.id, fixture),
-      runScoped: isRunScopedFixture(fixture),
-      relationFixtureId: null,
-    }));
+    const executionRole = preferredRole(journey.executionRoles);
+    const fixtures = journey.fixtures.map((fixture) => {
+      const identityValue = localIdentityFixtureValue(fixture, executionRole);
+      return {
+        ...fixture,
+        value: identityValue ?? fixture.value,
+        id: fixtureId(journey.id, fixture),
+        runScoped: identityValue === null && isRunScopedFixture(fixture),
+        relationFixtureId: null,
+      };
+    });
     const fixtureByEntity = fixturesByEntity(fixtures);
     const steps = journey.steps.map((step) =>
       manifestStep({
@@ -283,7 +289,7 @@ export function createAcceptanceTestManifest(input: {
       sequence: journey.sequence,
       dependsOnJourneyIds: [...journey.dependsOnJourneyIds],
       startRoute: journey.startRoute,
-      executionRole: preferredRole(journey.executionRoles),
+      executionRole,
       requiresGeolocation: journey.requiresGeolocation,
       fixtures,
       steps,
@@ -582,6 +588,7 @@ function manifestStep(input: {
     id: input.step.id,
     workflowId: input.step.workflowId,
     contractStepId: input.step.contractStepId,
+    role: input.step.role,
     description: input.step.description,
     route: input.step.route,
     reads: [...input.step.reads],
@@ -647,6 +654,8 @@ function primitiveForStep(
     return "assert_visible";
   }
   if (step.kind === "navigate") return "navigate";
+  if (step.controlKind === "file") return "upload";
+  if (step.controlKind === "drag_drop") return "adapter";
   if (step.kind === "input" && fixtureCount > 1) return "complete_form";
   switch (step.controlKind) {
     case "textbox":
@@ -660,10 +669,6 @@ function primitiveForStep(
       return "select";
     case "checkbox":
       return "check";
-    case "file":
-      return "upload";
-    case "drag_drop":
-      return "adapter";
     case "button":
     case "link":
       break;
@@ -691,15 +696,28 @@ function fixturesForStep(
       (entityKey) => fixtureByEntity.get(entityKey) ?? [],
     ),
   );
+  const allFixtures = uniqueFixturesById(fixtures);
   const candidates =
-    entityFixtures.length > 0 ? entityFixtures : uniqueFixturesById(fixtures);
+    step.kind === "input" || step.controlKind === "form"
+      ? allFixtures
+      : entityFixtures.length > 0
+        ? entityFixtures
+        : allFixtures;
   if (step.controlKind === "form") return candidates;
   if (step.kind === "input") {
+    const controlFields = candidates.filter((fixture) =>
+      fixtureNamedByControl(step, fixture),
+    );
     const explicitFields = candidates.filter(
       (fixture) =>
         fixtureExplicitlyMentioned(step, fixture) &&
         !fixtureIntentionallyBlank(step, fixture),
     );
+    const explicitDataFields = explicitFields.filter(
+      (fixture) => fixture.type !== "relation",
+    );
+    if (explicitDataFields.length > 1) return explicitDataFields;
+    if (controlFields.length > 0) return controlFields;
     if (explicitFields.length > 1) return explicitFields;
   }
   const ranked = candidates
@@ -714,10 +732,26 @@ function fixturesForStep(
   return ranked.length > 0 ? [ranked[0].fixture] : [];
 }
 
+function fixtureNamedByControl(
+  step: WorkflowAcceptanceStep,
+  fixture: AcceptanceManifestFixture,
+): boolean {
+  const identity = normalizedPhrase(`${step.accessibleName} ${step.controlId}`);
+  const label = normalizedPhrase(fixture.label);
+  const fieldKey = normalizedPhrase(fixture.fieldKey);
+  return Boolean(
+    (label && identity.includes(label)) ||
+      (fieldKey && identity.includes(fieldKey)),
+  );
+}
+
 function repeatedRecordFixture(
   step: WorkflowAcceptanceStep,
   fixtureByEntity: Map<string, AcceptanceManifestFixture[]>,
 ): AcceptanceManifestFixture | null {
+  if (!step.controlKind || !["button", "link", "menu"].includes(step.controlKind)) {
+    return null;
+  }
   if (/\b(confirm|cancel)\b/i.test(`${step.description} ${step.accessibleName}`)) {
     return null;
   }
@@ -749,6 +783,12 @@ function assertionRecordFixture(
   step: WorkflowAcceptanceStep,
   fixtureByEntity: Map<string, AcceptanceManifestFixture[]>,
 ): AcceptanceManifestFixture | null {
+  if (step.kind === "automatic" && step.reads[0]) {
+    const primaryReadFixture = bestEntityFixture(
+      fixtureByEntity.get(step.reads[0]) ?? [],
+    );
+    if (primaryReadFixture) return primaryReadFixture;
+  }
   return (
     uniqueStrings([...step.writes, ...step.reads])
       .map((entityKey, index) => {
@@ -906,27 +946,46 @@ function fixturesByEntity(
 function bestEntityFixture(
   fixtures: AcceptanceManifestFixture[],
 ): AcceptanceManifestFixture | null {
-  return (
-    fixtures.find(
-      (fixture) =>
-        fixture.runScoped &&
-        typeof fixture.value === "string" &&
-        !String(fixture.value).startsWith("@"),
-    ) ??
-    fixtures.find(
+  const visibleStrings = fixtures
+    .filter(
       (fixture) =>
         typeof fixture.value === "string" &&
         !String(fixture.value).startsWith("@") &&
         !["date", "datetime", "file", "image"].includes(fixture.type),
-    ) ??
-    fixtures.find(
-      (fixture) =>
-        typeof fixture.value === "string" &&
-        !String(fixture.value).startsWith("@"),
-    ) ??
-    fixtures[0] ??
-    null
-  );
+    )
+    .map((fixture, index) => ({
+      fixture,
+      index,
+      score: visibleFixtureScore(fixture),
+    }))
+    .sort(
+      (left, right) =>
+        right.score - left.score || left.index - right.index,
+    );
+  return visibleStrings[0]?.fixture ?? fixtures[0] ?? null;
+}
+
+function visibleFixtureScore(fixture: AcceptanceManifestFixture): number {
+  const key = fixture.fieldKey.toLowerCase();
+  let score = fixture.runScoped ? 20 : 0;
+  if (/(?:^|_)display_name$/.test(key)) {
+    score += 150;
+  } else if (
+    /(?:^|_)(?:name|title|message|instruction|ingredient)(?:_|$)/.test(key)
+  ) {
+    score += 200;
+  } else if (/(?:^|_)(?:label|description|notes?)(?:_|$)/.test(key)) {
+    score += 100;
+  }
+  if (
+    /(?:^|_)(?:id|user_id|created_at|updated_at|timestamp|sort_order|step_number)(?:_|$)/.test(
+      key,
+    )
+  ) {
+    score -= 200;
+  }
+  if (fixture.type === "relation") score -= 200;
+  return score;
 }
 
 function fixtureText(fixture?: AcceptanceManifestFixture | null): string {
@@ -952,6 +1011,17 @@ function isRunScopedFixture(fixture: WorkflowAcceptanceFixture): boolean {
   return !["date", "datetime", "select"].includes(
     fixture.type,
   );
+}
+
+function localIdentityFixtureValue(
+  fixture: WorkflowAcceptanceFixture,
+  role: WorkflowContractRole,
+): string | null {
+  if (/(?:^|_)user_id$/.test(fixture.fieldKey)) return `local-${role}`;
+  if (/(?:^|_)display_name$/.test(fixture.fieldKey)) {
+    return `Local ${role} tester`;
+  }
+  return null;
 }
 
 function splitDestructiveWorkflowJourneys(

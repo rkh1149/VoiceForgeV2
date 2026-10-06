@@ -316,9 +316,11 @@ export async function completeAcceptanceForm(
   formOrControl: Locator,
   fixtures: readonly VoiceForgeAcceptanceFormFixture[],
 ): Promise<void> {
+  const directTagName = await formOrControl.evaluate((element) =>
+    element.tagName.toLowerCase(),
+  );
   const scope =
-    (await formOrControl.evaluate((element) => element.tagName.toLowerCase())) ===
-    "form"
+    directTagName === "form"
       ? formOrControl
       : page.locator("form").filter({ has: formOrControl }).first();
   const target = (await scope.count()) > 0 ? scope : page.locator("body");
@@ -342,6 +344,28 @@ export async function completeAcceptanceForm(
     } else {
       await candidate.fill(formFixtureText(fixture));
     }
+  }
+  if (directTagName === "form" || fixtures.length === 0) return;
+  const directInputType =
+    (await formOrControl.getAttribute("type"))?.toLowerCase() ?? "";
+  if (["hidden", "submit", "button", "file", "checkbox", "radio"].includes(directInputType)) {
+    return;
+  }
+  const directControlFixture = fixtures.find(
+    (fixture) => !["relation", "file", "image", "boolean"].includes(fixture.type),
+  );
+  if (!directControlFixture) return;
+  if (directTagName === "select") {
+    if (!(await formOrControl.inputValue())) {
+      await selectAcceptanceOption(formOrControl, directControlFixture.value);
+    }
+    return;
+  }
+  if (
+    (directTagName === "input" || directTagName === "textarea") &&
+    !(await formOrControl.inputValue())
+  ) {
+    await formOrControl.fill(formFixtureText(directControlFixture));
   }
 }
 

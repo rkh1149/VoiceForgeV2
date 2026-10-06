@@ -1864,11 +1864,26 @@ function hasPlatformEntityWriteCall(
   sourceText: string,
   target: { key: string; aliases: readonly string[] },
 ): boolean {
-  const entityArgument = entityArgumentPattern(target);
+  const entityArgument = [
+    entityArgumentPattern(target),
+    ...declaredEntityKeyConstants(sourceText, target.key).map(escapeRegExp),
+  ].join("|");
   const pattern = new RegExp(
     `\\b(?:${PLATFORM_RECORD_WRITE_CALLS.join("|")})(?:\\s*<[^>()]+>)?\\s*\\(\\s*(?:${entityArgument})`,
   );
   return pattern.test(sourceText);
+}
+
+function declaredEntityKeyConstants(sourceText: string, entityKey: string): string[] {
+  const pattern = new RegExp(
+    `\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*["'\\\`]${escapeRegExp(entityKey)}["'\\\`]`,
+    "g",
+  );
+  return uniqueStrings(
+    [...sourceText.matchAll(pattern)]
+      .map((match) => match[1] ?? "")
+      .filter(Boolean),
+  );
 }
 
 function hasEntitySaveWiring(

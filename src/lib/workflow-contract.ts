@@ -1084,7 +1084,7 @@ function normalizedStepKind(
   if (isFieldInputDescription(lower)) {
     return "input";
   }
-  if (/^\s*(?:the\s+)?(?:user|player|rider|member|owner|editor|child|parent|guest|visitor|customer|student|teacher|participant|person)?\s*(?:open|go to|navigate|visit)\b/i.test(description)) {
+  if (isNavigationGestureDescription(description)) {
     return "navigate";
   }
   return step.writes.length > 0 ? "save" : "action";
@@ -1097,7 +1097,7 @@ function isDirectUserGestureDescription(value: string): boolean {
 }
 
 function isNavigationGestureDescription(value: string): boolean {
-  return /^\s*(?:the\s+)?(?:user|player|rider|member|owner|editor|child|parent|guest|visitor|customer|student|teacher|participant|person)?\s*(?:opens?|go(?:es)? to|navigates?|visits?)\b/i.test(
+  return /^\s*(?:the\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:may\s+)?(?:opens?|go(?:es)? to|navigates?|visits?)\b/i.test(
     value,
   );
 }
@@ -1558,9 +1558,17 @@ function inferRoles(
 ): WorkflowContractRole[] {
   const actorText = actor.toLowerCase();
   const mutates = operations.some((operation) => WRITE_OPERATIONS.has(operation));
-  if (actorText.includes("viewer")) return ["viewer"];
-  if (actorText.includes("editor")) return ["editor"];
-  if (actorText.includes("owner") || actorText.includes("admin")) return ["owner"];
+  if (/\b(any signed[- ]in member|all signed[- ]in members|any member)\b/.test(actorText)) {
+    return ["owner", "editor", "viewer"];
+  }
+  const namedRoles = unique([
+    ...(actorText.includes("owner") || actorText.includes("admin")
+      ? (["owner"] as const)
+      : []),
+    ...(actorText.includes("editor") ? (["editor"] as const) : []),
+    ...(actorText.includes("viewer") ? (["viewer"] as const) : []),
+  ]);
+  if (namedRoles.length > 0) return namedRoles;
   if (!spec.needsLogin) {
     return spec.sharingModel === "private" ? ["owner"] : ["public"];
   }
@@ -1603,7 +1611,7 @@ function inferControlKind(
   const lower = step.toLowerCase();
   if (/upload|photo|image|attachment|file/.test(lower)) return "file";
   if (/drag|drop|move between/.test(lower)) return "drag_drop";
-  if (/date|day|time/.test(lower)) return "date";
+  if (/\b(date|day|time)\b/.test(lower)) return "date";
   if (/check|toggle|complete/.test(lower)) return "checkbox";
   if (/choose|select|pick/.test(lower) && isFieldInputDescription(lower)) {
     return "combobox";
@@ -1857,6 +1865,16 @@ function contractPromisesPersistence(
   if (declaresWrite) return true;
   if (!workflow) return false;
   if (!canAnyRoleWrite(spec, contract.actor.roles)) return false;
+  if (
+    /^(?:browse|find|read|search|view)\b/i.test(contract.name.trim()) &&
+    !workflow.steps.some((workflowStep) =>
+      /^\s*(?:the\s+)?(?:user|member|owner|editor|creator|admin)\s+(?:creates?|deletes?|removes?|saves?|submits?|updates?)\b/i.test(
+        workflowStep,
+      ),
+    )
+  ) {
+    return false;
+  }
 
   return /\b(add|archive|create|delete|edit|record|remove|save|schedule|update|upload)\b/i.test(
     workflowText(workflow),

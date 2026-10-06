@@ -638,22 +638,27 @@ function compatibleAcceptanceControlKind(
 
 function hasRunScopedFixture(source: string): boolean {
   const suffixVariables = [...source.matchAll(
-    /\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*acceptanceRunSuffix\s*\(\s*\)/g,
+    /\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*acceptanceRunSuffix\s*\([^)]*\)/g,
   )].map((match) => match[1]);
   const hasDirectFixture = suffixVariables.some((suffix) => {
     const escaped = escapeRegExp(suffix);
     const fixtureDeclaration = new RegExp(
-      `\\b(?:const|let)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*[^;\\n]*\\$\\{${escaped}\\}`,
+      `\\b(?:const|let)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*[^;\\n]*(?:\\$\\{${escaped}\\}|\\+\\s*${escaped}\\b)`,
     ).exec(source);
     if (!fixtureDeclaration?.[1]) return false;
     const fixtureName = escapeRegExp(fixtureDeclaration[1]);
-    return (
+    const usesFixtureForInput =
       new RegExp(`\\.(?:fill|selectOption)\\s*\\(\\s*${fixtureName}\\s*\\)`).test(
         source,
-      ) &&
+      ) ||
       new RegExp(
-        `\\bexpect\\s*\\([\\s\\S]{0,500}\\b${fixtureName}\\b[\\s\\S]{0,500}\\)\\s*\\.`,
-      ).test(source)
+        `\\bcompleteAcceptanceForm\\s*\\([\\s\\S]{0,1200}\\b${fixtureName}\\b`,
+      ).test(source);
+    const visiblyAssertsFixture = new RegExp(
+      `\\bexpect\\s*\\([\\s\\S]{0,500}\\b${fixtureName}\\b[\\s\\S]{0,500}\\)\\s*\\.`,
+    ).test(source);
+    return (
+      usesFixtureForInput && visiblyAssertsFixture
     );
   });
   if (hasDirectFixture) return true;

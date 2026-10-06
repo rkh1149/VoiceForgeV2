@@ -6,6 +6,97 @@ import {
 } from "./spec-seeding";
 
 describe("platform entity seeding", () => {
+  it("derives creator and related-record ownership rules from permission requirements", () => {
+    const base = normalizeAppSpec({
+      appName: "Shared Recipes",
+      purpose: "Share recipes while preserving creator control.",
+      targetUsers: "A family",
+      screens: [{ name: "Recipes", description: "Browse recipes." }],
+      features: ["Create recipes", "Suggest improvements"],
+      dataToStore: ["recipes and suggestions"],
+      needsLogin: true,
+      sharingModel: "shared",
+      aiFeatures: [],
+      testPlan: ["A non-creator suggests a change"],
+      deploymentNotes: "",
+    });
+    const recipe = {
+      ...base.dataEntities[0],
+      name: "Recipe",
+      fields: [{
+        name: "name",
+        label: "Name",
+        type: "text" as const,
+        required: true,
+        validation: "",
+      }],
+      relationships: [],
+    };
+    const suggestion = {
+      ...base.dataEntities[0],
+      name: "RecipeSuggestion",
+      fields: [{
+        name: "message",
+        label: "Message",
+        type: "text" as const,
+        required: true,
+        validation: "",
+      }],
+      relationships: [{
+        type: "belongs_to" as const,
+        targetEntity: "Recipe",
+        description: "Each suggestion belongs to one recipe.",
+      }],
+    };
+    const spec = {
+      ...base,
+      dataEntities: [recipe, suggestion],
+      permissionRules: [
+        {
+          role: "Owner",
+          entity: "Recipe",
+          actions: ["update" as const, "delete" as const],
+          condition: "Only where recipe.creatorUserId equals the signed-in user's stable ID.",
+        },
+        {
+          role: "Editor",
+          entity: "Recipe",
+          actions: ["update" as const, "delete" as const],
+          condition: "Only where recipe.creatorUserId equals the signed-in user's stable ID.",
+        },
+        {
+          role: "Viewer",
+          entity: "RecipeSuggestion",
+          actions: ["create" as const],
+          condition: "Submit only to a recipe not created by the signed-in user.",
+        },
+        {
+          role: "Owner",
+          entity: "RecipeSuggestion",
+          actions: ["update" as const],
+          condition: "Only for suggestions on recipes owned by the signed-in user.",
+        },
+      ],
+    };
+
+    expect(platformEntityFromSpec(recipe, spec).mutationPolicy.update).toEqual({
+      roles: ["owner", "editor"],
+      condition: "record_owner",
+    });
+    expect(platformEntityFromSpec(suggestion, spec).mutationPolicy.create).toEqual({
+      roles: ["viewer"],
+      condition: "not_related_record_owner",
+      relationField: "recipe_id",
+      relationEntityKey: "recipe",
+    });
+    expect(platformEntityFromSpec(suggestion, spec).mutationPolicy.update).toEqual({
+      roles: ["owner"],
+      condition: "related_record_owner",
+      relationField: "recipe_id",
+      relationEntityKey: "recipe",
+    });
+  });
+
   it("maps approved spec entities into platform entity definitions", () => {
     const spec = normalizeAppSpec({
       appName: "Shared Pantry",

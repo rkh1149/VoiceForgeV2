@@ -444,8 +444,7 @@ function compilePrerequisiteSetup(
   return `await test.step(workflowFixtureSetupTitle(${JSON.stringify(
     target.id,
   )}, ${JSON.stringify(prerequisite.id)}), async () => {
-  await page.goto(${JSON.stringify(prerequisite.startRoute)});
-  await expect(page).toHaveURL(${routeRegex(prerequisite.startRoute)});
+${indent(compileEnsureRoute(prerequisite.startRoute), 2)}
 ${indent(body, 2)}
 });`;
 }
@@ -464,8 +463,7 @@ function compileJourney(
   return `await test.step(workflowJourneyTitle(${JSON.stringify(
     journey.id,
   )}, ${JSON.stringify(journey.name)}), async () => {
-  await page.goto(${JSON.stringify(journey.startRoute)});
-  await expect(page).toHaveURL(${routeRegex(journey.startRoute)});
+${indent(compileEnsureRoute(journey.startRoute), 2)}
 ${indent(body, 2)}
 });`;
 }
@@ -493,6 +491,7 @@ function compileJourneyActions(
         allowedWorkflowIds.has(handoff.consumerWorkflowId)),
   );
   const workflowIds = new Set(steps.map((step) => step.workflowId));
+  let activeRole = "";
   const handoffEmissionSteps = new Map(
     handoffs.map((handoff) => [
       handoff.id,
@@ -513,12 +512,22 @@ function compileJourneyActions(
         previousStep.primitive === "navigate" &&
         sameRoutePattern(previousStep.expectedRoute, step.route),
     );
-    if (
-      (index === 0 && !sameRoutePattern(step.route, journey.startRoute)) ||
-      (index > 0 &&
+    const controlledNavigation = step.primitive === "navigate" && step.control;
+    const startsOnDifferentRoute =
+      index === 0 && !sameRoutePattern(step.route, journey.startRoute);
+    const changesWorkflowRoute = Boolean(
+      index > 0 &&
         previousStep?.workflowId !== step.workflowId &&
-        !continuesPreviousNavigation)
-    ) {
+        !sameRoutePattern(previousStep.route, step.route),
+    );
+    if (step.role !== activeRole) {
+      body.push(`await context.setExtraHTTPHeaders(voiceForgeIsolationHeaders(${JSON.stringify(
+        step.role,
+      )}, runSuffix));
+await page.reload();`);
+      activeRole = step.role;
+    }
+    if (!controlledNavigation && (startsOnDifferentRoute || changesWorkflowRoute)) {
       body.push(`await page.goto(${JSON.stringify(step.route)});
 await expect(page).toHaveURL(${routeRegex(step.route)});`);
     }
@@ -624,6 +633,14 @@ function handoffEmissionStepKey(
 
 function stepKey(step: AcceptanceManifestStep): string {
   return `${step.workflowId}:${step.contractStepId}`;
+}
+
+function compileEnsureRoute(route: string): string {
+  const expected = routeRegex(route);
+  return `if (!${expected}.test(page.url())) {
+  await page.goto(${JSON.stringify(route)});
+}
+await expect(page).toHaveURL(${expected});`;
 }
 
 function compileSave(

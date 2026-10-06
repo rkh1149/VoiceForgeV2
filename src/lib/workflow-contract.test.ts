@@ -786,6 +786,74 @@ describe("workflow contract layer", () => {
     );
   });
 
+  it("keeps observational owner/editor workflows read-only when they only link to later edits", () => {
+    const spec = bikeSpec();
+    spec.workflows = [
+      {
+        name: "View My Recipes and suggestion counts",
+        actor: "Owner or Editor",
+        trigger: "The member opens My Recipes.",
+        steps: [
+          "The app loads recipes created by the signed-in member.",
+          "The app shows unresolved suggestion counts.",
+          "The member can open, edit, or request deletion confirmation for an owned recipe.",
+        ],
+        successOutcome: "The member sees owned recipes and suggestion counts.",
+        failureStates: [],
+      },
+    ];
+    spec.acceptanceCriteria = [];
+    spec.testScenarios = [];
+
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const contract = architecture.workflowContracts[0];
+    contract.requiredData = contract.requiredData.map((item) => ({
+      ...item,
+      operations: ["read"],
+    }));
+    contract.expectedSaves = [];
+    contract.steps = contract.steps.map((item) => ({
+      ...item,
+      writes: [],
+      kind: item.kind === "save" ? "result" : item.kind,
+    }));
+
+    const validation = validateWorkflowContracts(spec, architecture);
+
+    expect(contract.actor.roles).toEqual(["owner", "editor"]);
+    expect(validation.blockingIssues).not.toContainEqual(
+      expect.stringContaining("defines no persistent record transition"),
+    );
+  });
+
+  it("does not mistake updated status wording for a date control", () => {
+    const spec = bikeSpec();
+    spec.workflows = [
+      {
+        name: "Review route suggestion",
+        actor: "Any signed-in member",
+        trigger: "The member opens Suggestions.",
+        steps: ["Open Suggestions to read the updated status."],
+        successOutcome: "The updated status is visible.",
+        failureStates: [],
+      },
+    ];
+    spec.acceptanceCriteria = [];
+    spec.testScenarios = [];
+
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const contract = architecture.workflowContracts[0];
+
+    expect(contract.actor.roles).toEqual(["owner", "editor", "viewer"]);
+    expect(contract.controls[0]?.kind).toBe("link");
+  });
+
   it("blocks unknown routes, fields, and downstream workflows", () => {
     const spec = bikeSpec();
     const architecture = createFallbackArchitecturePlan(
@@ -1014,6 +1082,47 @@ describe("workflow contract layer", () => {
     ]);
     expect(effectSteps[1].writes).toEqual(["route_option"]);
     expect(effectSteps[2].writes).toEqual(["route_option"]);
+  });
+
+  it("keeps navigation controls on the source route for multi-word personas", () => {
+    const spec = bikeSpec();
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const workflow = architecture.workflowContracts[0];
+    workflow.actor = { persona: "Route creator", roles: ["owner", "editor"] };
+    workflow.start = { route: "/", screen: "Explore", preconditions: [] };
+    workflow.controls = [{
+      id: "open-gps",
+      kind: "link",
+      accessibleName: "Open GPS tracker",
+      route: "/",
+      roles: ["owner", "editor"],
+      action: "Open the saved route in the GPS tracker.",
+    }];
+    workflow.steps = [{
+      id: "open-gps-step",
+      description: "The route creator opens the GPS tracker.",
+      kind: "navigate",
+      route: "/gps",
+      controlId: "open-gps",
+      reads: [],
+      writes: [],
+      visibleResult: "The GPS tracker is visible.",
+    }];
+    workflow.expectedSaves = [];
+    workflow.success = {
+      message: "",
+      visibleResult: "The GPS tracker is visible.",
+      route: "/gps",
+    };
+
+    const normalized = ensureWorkflowContracts(spec, architecture);
+    const normalizedWorkflow = normalized.workflowContracts[0];
+
+    expect(normalizedWorkflow.steps[0]?.kind).toBe("navigate");
+    expect(normalizedWorkflow.controls[0]?.route).toBe("/");
   });
 
   it("reconstructs contracts when resuming an older architecture record", () => {
