@@ -178,6 +178,36 @@ describe("platform entity seeding", () => {
     expect(entity.fields[0].options).toEqual(["Outdoors", "Food", "Games"]);
   });
 
+  it("does not turn placeholder option wording into literal allowed values", () => {
+    const spec = normalizeAppSpec({
+      appName: "Recipe Library",
+      purpose: "Save family recipes.",
+      targetUsers: "A family",
+      screens: [{ name: "Recipes", description: "Manage recipes." }],
+      features: ["Add recipes"],
+      dataToStore: ["recipes with category"],
+      needsLogin: true,
+      sharingModel: "shared",
+      aiFeatures: [],
+      testPlan: ["Add a recipe"],
+      deploymentNotes: "",
+    });
+    const entity = platformEntityFromSpec({
+      ...spec.dataEntities[0],
+      fields: [
+        {
+          name: "category",
+          label: "Category",
+          type: "select",
+          required: false,
+          validation: "Choose from the provided recipe categories or leave blank.",
+        },
+      ],
+    });
+
+    expect(entity.fields[0].options).toEqual([]);
+  });
+
   it("keeps an option containing 'and' intact", () => {
     const spec = normalizeAppSpec({
       appName: "Research Notes",

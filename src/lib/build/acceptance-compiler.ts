@@ -501,6 +501,11 @@ function compileJourneyActions(
 
   for (const handoff of handoffs) {
     if (workflowIds.has(handoff.producerWorkflowId)) continue;
+    const consumerRole = handoffConsumerRole(handoff, manifest);
+    if (consumerRole && consumerRole !== activeRole) {
+      body.push(compileRoleTransition(consumerRole));
+      activeRole = consumerRole;
+    }
     body.push(compileHandoff(handoff, manifest, fixtureNames, setup));
     emittedHandoffs.add(handoff.id);
   }
@@ -515,21 +520,17 @@ function compileJourneyActions(
     const controlledNavigation = step.primitive === "navigate" && step.control;
     const startsOnDifferentRoute =
       index === 0 && !sameRoutePattern(step.route, journey.startRoute);
-    const changesWorkflowRoute = Boolean(
+    const changesStepRoute = Boolean(
       index > 0 &&
-        previousStep?.workflowId !== step.workflowId &&
+        previousStep &&
         !sameRoutePattern(previousStep.route, step.route),
     );
     if (step.role !== activeRole) {
-      body.push(`await context.setExtraHTTPHeaders(voiceForgeIsolationHeaders(${JSON.stringify(
-        step.role,
-      )}, runSuffix));
-await page.reload();`);
+      body.push(compileRoleTransition(step.role));
       activeRole = step.role;
     }
-    if (!controlledNavigation && (startsOnDifferentRoute || changesWorkflowRoute)) {
-      body.push(`await page.goto(${JSON.stringify(step.route)});
-await expect(page).toHaveURL(${routeRegex(step.route)});`);
+    if (!controlledNavigation && (startsOnDifferentRoute || changesStepRoute)) {
+      body.push(compileEnsureRoute(step.route));
     }
     body.push(
       compileStep(
@@ -553,6 +554,11 @@ await expect(page).toHaveURL(${routeRegex(step.route)});`);
         handoffEmissionSteps.get(candidate.id) === stepKey(step) &&
         !emittedHandoffs.has(candidate.id),
     )) {
+      const consumerRole = handoffConsumerRole(handoff, manifest);
+      if (consumerRole && consumerRole !== activeRole) {
+        body.push(compileRoleTransition(consumerRole));
+        activeRole = consumerRole;
+      }
       body.push(compileHandoff(handoff, manifest, fixtureNames, setup));
       emittedHandoffs.add(handoff.id);
     }
@@ -565,6 +571,11 @@ await expect(page).toHaveURL(${routeRegex(step.route)});`);
   }
   for (const handoff of handoffs) {
     if (!emittedHandoffs.has(handoff.id)) {
+      const consumerRole = handoffConsumerRole(handoff, manifest);
+      if (consumerRole && consumerRole !== activeRole) {
+        body.push(compileRoleTransition(consumerRole));
+        activeRole = consumerRole;
+      }
       body.push(compileHandoff(handoff, manifest, fixtureNames, setup));
     }
   }
@@ -574,6 +585,34 @@ await expect(page).toHaveURL(${routeRegex(step.route)});`);
     });
   }
   return body.join("\n");
+}
+
+function compileRoleTransition(role: AcceptanceManifestStep["role"]): string {
+  return `await context.setExtraHTTPHeaders(voiceForgeIsolationHeaders(${JSON.stringify(
+    role,
+  )}, runSuffix));
+await page.reload();`;
+}
+
+function handoffConsumerRole(
+  handoff: AcceptanceManifestHandoff,
+  manifest: VoiceForgeAcceptanceManifest,
+): AcceptanceManifestStep["role"] | null {
+  const consumerJourney = manifest.journeys.find((journey) =>
+    journey.steps.some((step) => step.workflowId === handoff.consumerWorkflowId),
+  );
+  if (!consumerJourney) return null;
+  return (
+    consumerJourney.steps.find(
+      (step) =>
+        step.workflowId === handoff.consumerWorkflowId &&
+        step.control?.controlId === handoff.consumerControl?.controlId,
+    )?.role ??
+    consumerJourney.steps.find(
+      (step) => step.workflowId === handoff.consumerWorkflowId,
+    )?.role ??
+    consumerJourney.executionRole
+  );
 }
 
 function handoffEmissionStepKey(
@@ -739,6 +778,9 @@ function compileHandoffConsumerContinuation(
     isSafeStandaloneNavigationControl(handoff.consumerControl)
   ) {
     lines.push("await consumer.click();");
+    if (target) {
+      lines.push(`await expect(page).toHaveURL(${routeRegex(target.expectedRoute)});`);
+    }
   }
   const seen = new Set<string>();
   for (const [index, step] of consumerSteps
@@ -764,6 +806,7 @@ function compileHandoffConsumerContinuation(
         step.control.accessibleName,
       )});`,
       `await ${controlName}.click();`,
+      `await expect(page).toHaveURL(${routeRegex(step.expectedRoute)});`,
     );
   }
   return lines.join("\n");
@@ -830,7 +873,9 @@ function compileHandoffRevealPath(
           `revealRecord${index}`,
         )}\nawait expectContractControl(${controlName}, ${JSON.stringify(
           step.control.accessibleName,
-        )});\nawait ${controlName}.click();`,
+        )});\nawait ${controlName}.click();\nawait expect(page).toHaveURL(${routeRegex(
+          step.expectedRoute,
+        )});`,
       ];
     })
     .join("\n");

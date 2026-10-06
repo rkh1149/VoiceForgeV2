@@ -7,7 +7,10 @@ import { spawnSync } from "node:child_process";
 
 const compiledPath = "e2e/generated/voiceforge-compiled.spec.ts";
 
-run("baseline full suite", ["playwright", "test"]);
+// Establish the complete baseline without overlapping workflows that were
+// classified as unsafe for parallel execution. A separate pass below still
+// proves that explicitly parallel-safe journeys can run concurrently.
+run("baseline full suite", ["playwright", "test", "--workers=1"]);
 
 if (existsSync(compiledPath)) {
   const compiledSource = readFileSync(compiledPath, "utf8");

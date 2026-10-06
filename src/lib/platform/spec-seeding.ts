@@ -266,9 +266,17 @@ function inferFieldOptions(
     /(?:choose\s+one\s+of|choose\s+from|one\s+of|options?\s+are)\s*:?\s*([^.;]+)/i,
   );
   if (!match?.[1]) return [];
+  const statedOptions = match[1].trim();
+  if (
+    /\b(?:provided|available|configured|listed)\b[^,;]*(?:categories|labels|options|values)\b/i.test(
+      statedOptions,
+    )
+  ) {
+    return [];
+  }
   return [
     ...new Set(
-      match[1]
+      statedOptions
         .replace(/\s+or\s+/gi, ",")
         .split(",")
         .map((option) =>

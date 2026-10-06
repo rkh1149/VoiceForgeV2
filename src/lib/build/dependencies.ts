@@ -50,6 +50,7 @@ export const APPROVED_RUNTIME_DEPENDENCIES: Record<string, string> = {
   "react-hook-form": "7.81.0",
   recharts: "3.9.2",
   "tailwind-merge": "3.6.0",
+  utif: "3.1.0",
   zod: "4.4.3",
 };
 
@@ -95,8 +96,8 @@ export const DEPENDENCY_PROFILES: Record<DependencyProfileId, DependencyProfile>
   ai: {
     id: "ai",
     label: "VoiceForge AI route",
-    purpose: "Text and image AI through the locked /api/ai proxy.",
-    packages: [],
+    purpose: "Text and image AI through the locked /api/ai proxy, including browser-side TIFF preparation.",
+    packages: ["utif"],
   },
   futurePlatform: {
     id: "futurePlatform",

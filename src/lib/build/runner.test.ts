@@ -88,6 +88,7 @@ describe("sandbox browser setup", () => {
     );
 
     expect(source).toContain("baseline full suite");
+    expect(source).toContain('["playwright", "test", "--workers=1"]');
     expect(source).toContain("independent retry suite");
     expect(source).toContain("VOICEFORGE_ACCEPTANCE_RETRY_PROBE");
     expect(source).toContain("--fully-parallel");

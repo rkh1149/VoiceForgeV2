@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { enforceRemoteMutationPolicy as enforceGeneratedMutationPolicy } from "../../../lib/platform-mutation-policy";
 
 /**
  * LOCKED PLATFORM FILE — managed by VoiceForge. Do not modify.
@@ -165,6 +166,16 @@ export async function POST(req: Request) {
       { status: 503 },
     );
   }
+
+  const mutationDenial = await enforceGeneratedMutationPolicy({
+    base,
+    token,
+    body: body as DataBody & { action: DataAction },
+    sessionToken,
+    requireSession,
+    sharingModel,
+  });
+  if (mutationDenial) return mutationDenial;
 
   const platformRes = await fetch(`${base}/api/platform-data`, {
     method: "POST",

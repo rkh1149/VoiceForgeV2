@@ -136,6 +136,60 @@ describe("Stage 14I isolated acceptance compiler", () => {
     );
   });
 
+  it("switches to the consumer role before a cross-role handoff", () => {
+    const input = relationJourneyInput();
+    const [producer, consumer] = input.architecture.workflowContracts;
+    if (!producer || !consumer || !producer.handoffs[0]) {
+      throw new Error("Relation handoff contract missing");
+    }
+    producer.actor.roles = ["editor"];
+    producer.controls = producer.controls.map((control) => ({
+      ...control,
+      roles: ["editor"],
+    }));
+    consumer.actor.roles = ["owner"];
+    consumer.controls = consumer.controls.map((control) => ({
+      ...control,
+      roles: ["owner"],
+    }));
+
+    const compiled = compileAcceptanceTests(input);
+    const marker = `workflowHandoffTitle(${JSON.stringify(producer.handoffs[0].id)})`;
+    const markerIndex = compiled.compiledSource.indexOf(marker);
+    const ownerTransitionIndex = compiled.compiledSource.lastIndexOf(
+      'voiceForgeIsolationHeaders("owner", runSuffix)',
+      markerIndex,
+    );
+    const editorTransitionIndex = compiled.compiledSource.lastIndexOf(
+      'voiceForgeIsolationHeaders("editor", runSuffix)',
+      markerIndex,
+    );
+
+    expect(markerIndex).toBeGreaterThan(0);
+    expect(ownerTransitionIndex).toBeGreaterThan(editorTransitionIndex);
+  });
+
+  it("reconciles declared route changes within one workflow", () => {
+    const input = golden("simple-local-storage");
+    const contract = input.architecture.workflowContracts[0];
+    const firstStep = contract?.steps[0];
+    const secondStep = contract?.steps[1];
+    if (!contract || !firstStep || !secondStep) {
+      throw new Error("Golden workflow needs two steps");
+    }
+    contract.start.route = "/first";
+    firstStep.route = "/first";
+    secondStep.route = "/second";
+    const secondControl = contract.controls.find(
+      (control) => control.id === secondStep.controlId,
+    );
+    if (secondControl) secondControl.route = "/second";
+
+    const compiled = compileAcceptanceTests(input);
+
+    expect(compiled.compiledSource).toContain('page.goto("/second")');
+  });
+
   it("matches input fields across workflow entities without record-scoping textboxes", () => {
     const input = golden("shared-platform-data");
     input.spec.dataEntities.push({
