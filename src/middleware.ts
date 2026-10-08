@@ -11,6 +11,7 @@ const isPublicApi = createRouteMatcher([
   "/api/platform-notifications",
   "/api/platform-integrations",
   "/api/platform-jobs/run",
+  "/api/platform/session/start",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {

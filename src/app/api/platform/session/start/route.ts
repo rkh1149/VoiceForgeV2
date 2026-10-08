@@ -1,30 +1,30 @@
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { z } from "zod";
 import { getDb } from "@/db";
 import { apps } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { getGeneratedAppName } from "@/lib/generated-apps";
 import { getAppDataRole } from "@/lib/platform/data";
 import { createPlatformSessionToken } from "@/lib/platform/session";
+import {
+  buildPlatformSignInPath,
+  platformSignInQuerySchema,
+} from "@/lib/platform/sign-in-return";
 import { getOrCreateCurrentUser } from "@/lib/users";
 
-const querySchema = z.object({
-  appId: z.string().uuid(),
-  returnTo: z.string().url().max(2000),
-});
-
 export async function GET(req: Request) {
-  const user = await getOrCreateCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: "Not signed in" }, { status: 401 });
-  }
-
-  const parsed = querySchema.safeParse(
+  const parsed = platformSignInQuerySchema.safeParse(
     Object.fromEntries(new URL(req.url).searchParams),
   );
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid sign-in request." }, { status: 400 });
+  }
+
+  const user = await getOrCreateCurrentUser();
+  if (!user) {
+    return NextResponse.redirect(
+      new URL(buildPlatformSignInPath(parsed.data), req.url),
+    );
   }
 
   const returnTo = new URL(parsed.data.returnTo);
