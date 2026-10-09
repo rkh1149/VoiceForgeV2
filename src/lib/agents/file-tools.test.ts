@@ -44,6 +44,8 @@ describe("agent file tool path policy", () => {
       false,
     );
     expect(isAgentWritablePath("src/lib/device-location.ts").ok).toBe(false);
+    expect(isAgentWritablePath("src/lib/voiceforge-ai.ts").ok).toBe(false);
+    expect(isAgentWritablePath("src/lib/voiceforge-ai.test.ts").ok).toBe(false);
     expect(isAgentWritablePath("src/lib/voiceforge-modules.ts").ok).toBe(false);
     expect(isAgentWritablePath("src/components/voiceforge-reusable.tsx").ok).toBe(
       false,

@@ -8,6 +8,7 @@ import {
   refreshResumedTemplateFiles,
   TEMPLATE_IGNORED_DIRECTORIES,
 } from "./template";
+import type { FileMap } from "./template";
 
 describe("template loader", () => {
   const temporaryDirectories: string[] = [];
@@ -36,7 +37,7 @@ describe("template loader", () => {
   });
 
   it("refreshes the locked acceptance helper without replacing generated app source", async () => {
-    const files = {
+    const files: FileMap = {
       "src/lib/platform-data.ts": "old platform data client",
       "src/app/api/data/route.ts": "old platform data route",
       "e2e/smoke.spec.ts": "old smoke test",
@@ -54,7 +55,11 @@ describe("template loader", () => {
         purpose: "Track shared equipment",
       }),
     ).resolves.toEqual([
+      "package.json",
+      "package-lock.json",
       "src/lib/platform-data.ts",
+      "src/lib/voiceforge-ai.ts",
+      "src/lib/voiceforge-ai.test.ts",
       "src/app/api/data/route.ts",
       "e2e/smoke.spec.ts",
       "e2e/voiceforge-acceptance.ts",
@@ -65,6 +70,7 @@ describe("template loader", () => {
     expect(files["src/lib/platform-data.ts"]).toContain(
       "data: Partial<TData>",
     );
+    expect(files["src/lib/voiceforge-ai.ts"]).toContain("parseStructuredAiText");
     expect(files["src/app/api/data/route.ts"]).toContain(
       "mergeLocalRecordUpdate(record.data, body.data)",
     );

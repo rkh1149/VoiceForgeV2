@@ -3,18 +3,30 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
 import { buildAgentArtifacts } from "../../db/schema";
 import type { FileMap } from "./template";
+import { ACCEPTANCE_COMPILER_VERSION } from "./acceptance-manifest";
+import { WORKFLOW_IMPLEMENTATION_MATRIX_VERSION } from "./workflow-implementation-matrix";
 
 export const BUILD_CHECKPOINT_ARTIFACT_TYPE = "checkpoint";
 export const BUILD_CHECKPOINT_AGENT_KEY = "pipeline_checkpoint";
 export const BUILD_CHECKPOINT_MAX_FILE_COUNT = 2_000;
 export const BUILD_CHECKPOINT_MAX_SOURCE_BYTES = 25 * 1024 * 1024;
-// Reviewer semantics and workflow targeting changed; older architecture/checkpoint
-// pairs must restart cleanly instead of resuming against stale findings.
-export const BUILD_CHECKPOINT_SCHEMA_VERSION = 5;
+// Source-compatible checkpoints are migrated by refreshing locked helpers and
+// deterministic artifacts; only older archive/schema formats restart cleanly.
+export const BUILD_CHECKPOINT_SCHEMA_VERSION = 6;
+export const MINIMUM_MIGRATABLE_CHECKPOINT_SCHEMA_VERSION = 5;
+export const REVIEW_SEMANTICS_VERSION = 1;
 
 type BuildPipelineIdentity = {
   checkpointSchemaVersion: number;
   deploymentRevision: string | null;
+  reviewSemanticsVersion: number;
+  acceptanceCompilerVersion: number;
+  workflowMatrixVersion: number;
+};
+
+export type BuildCheckpointCompatibility = {
+  status: "compatible" | "refresh_deterministic" | "incompatible";
+  reasons: string[];
 };
 
 export type BuildCheckpointStage =
@@ -51,30 +63,42 @@ export function getBuildPipelineIdentity(
   return {
     checkpointSchemaVersion: BUILD_CHECKPOINT_SCHEMA_VERSION,
     deploymentRevision: env.VERCEL_GIT_COMMIT_SHA?.trim() || null,
+    reviewSemanticsVersion: REVIEW_SEMANTICS_VERSION,
+    acceptanceCompilerVersion: ACCEPTANCE_COMPILER_VERSION,
+    workflowMatrixVersion: WORKFLOW_IMPLEMENTATION_MATRIX_VERSION,
   };
+}
+
+export function assessBuildCheckpointCompatibility(
+  metadata: unknown,
+  currentIdentity: BuildPipelineIdentity = getBuildPipelineIdentity(),
+): BuildCheckpointCompatibility {
+  if (!isRecord(metadata) || !isRecord(metadata.pipelineIdentity)) {
+    return { status: "incompatible", reasons: ["Pipeline identity metadata is missing."] };
+  }
+  const saved = metadata.pipelineIdentity;
+  const schema = typeof saved.checkpointSchemaVersion === "number"
+    ? saved.checkpointSchemaVersion
+    : 0;
+  if (schema < MINIMUM_MIGRATABLE_CHECKPOINT_SCHEMA_VERSION || schema > currentIdentity.checkpointSchemaVersion) {
+    return { status: "incompatible", reasons: [`Checkpoint schema ${schema} cannot be migrated to ${currentIdentity.checkpointSchemaVersion}.`] };
+  }
+  const reasons: string[] = [];
+  if (schema !== currentIdentity.checkpointSchemaVersion) reasons.push("checkpoint schema will be migrated");
+  if (saved.deploymentRevision !== currentIdentity.deploymentRevision) reasons.push("deployment revision changed");
+  if (saved.reviewSemanticsVersion !== currentIdentity.reviewSemanticsVersion) reasons.push("review artifacts will be regenerated");
+  if (saved.acceptanceCompilerVersion !== currentIdentity.acceptanceCompilerVersion) reasons.push("acceptance artifacts will be recompiled");
+  if (saved.workflowMatrixVersion !== currentIdentity.workflowMatrixVersion) reasons.push("workflow matrix will be regenerated");
+  return reasons.length > 0
+    ? { status: "refresh_deterministic", reasons }
+    : { status: "compatible", reasons: [] };
 }
 
 export function isBuildCheckpointCompatible(
   metadata: unknown,
   currentIdentity: BuildPipelineIdentity = getBuildPipelineIdentity(),
 ): boolean {
-  if (!isRecord(metadata) || !isRecord(metadata.pipelineIdentity)) {
-    return false;
-  }
-  const savedIdentity = metadata.pipelineIdentity;
-  if (
-    savedIdentity.checkpointSchemaVersion !==
-    currentIdentity.checkpointSchemaVersion
-  ) {
-    return false;
-  }
-  if (
-    currentIdentity.deploymentRevision &&
-    savedIdentity.deploymentRevision !== currentIdentity.deploymentRevision
-  ) {
-    return false;
-  }
-  return true;
+  return assessBuildCheckpointCompatibility(metadata, currentIdentity).status !== "incompatible";
 }
 
 export function encodeFileMapForCheckpoint(files: FileMap): EncodedFileMap {

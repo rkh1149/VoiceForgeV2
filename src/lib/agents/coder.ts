@@ -28,6 +28,7 @@ import {
 } from "../build/workflow-repair";
 import { synthesizeWorkflowAcceptancePlan } from "../build/workflow-acceptance-plan";
 import { createAcceptanceTestManifest } from "../build/acceptance-manifest";
+import { createWorkflowImplementationMatrix } from "../build/workflow-implementation-matrix";
 
 /**
  * Code Agent + Debug Agent.
@@ -136,6 +137,7 @@ THIS APP HAS AI FEATURES. Use the locked platform endpoint for ALL of them:
 - Call the endpoint with fetch from client components; always show a loading state while waiting.
 - If the response is not ok, display the error message to the user politely (daily limits exist — 429 means "come back tomorrow").
 - Keep prompts under 4000 characters. Craft a good "system" string so text answers fit this app's purpose and audience.
+- Treat every AI response as unknown input. Import readAiTextResponse, parseStructuredAiText, and the aiText/aiNumber/aiArray helpers from the locked src/lib/voiceforge-ai.ts boundary. Validate structured output with a Zod schema and coerce form values before using string methods or saving. Never put JSON.parse(payload.text) directly into form state.
 - NEVER call OpenAI or any external AI service directly, never reference API keys, and never modify src/app/api/ai/route.ts.
 - In tests, mock global.fetch for /api/ai calls — never let tests hit the network.`;
 }
@@ -150,6 +152,19 @@ ${JSON.stringify(architecture, null, 2)}
 Use the architecture plan as the source of implementation structure: routes, components, data model, file plan, workflow coverage, and tests. Do not implement services marked unavailable or future-platform. If a detail conflicts with the shared rules, the shared rules win.
 
 WORKFLOW CONTRACTS ARE MANDATORY. Implement every contract's starting route, visible controls, ordered steps, exact data operations, persistent saves, visible result, and downstream handoffs. For every user-action control, bind permanent architecture workflow/control ids to the rendered interactive element with data-vf-workflow and data-vf-control. Shared add/edit branches may select between finite literal contract ids; equivalent workflows that deliberately reuse one physical navigation or filter control may use one canonical contract pair, which generated tests must locate consistently. Use each control's accessibleName as the visible label or accessible name, but preserve the permanent ids if friendly wording changes. Repeated record actions also require a nearest data-vf-entity/data-vf-record container. A workflow is not complete when it only calculates or displays transient data if its contract requires a save or a downstream screen to reload that record. In phase notes, name the workflow contract ids completed and call out any contract that remains incomplete.`;
+}
+
+export function workflowImplementationMatrixNote(
+  spec: AppSpec,
+  architecture?: ArchitecturePlan,
+): string {
+  if (!architecture) return "";
+  return `
+
+STAGE 14J WORKFLOW IMPLEMENTATION MATRIX (DETERMINISTIC):
+${JSON.stringify(createWorkflowImplementationMatrix({ spec, architecture }), null, 2)}
+
+Implement against this matrix. Primary entities need independent user-facing management. Child entities belong inside their parent workflow. Append-only entities need add/read behavior, not edit/delete screens. System-managed and read-only entities must not receive invented CRUD controls.`;
 }
 
 export function workflowAcceptancePlanNote(
@@ -520,6 +535,7 @@ ${change}${previous}
 APP SPECIFICATION:
 ${JSON.stringify(input.spec, null, 2)}
 ${architectureNote(input.architecture)}
+${workflowImplementationMatrixNote(input.spec, input.architecture)}
 ${workflowAcceptancePlanNote(input.spec, input.architecture, input.phase.id)}
 ${platformDataSchemaNote(input.spec)}
 

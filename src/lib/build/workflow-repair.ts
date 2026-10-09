@@ -5,6 +5,10 @@ import type { FailureFingerprint } from "./debug-progress";
 import type { HumanCompletenessSourceContext } from "./human-completeness-review";
 import type { FileMap } from "./template";
 import {
+  collectBrowserFailureEvidence,
+  type BrowserFailureEvidence,
+} from "./browser-failure-evidence";
+import {
   ACCEPTANCE_ADAPTERS_PATH,
   ACCEPTANCE_COMPILED_SPEC_PATH,
   ACCEPTANCE_MANIFEST_SOURCE_PATH,
@@ -122,6 +126,7 @@ export type WorkflowRepairPackage = {
     browserFailure: string;
     failureFingerprint?: FailureFingerprint;
     previousAttempts: string[];
+    browserDiagnostics: BrowserFailureEvidence | null;
   };
   scope: {
     inspectionPaths: string[];
@@ -165,6 +170,7 @@ export type CreateWorkflowRepairPackageInput = {
   failureFingerprint?: FailureFingerprint;
   createdAt?: string;
   source?: HumanCompletenessSourceContext;
+  browserEvidence?: BrowserFailureEvidence;
 };
 
 const LOCKED_REPAIR_PATHS = new Set([
@@ -174,6 +180,8 @@ const LOCKED_REPAIR_PATHS = new Set([
   "src/lib/platform-notifications.ts",
   "src/lib/platform-integrations.ts",
   "src/lib/device-location.ts",
+  "src/lib/voiceforge-ai.ts",
+  "src/lib/voiceforge-ai.test.ts",
   "src/lib/voiceforge-modules.ts",
   "src/components/voiceforge-reusable.tsx",
   "src/components/voiceforge-google-map.tsx",
@@ -250,6 +258,10 @@ export function createWorkflowRepairPackage(
     ...(input.blockingIssues ?? []),
     ...(input.reviews ?? []).flatMap((review) => review.blockingIssues),
   ]);
+  const browserEvidence =
+    input.failedStep === "e2e"
+      ? input.browserEvidence ?? collectBrowserFailureEvidence(input.errorOutput)
+      : undefined;
   const failedTestEvidence = input.failureFingerprint?.failedTests.join("\n") ?? "";
   const focusedReviewEvidence = input.errorOutput.split(
     /\n\nSTRUCTURED (?:REVIEW|PRODUCT COMPLETENESS) EVIDENCE:/,
@@ -288,6 +300,7 @@ export function createWorkflowRepairPackage(
     blockingIssues: input.blockingIssues,
     reviews: input.reviews ?? [],
     hasGeneratedJourney: Boolean(journey),
+    browserEvidence,
   });
   const target = createTarget({
     markers,
@@ -382,6 +395,7 @@ export function createWorkflowRepairPackage(
       browserFailure: tail(input.errorOutput, 8_000),
       failureFingerprint: input.failureFingerprint,
       previousAttempts: [...(input.previousAttempts ?? [])],
+      browserDiagnostics: browserEvidence ?? null,
     },
     scope,
     focusedValidation: {
@@ -414,6 +428,7 @@ export function classifyWorkflowRepairFailure(input: {
   blockingIssues?: readonly string[];
   reviews?: readonly ReviewLike[];
   hasGeneratedJourney?: boolean;
+  browserEvidence?: BrowserFailureEvidence;
 }): WorkflowRepairPackage["classification"] {
   const text =
     input.blockingIssues && input.blockingIssues.length > 0
@@ -443,6 +458,36 @@ export function classifyWorkflowRepairFailure(input: {
       "high",
       "The failure reports an external provider or quota response; generated source should remain unchanged.",
     );
+  }
+  if (input.failedStep === "e2e" && input.browserEvidence) {
+    const evidence = input.browserEvidence;
+    if (evidence.likelySurface === "external_environment") {
+      return result(
+        "external_service_failure",
+        "browser_provider_or_gateway_failure",
+        "external_environment",
+        evidence.confidence,
+        evidence.reason,
+      );
+    }
+    if (evidence.likelySurface === "application_source") {
+      return result(
+        "broken_save",
+        "browser_application_runtime_failure",
+        "application_source",
+        evidence.confidence,
+        evidence.reason,
+      );
+    }
+    if (evidence.likelySurface === "ambiguous") {
+      return result(
+        "broken_save",
+        "browser_action_and_test_require_joint_diagnosis",
+        "application_source",
+        evidence.confidence,
+        evidence.reason,
+      );
+    }
   }
   if (/\bacceptance_test:/i.test(text)) {
     const subtype = /acceptance_test:save/i.test(text)

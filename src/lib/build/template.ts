@@ -46,6 +46,8 @@ const PROTECTED_FILES = new Set([
   "src/lib/platform-notifications.ts", // locked platform notification client (Stage 11B)
   "src/lib/platform-integrations.ts", // locked platform integration client (Stage 12A/12C)
   "src/lib/device-location.ts", // locked browser device GPS/location helpers
+  "src/lib/voiceforge-ai.ts", // locked structured AI response boundary
+  "src/lib/voiceforge-ai.test.ts", // locked AI boundary regression tests
   "src/lib/voiceforge-modules.ts", // locked reusable helpers (Stage 10)
   "src/components/voiceforge-reusable.tsx", // locked reusable UI components (Stage 10)
   "src/components/voiceforge-google-map.tsx", // locked Google Maps UI component (Stage 12C)
@@ -63,7 +65,11 @@ const PROTECTED_FILES = new Set([
 ]);
 
 const RESUME_REFRESHED_TEMPLATE_FILES = [
+  "package.json",
+  "package-lock.json",
   "src/lib/platform-data.ts",
+  "src/lib/voiceforge-ai.ts",
+  "src/lib/voiceforge-ai.test.ts",
   "src/app/api/data/route.ts",
   "e2e/smoke.spec.ts",
   "e2e/voiceforge-acceptance.ts",

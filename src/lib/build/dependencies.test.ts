@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   APPROVED_RUNTIME_DEPENDENCIES,
   inferDependencyProfiles,
+  reconcileGeneratedAppDependencies,
   validateGeneratedAppDependencies,
 } from "./dependencies";
 import { computeSpecComplexity, normalizeAppSpec } from "../spec";
@@ -76,6 +77,31 @@ export default function Page() { return <Calendar aria-label="Calendar" />; }`,
         problem.message.includes('Import "axios" uses unapproved package "axios"'),
       ),
     ).toBe(true);
+  });
+
+  it("deterministically restores the approved package catalogue before install", () => {
+    const files = {
+      "package.json": JSON.stringify({
+        name: "family-recipe-library",
+        scripts: { build: "next build" },
+        dependencies: { next: "0.0.1", axios: "1.0.0" },
+        devDependencies: {},
+      }),
+    };
+
+    const result = reconcileGeneratedAppDependencies(files);
+    const manifest = JSON.parse(files["package.json"]) as {
+      name: string;
+      dependencies: Record<string, string>;
+    };
+
+    expect(result.changed).toBe(true);
+    expect(result.removed).toContain("axios");
+    expect(result.corrected).toContain("next");
+    expect(result.added).toContain("utif");
+    expect(manifest.name).toBe("family-recipe-library");
+    expect(manifest.dependencies).toEqual(APPROVED_RUNTIME_DEPENDENCIES);
+    expect(validateGeneratedAppDependencies(files).ok).toBe(true);
   });
 
   it("rejects fake PDF exports that download plain text as application/pdf", () => {

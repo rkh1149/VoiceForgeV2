@@ -6,6 +6,7 @@ import {
   decodeFileMapFromCheckpoint,
   encodeFileMapForCheckpoint,
   getBuildPipelineIdentity,
+  assessBuildCheckpointCompatibility,
   isBuildCheckpointCompatible,
 } from "./checkpoints";
 
@@ -67,36 +68,38 @@ describe("build checkpoints", () => {
     ).toBe(true);
   });
 
-  it("rejects checkpoints from another pipeline deployment", () => {
+  it("preserves source and refreshes deterministic artifacts across deployments", () => {
+    const current = getBuildPipelineIdentity({
+      VERCEL_GIT_COMMIT_SHA: "current-commit",
+    });
+    const saved = { ...current, deploymentRevision: "old-commit" };
     expect(
       isBuildCheckpointCompatible(
-        {
-          pipelineIdentity: {
-            checkpointSchemaVersion: BUILD_CHECKPOINT_SCHEMA_VERSION,
-            deploymentRevision: "old-commit",
-          },
-        },
-        {
-          checkpointSchemaVersion: BUILD_CHECKPOINT_SCHEMA_VERSION,
-          deploymentRevision: "current-commit",
-        },
-      ),
-    ).toBe(false);
-  });
-
-  it("rejects checkpoints from an older workflow-review schema", () => {
-    const current = getBuildPipelineIdentity({});
-
-    expect(
-      isBuildCheckpointCompatible(
-        {
-          pipelineIdentity: {
-            checkpointSchemaVersion: BUILD_CHECKPOINT_SCHEMA_VERSION - 1,
-            deploymentRevision: null,
-          },
-        },
+        { pipelineIdentity: saved },
         current,
       ),
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      assessBuildCheckpointCompatibility({ pipelineIdentity: saved }, current),
+    ).toMatchObject({ status: "refresh_deterministic" });
+  });
+
+  it("migrates the immediately preceding checkpoint schema", () => {
+    const current = getBuildPipelineIdentity({});
+    const saved = {
+      ...current,
+      checkpointSchemaVersion: BUILD_CHECKPOINT_SCHEMA_VERSION - 1,
+    };
+
+    expect(
+      isBuildCheckpointCompatible({ pipelineIdentity: saved }, current),
+    ).toBe(true);
+  });
+
+  it("rejects checkpoints older than the migratable source format", () => {
+    const current = getBuildPipelineIdentity({});
+    const saved = { ...current, checkpointSchemaVersion: 4 };
+
+    expect(isBuildCheckpointCompatible({ pipelineIdentity: saved }, current)).toBe(false);
   });
 });

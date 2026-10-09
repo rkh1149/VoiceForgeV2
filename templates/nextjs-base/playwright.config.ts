@@ -19,6 +19,8 @@ export default defineConfig({
     baseURL: "http://localhost:4321",
     actionTimeout: 12_000,
     navigationTimeout: 30_000,
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
   },
   webServer: {
     command: "npm start -- -p 4321",

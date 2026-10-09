@@ -5,7 +5,8 @@ export type GoldenRegressionSpecId =
   | "shared-platform-data"
   | "file-export"
   | "notification-reminder"
-  | "integration-search-report";
+  | "integration-search-report"
+  | "family-recipe-ai-shared";
 
 export type GoldenRegressionSpec = {
   id: GoldenRegressionSpecId;
@@ -394,6 +395,80 @@ export const GOLDEN_REGRESSION_SPECS: GoldenRegressionSpec[] = [
           "They search contacts and save a follow-up",
           "The saved follow-up appears in search and reports",
         ),
+      ],
+    }),
+  },
+  {
+    id: "family-recipe-ai-shared",
+    label: "Family Recipe AI Shared App",
+    purpose: "Regression app for AI recipe parsing, creator ownership, suggestions, history, files, and search.",
+    expectedTier: "advanced",
+    expectedServices: ["ai", "data", "users", "files", "search"],
+    spec: makeSpec({
+      appName: "Family Recipe Library",
+      purpose: "Share searchable family recipes while only creators edit their recipes and relatives submit suggestions.",
+      targetUsers: "Invited family and friends",
+      screens: [
+        { name: "Recipes", description: "Search and browse family recipes." },
+        { name: "Add Recipe", description: "Create, scan, or generate a recipe." },
+        { name: "Recipe Details", description: "View nutrition, history, and suggestions." },
+      ],
+      features: ["Generate recipe with AI", "Read recipe photos", "Search recipes", "Suggest a change", "View recipe history"],
+      dataToStore: ["recipes, ingredients, suggestions, history, nutrition, and photo references"],
+      needsLogin: true,
+      sharingModel: "shared",
+      capabilityTier: "advanced",
+      userRoles: baseUserRoles,
+      aiFeatures: ["Extract recipes from photos", "Generate recipes", "Estimate nutrition"],
+      dataEntities: [
+        {
+          name: "Recipe",
+          description: "A family recipe owned by its creator.",
+          ownership: "shared",
+          fields: [
+            field("Title", "Title", "text", true),
+            field("Creator ID", "Creator", "text", true),
+            field("Ingredients", "Ingredients", "json", true),
+            field("Instructions", "Instructions", "json", true),
+            field("Nutrition", "Nutrition", "json", false),
+            field("Photo File IDs", "Photos", "json", false),
+          ],
+          relationships: [],
+        },
+        {
+          name: "Recipe Suggestion",
+          description: "A suggestion submitted to a recipe creator.",
+          ownership: "shared",
+          fields: [field("Suggestion", "Suggestion", "long_text", true)],
+          relationships: [{ type: "belongs_to", targetEntity: "Recipe", description: "Suggestion for one recipe." }],
+        },
+        {
+          name: "Recipe History",
+          description: "Append-only audit history for recipe changes.",
+          ownership: "shared",
+          fields: [field("Summary", "Summary", "text", true)],
+          relationships: [{ type: "belongs_to", targetEntity: "Recipe", description: "History for one recipe." }],
+        },
+      ],
+      workflows: [
+        workflow("Create recipe", "Editor", "A family member wants to share a recipe", ["Open Add Recipe", "Enter or generate recipe fields", "Save recipe"]),
+        workflow("Suggest recipe change", "Viewer", "A relative has an improvement", ["Open recipe details", "Enter a suggestion", "Send suggestion to creator"]),
+        workflow("Review recipe history", "Viewer", "A relative wants to see prior changes", ["Open recipe details", "View recipe history"]),
+      ],
+      permissionRules: [
+        { role: "Owner", entity: "Recipe", actions: ["create", "read", "update", "delete"], condition: "Only the record creator may update or delete their recipe." },
+        { role: "Editor", entity: "Recipe", actions: ["create", "read", "update", "delete"], condition: "Only the record creator may update or delete their recipe." },
+        { role: "Viewer", entity: "Recipe", actions: ["read"], condition: "All members may read recipes." },
+        ...sharedPermissions("Recipe Suggestion"),
+        { role: "Owner", entity: "Recipe History", actions: ["create", "read"], condition: "History is append-only." },
+        { role: "Editor", entity: "Recipe History", actions: ["create", "read"], condition: "History is append-only." },
+        { role: "Viewer", entity: "Recipe History", actions: ["read"], condition: "History is visible to members." },
+      ],
+      searchRequirements: [{ target: "Recipe", fields: ["Title", "Creator ID", "Ingredients"], filters: ["creator"] }],
+      fileRequirements: [{ name: "Recipe photos", attachedTo: "Recipe", acceptedTypes: ["image/jpeg", "image/png", "image/heic", "image/tiff"], maxSizeMb: 10, required: false }],
+      acceptanceCriteria: [
+        criterion("Create AI recipe", "A creator generates and saves a recipe", "The creator is signed in", "They generate a recipe and save normalized fields", "The recipe remains visible after refresh"),
+        criterion("Submit suggestion", "A non-creator suggests a change", "A recipe exists", "They submit a suggestion", "The creator can see the saved suggestion"),
       ],
     }),
   },

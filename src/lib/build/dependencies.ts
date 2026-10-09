@@ -172,6 +172,15 @@ export type DependencyCheckResult = {
   problems: DependencyCheckProblem[];
 };
 
+export type DependencyReconciliationResult = {
+  changed: boolean;
+  filesChanged: string[];
+  added: string[];
+  removed: string[];
+  corrected: string[];
+  problems: DependencyCheckProblem[];
+};
+
 export const APPROVED_DEPENDENCY_GUIDANCE = [
   "Approved generated-app dependency profiles:",
   ...DEPENDENCY_PROFILE_VALUES.map((id) => {
@@ -260,6 +269,73 @@ export function validateGeneratedAppDependencies(files: FileMap): DependencyChec
   }
 
   return { ok: problems.length === 0, problems };
+}
+
+/**
+ * Restore the generated app manifest to VoiceForge's approved dependency
+ * catalogue before install/debug begins. Agents cannot edit package.json, so
+ * manifest drift is a pipeline responsibility rather than a debug task.
+ */
+export function reconcileGeneratedAppDependencies(
+  files: FileMap,
+): DependencyReconciliationResult {
+  const content = files["package.json"];
+  if (!content) {
+    return {
+      changed: false,
+      filesChanged: [],
+      added: [],
+      removed: [],
+      corrected: [],
+      problems: [{ path: "package.json", message: "package.json is missing." }],
+    };
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    const value = JSON.parse(content) as unknown;
+    if (!isRecord(value)) throw new Error("not an object");
+    parsed = value;
+  } catch {
+    return {
+      changed: false,
+      filesChanged: [],
+      added: [],
+      removed: [],
+      corrected: [],
+      problems: [{ path: "package.json", message: "package.json is invalid JSON." }],
+    };
+  }
+
+  const beforeRuntime = dependencyRecord(parsed.dependencies);
+  const beforeDev = dependencyRecord(parsed.devDependencies);
+  const added = [
+    ...missingDependencyNames(beforeRuntime, APPROVED_RUNTIME_DEPENDENCIES),
+    ...missingDependencyNames(beforeDev, APPROVED_DEV_DEPENDENCIES),
+  ];
+  const removed = [
+    ...unapprovedDependencyNames(beforeRuntime, APPROVED_RUNTIME_DEPENDENCIES),
+    ...unapprovedDependencyNames(beforeDev, APPROVED_DEV_DEPENDENCIES),
+  ];
+  const corrected = [
+    ...changedDependencyNames(beforeRuntime, APPROVED_RUNTIME_DEPENDENCIES),
+    ...changedDependencyNames(beforeDev, APPROVED_DEV_DEPENDENCIES),
+  ];
+
+  parsed.dependencies = sortRecord(APPROVED_RUNTIME_DEPENDENCIES);
+  parsed.devDependencies = sortRecord(APPROVED_DEV_DEPENDENCIES);
+  const next = `${JSON.stringify(parsed, null, 2)}\n`;
+  const changed = next !== content;
+  if (changed) files["package.json"] = next;
+
+  return {
+    changed,
+    filesChanged: changed ? ["package.json"] : [],
+    added: uniqueStrings(added),
+    removed: uniqueStrings(removed),
+    corrected: uniqueStrings(corrected),
+    problems: [],
+  };
 }
 
 function validatePdfExports(
@@ -392,4 +468,50 @@ function searchableSpecText(spec: AppSpec): string {
 
 function hasAny(value: string, needles: string[]): boolean {
   return needles.some((needle) => value.includes(needle));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function dependencyRecord(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+}
+
+function missingDependencyNames(
+  actual: Record<string, string>,
+  expected: Record<string, string>,
+): string[] {
+  return Object.keys(expected).filter((name) => !(name in actual));
+}
+
+function unapprovedDependencyNames(
+  actual: Record<string, string>,
+  expected: Record<string, string>,
+): string[] {
+  return Object.keys(actual).filter((name) => !(name in expected));
+}
+
+function changedDependencyNames(
+  actual: Record<string, string>,
+  expected: Record<string, string>,
+): string[] {
+  return Object.entries(expected)
+    .filter(([name, version]) => name in actual && actual[name] !== version)
+    .map(([name]) => name);
+}
+
+function sortRecord(value: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(value).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)].sort();
 }

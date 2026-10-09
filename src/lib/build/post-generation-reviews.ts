@@ -10,6 +10,7 @@ import { analyzeGeneratedAcceptanceTests } from "./acceptance-test-review";
 import { analyzePersistenceHandoffs } from "./persistence-handoff-review";
 import { analyzeUiAffordances } from "./ui-affordance-review";
 import { reviewAcceptanceCompiler } from "./acceptance-compiler";
+import { classifyEntityBehaviors } from "./entity-behavior";
 
 export type PostGenerationReviewAgentKey =
   | "code_reviewer"
@@ -57,6 +58,8 @@ const PROTECTED_TEMPLATE_FILES = new Set([
   "src/lib/platform-notifications.ts",
   "src/lib/platform-integrations.ts",
   "src/lib/device-location.ts",
+  "src/lib/voiceforge-ai.ts",
+  "src/lib/voiceforge-ai.test.ts",
   "src/lib/voiceforge-modules.ts",
   "src/components/voiceforge-reusable.tsx",
   "src/components/voiceforge-google-map.tsx",
@@ -930,6 +933,7 @@ function reviewGeneratedCode(
 
   blockingIssues.push(...detectPlatformFieldKeyIssues(input.spec, appSource));
   blockingIssues.push(...detectRelationValidationCollisions(appSource));
+  blockingIssues.push(...detectUnsafeStructuredAiResponseUsage(input.spec, appSource));
   blockingIssues.push(
     ...detectOversizedPlatformDataPayloadIssues(
       input.spec,
@@ -1794,6 +1798,12 @@ function editableEntityTargets(
   const sourceLike = architecture.dataModel
     .map((entity) => `${entity.name}:${entity.storage}`)
     .join("\n");
+  const behaviorByKey = new Map(
+    classifyEntityBehaviors({ spec, architecture }).map((classification) => [
+      classification.entityKey,
+      classification,
+    ]),
+  );
   return spec.dataEntities
     .filter((entity) => isEditableEntity(spec, entity.name, entity.ownership))
     .flatMap((entity) => {
@@ -1803,6 +1813,8 @@ function editableEntityTargets(
       );
       if (planned?.storage === "none" || planned?.storage === "future") return [];
       const schema = platformEntityFromSpec(entity, spec);
+      const behavior = behaviorByKey.get(schema.key)?.behavior;
+      if (behavior === "system_managed" || behavior === "read_only") return [];
       return [{
         name: entity.name,
         key: schema.key,
@@ -1811,6 +1823,30 @@ function editableEntityTargets(
         storage: planned?.storage ?? "platformData",
       }];
     });
+}
+
+function detectUnsafeStructuredAiResponseUsage(
+  spec: AppSpec,
+  source: readonly [string, string][],
+): string[] {
+  if (spec.aiFeatures.length === 0) return [];
+  return source.flatMap(([path, content]) => {
+    const consumesAiText =
+      /fetch\s*\(\s*["'`]\/api\/ai/.test(content) ||
+      /\bpayload\.text\b/.test(content);
+    const parsesStructuredText =
+      /JSON\.parse\s*\([^)]*(?:\.text|aiText|responseText|content)/i.test(content) ||
+      /JSON\.parse\s*\(\s*(?:text|result|response|content)\s*\)/i.test(content);
+    const usesBoundary =
+      /from\s+["']@\/lib\/voiceforge-ai["']/.test(content) &&
+      /\b(?:parseStructuredAiText|parseAiJson|readAiTextResponse|aiText)\b/.test(content);
+    if (consumesAiText && parsesStructuredText && !usesBoundary) {
+      return [
+        `code_review: ${path} parses structured AI output without the locked voiceforge-ai validation/coercion boundary. Parse unknown AI text with parseStructuredAiText and a Zod schema before putting values into forms or save payloads.`,
+      ];
+    }
+    return [];
+  });
 }
 
 function isEditableEntity(

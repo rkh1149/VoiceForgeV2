@@ -386,6 +386,34 @@ describe("workflow-aware repairs", () => {
     expect(repair.scope.protectedPaths).toContain("src/app/gps/page.tsx");
   });
 
+  it("keeps a save-triggered navigation timeout in joint application/test diagnosis", () => {
+    const repair = createWorkflowRepairPackage({
+      spec,
+      architecture,
+      files: deterministicAcceptanceFiles,
+      failedStep: "e2e",
+      errorOutput: [
+        "e2e/generated/voiceforge-compiled.spec.ts > [voiceforge-journey:journey-save-calculated-route-to-track-saved-route] Save calculated route",
+        "await page.getByRole('button', { name: 'Save route to trip' }).click();",
+        "await page.waitForURL('/gps');",
+        "Timeout 30000ms exceeded.",
+      ].join("\n"),
+      reviews: [
+        { agentKey: "ui_affordance_reviewer", blockingIssues: [] },
+        { agentKey: "persistence_handoff_reviewer", blockingIssues: [] },
+      ],
+    });
+
+    expect(repair.classification).toMatchObject({
+      category: "broken_save",
+      subtype: "browser_action_and_test_require_joint_diagnosis",
+      targetSurface: "application_source",
+    });
+    expect(repair.evidence.browserDiagnostics?.signals).toContain(
+      "navigation_or_save_transition",
+    );
+  });
+
   it("never lets an application repair rewrite deterministic acceptance output", () => {
     const repair = createWorkflowRepairPackage({
       spec,

@@ -39,6 +39,23 @@ class VoiceForgeProgressReporter implements Reporter {
     console.log(
       `${PREFIX} ${statusLabel(result.status)} ${testLabel(test)} in ${formatDuration(result.duration)}.`,
     );
+    if (result.status === "failed" || result.status === "timedOut") {
+      console.log(
+        `[voiceforge-e2e-evidence] ${JSON.stringify({
+          test: testLabel(test),
+          status: result.status,
+          errors: result.errors.map((error) => ({
+            message: error.message?.slice(0, 2_000) ?? "",
+            stack: error.stack?.slice(0, 4_000) ?? "",
+          })),
+          attachments: result.attachments.map((attachment) => ({
+            name: attachment.name,
+            contentType: attachment.contentType,
+            path: attachment.path ?? "",
+          })),
+        })}`,
+      );
+    }
   }
 
   onEnd(result: FullResult): void {
@@ -52,7 +69,9 @@ function testLabel(test: TestCase): string {
 
 function statusLabel(status: string): string {
   if (status === "passed") return "Passed";
-  if (status === "failed" || status === "timedout") return "Failed";
+  if (status === "failed" || status === "timedOut" || status === "timedout") {
+    return "Failed";
+  }
   if (status === "skipped" || status === "interrupted") return "Stopped";
   return status;
 }

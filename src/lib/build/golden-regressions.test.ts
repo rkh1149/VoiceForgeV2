@@ -57,6 +57,7 @@ describe("golden regression specs", () => {
       "file-export",
       "notification-reminder",
       "integration-search-report",
+      "family-recipe-ai-shared",
     ]);
   });
 
@@ -245,6 +246,35 @@ export default function Page() {
 
     expect(uxReview.status).toBe("warning");
     expect(uxReview.warnings.join(" ")).toContain("Form controls need labels");
+  });
+
+  it("blocks unvalidated structured AI output before it reaches recipe forms", () => {
+    const recipe = GOLDEN_REGRESSION_SPECS.find(
+      (item) => item.id === "family-recipe-ai-shared",
+    );
+    if (!recipe) throw new Error("Missing Family Recipe golden spec");
+    const codeReview = findReview(
+      postReviews({
+        spec: recipe.spec,
+        files: {
+          "src/app/page.tsx": `"use client";
+export default function Page() {
+  async function generate() {
+    const response = await fetch("/api/ai", { method: "POST" });
+    const payload = await response.json();
+    const recipe = JSON.parse(payload.text);
+    return recipe.ingredients[0].quantity.trim();
+  }
+  return <main><h1>Recipes</h1><button onClick={() => void generate()}>Generate recipe</button></main>;
+}`,
+        },
+      }),
+      "code_reviewer",
+    );
+
+    expect(codeReview.blockingIssues.join(" ")).toContain(
+      "voiceforge-ai validation/coercion boundary",
+    );
   });
 
   it("planning review warns instead of pretending generated apps can manage real member access", () => {

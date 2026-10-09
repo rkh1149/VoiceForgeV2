@@ -98,8 +98,12 @@ import {
   type FailureFingerprint,
   type FailureProgress,
 } from "./debug-progress";
-import { validateGeneratedAppDependencies } from "./dependencies";
 import {
+  reconcileGeneratedAppDependencies,
+  validateGeneratedAppDependencies,
+} from "./dependencies";
+import {
+  assessBuildCheckpointCompatibility,
   isBuildCheckpointCompatible,
   loadBuildCheckpointById,
   loadLatestBuildCheckpoint,
@@ -135,6 +139,8 @@ import {
   applyDeterministicAcceptanceCompiler,
   refreshDeterministicAcceptanceCompiler,
 } from "./acceptance-compiler";
+import { createWorkflowImplementationMatrix } from "./workflow-implementation-matrix";
+import { collectBrowserFailureEvidence } from "./browser-failure-evidence";
 
 /**
  * Build pipeline (Stage 2): approved spec -> generated code -> local test
@@ -145,8 +151,8 @@ import {
 type PipelineStepName = StepName | "dependencies";
 
 const STEP_ORDER: PipelineStepName[] = [
-  "install",
   "dependencies",
+  "install",
   "typecheck",
   "lint",
   "test",
@@ -828,6 +834,10 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       );
     }
     const architectureValidation = validateArchitecturePlan(architecture, spec);
+    const workflowImplementationMatrix = createWorkflowImplementationMatrix({
+      spec,
+      architecture,
+    });
     const planningReviews = runPlanningSpecialistReviews({
       spec,
       architecture,
@@ -844,16 +854,19 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       canBuildNow:
         architectureValidation.canBuildNow &&
         planningBlockingIssues.length === 0 &&
-        workflowContractValidation.blockingIssues.length === 0,
+        workflowContractValidation.blockingIssues.length === 0 &&
+        workflowImplementationMatrix.blockingIssues.length === 0,
       blockingIssues: uniqueStrings([
         ...architectureValidation.blockingIssues,
         ...planningBlockingIssues,
         ...workflowContractValidation.blockingIssues,
+        ...workflowImplementationMatrix.blockingIssues,
       ]),
       warnings: uniqueStrings([
         ...architectureValidation.warnings,
         ...planningWarnings,
         ...workflowContractValidation.warnings,
+        ...workflowImplementationMatrix.warnings,
       ]),
     };
     const architectureForStorage = {
@@ -921,6 +934,19 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     await recordBuildAgentArtifact({
       appId: app.id,
       buildRunId,
+      agentKey: "workflow_matrix_planner",
+      phaseKey: "workflow-implementation-matrix",
+      artifactType: "workflow_implementation_matrix",
+      status: artifactStatusFromIssues({
+        failed: workflowImplementationMatrix.blockingIssues.length > 0,
+        warnings: workflowImplementationMatrix.warnings,
+      }),
+      summary: `${workflowImplementationMatrix.summary.workflows} workflow(s), ${workflowImplementationMatrix.summary.controls} visible control(s), ${workflowImplementationMatrix.summary.saves} save transition(s), ${workflowImplementationMatrix.summary.handoffs} handoff(s), and ${workflowImplementationMatrix.summary.primaryEntities} independently managed entity/entities mapped before generation.`,
+      payload: workflowImplementationMatrix as unknown as Record<string, unknown>,
+    });
+    await recordBuildAgentArtifact({
+      appId: app.id,
+      buildRunId,
       agentKey: "workflow_contract_planner",
       phaseKey: "workflow-contracts",
       artifactType: "workflow_contract",
@@ -980,7 +1006,8 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       const workflowContractOnly =
         combinedArchitectureValidation.blockingIssues.length > 0 &&
         combinedArchitectureValidation.blockingIssues.every((issue) =>
-          issue.startsWith("workflow_contract:"),
+          issue.startsWith("workflow_contract:") ||
+          issue.startsWith("workflow_matrix:"),
         );
       throw new ArchitectureBlockedError(
         workflowContractOnly
@@ -1157,6 +1184,27 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       }
     }
     applyCodegenResult(files, generated);
+    const dependencyReconciliation = reconcileGeneratedAppDependencies(files);
+    await recordBuildAgentArtifact({
+      appId: app.id,
+      buildRunId,
+      agentKey: "dependency_reconciler",
+      phaseKey: "dependency-reconciliation",
+      artifactType: "dependency_reconciliation",
+      status: dependencyReconciliation.problems.length > 0 ? "failed" : "passed",
+      summary:
+        dependencyReconciliation.problems.length > 0
+          ? "The locked generated-app dependency manifest could not be reconciled."
+          : dependencyReconciliation.changed
+            ? `Reconciled the locked dependency manifest (${dependencyReconciliation.added.length} added, ${dependencyReconciliation.removed.length} removed, ${dependencyReconciliation.corrected.length} corrected).`
+            : "The generated-app dependency manifest already matched the approved catalogue.",
+      payload: dependencyReconciliation as unknown as Record<string, unknown>,
+    });
+    if (dependencyReconciliation.problems.length > 0) {
+      throw new Error(
+        dependencyReconciliation.problems.map((problem) => problem.message).join(" "),
+      );
+    }
     const acceptanceCompilation = applyDeterministicAcceptanceCompiler({
       spec,
       architecture: architectureForStorage,
@@ -2086,6 +2134,17 @@ async function runTestGauntlet(input: {
         (isWorkflowLinkedFailure(debugErrorOutput) ||
           /e2e\/generated\/.+\.spec\.[tj]s/i.test(debugErrorOutput))
       ) {
+        const browserEvidence = collectBrowserFailureEvidence(debugErrorOutput);
+        await recordBuildAgentArtifact({
+          appId: input.app.id,
+          buildRunId: input.buildRunId,
+          agentKey: "browser_failure_triage",
+          phaseKey: `e2e-evidence-${input.debugBudget.totalRounds + 1}`,
+          artifactType: "browser_failure_evidence",
+          status: browserEvidence.likelySurface === "ambiguous" ? "warning" : "passed",
+          summary: `Browser evidence points to ${browserEvidence.likelySurface.replaceAll("_", " ")} with ${browserEvidence.confidence} confidence: ${browserEvidence.reason}`,
+          payload: browserEvidence as unknown as Record<string, unknown>,
+        });
         const workflowReviews = currentWorkflowReviews();
         workflowRepair = createWorkflowRepairPackage({
           spec: input.spec,
@@ -2099,6 +2158,7 @@ async function runTestGauntlet(input: {
           previousAttempts: [],
           failureFingerprint,
           source: input.completenessSource,
+          browserEvidence,
         });
         const priorRepair = input.workflowRepairs.find(
           (candidate) => candidate.id === workflowRepair?.id,
@@ -3384,6 +3444,15 @@ export async function resumeBuildPipelineContinuation(
     });
     return;
   }
+  const checkpointCompatibility = assessBuildCheckpointCompatibility(
+    checkpoint.metadata,
+  );
+  if (checkpointCompatibility.status === "refresh_deterministic") {
+    await log(
+      run.id,
+      `Migrating the durable checkpoint while preserving generated source: ${checkpointCompatibility.reasons.join(", ")}.`,
+    );
+  }
   const [requirement] = run.requirementId
     ? await db
         .select()
@@ -3426,22 +3495,6 @@ export async function resumeBuildPipelineContinuation(
   }
 
   try {
-    if (checkpoint.stage === "publish_pending") {
-      await log(
-        run.id,
-        "Resuming durable publishing from the saved source checkpoint…",
-      );
-      await publishCheckedBuild({
-        app,
-        buildRunId: run.id,
-        requirement,
-        spec,
-        architecture,
-        files: checkpoint.files,
-      });
-      return;
-    }
-
     const refreshedTemplateFiles = await refreshResumedTemplateFiles(
       checkpoint.files,
       {
@@ -3454,6 +3507,50 @@ export async function resumeBuildPipelineContinuation(
       await log(
         run.id,
         `Refreshed locked testing helpers in the durable checkpoint: ${refreshedTemplateFiles.join(", ")}.`,
+      );
+    }
+    const resumedDependencyReconciliation = reconcileGeneratedAppDependencies(
+      checkpoint.files,
+    );
+    if (resumedDependencyReconciliation.problems.length > 0) {
+      throw new Error(
+        resumedDependencyReconciliation.problems
+          .map((problem) => problem.message)
+          .join(" "),
+      );
+    }
+    await recordBuildAgentArtifact({
+      appId: app.id,
+      buildRunId: run.id,
+      agentKey: "dependency_reconciler",
+      phaseKey: "resume-dependency-reconciliation",
+      artifactType: "dependency_reconciliation",
+      status: "passed",
+      summary: resumedDependencyReconciliation.changed
+        ? "Reconciled the dependency manifest while migrating the durable checkpoint."
+        : "Verified the dependency manifest while migrating the durable checkpoint.",
+      payload: resumedDependencyReconciliation as unknown as Record<string, unknown>,
+    });
+    const resumedWorkflowMatrix = createWorkflowImplementationMatrix({
+      spec,
+      architecture,
+    });
+    await recordBuildAgentArtifact({
+      appId: app.id,
+      buildRunId: run.id,
+      agentKey: "workflow_matrix_planner",
+      phaseKey: "resume-workflow-implementation-matrix",
+      artifactType: "workflow_implementation_matrix",
+      status: artifactStatusFromIssues({
+        failed: resumedWorkflowMatrix.blockingIssues.length > 0,
+        warnings: resumedWorkflowMatrix.warnings,
+      }),
+      summary: `Regenerated the workflow implementation matrix for ${resumedWorkflowMatrix.summary.workflows} workflow(s) while preserving generated source.`,
+      payload: resumedWorkflowMatrix as unknown as Record<string, unknown>,
+    });
+    if (resumedWorkflowMatrix.blockingIssues.length > 0) {
+      throw new Error(
+        `The refreshed workflow matrix found an incompatible plan: ${resumedWorkflowMatrix.blockingIssues.join(" ")}`,
       );
     }
 
@@ -3481,6 +3578,21 @@ export async function resumeBuildPipelineContinuation(
         run.id,
         `Recompiled deterministic acceptance artifacts in the durable checkpoint: ${refreshedAcceptance.refreshedPaths.join(", ")}.`,
       );
+    }
+    if (checkpoint.stage === "publish_pending") {
+      await log(
+        run.id,
+        "Resuming durable publishing from the migrated source checkpoint…",
+      );
+      await publishCheckedBuild({
+        app,
+        buildRunId: run.id,
+        requirement,
+        spec,
+        architecture,
+        files: checkpoint.files,
+      });
+      return;
     }
     const metrics = restoreBuildMetrics(metadata.metrics);
     const debugBudget = options?.resetDebugBudget
