@@ -9,8 +9,8 @@ import {
   type WorkflowAcceptanceStep,
 } from "./workflow-acceptance-plan";
 
-export const ACCEPTANCE_MANIFEST_VERSION = 5 as const;
-export const ACCEPTANCE_COMPILER_VERSION = 6 as const;
+export const ACCEPTANCE_MANIFEST_VERSION = 6 as const;
+export const ACCEPTANCE_COMPILER_VERSION = 7 as const;
 
 export type AcceptanceLocatorMode = "contract" | "accessible_name_fallback";
 
@@ -117,6 +117,7 @@ export type AcceptanceManifestHandoff = {
   consumerControl: AcceptanceManifestControl | null;
   fixtureId: string | null;
   expectedText: string;
+  assertionTransform: "none" | "append_updated";
   expectedPresence: boolean;
 };
 
@@ -262,6 +263,8 @@ export function createAcceptanceTestManifest(input: {
           : null,
         fixtureId: fixture?.id ?? null,
         expectedText: fixtureText(fixture) || handoff.produces,
+        assertionTransform:
+          producerSave?.operation === "update" ? "append_updated" : "none",
         expectedPresence: producerSave?.operation !== "delete",
       } satisfies AcceptanceManifestHandoff;
     });
@@ -899,6 +902,7 @@ function repeatedRecordFixture(
 
 function isRepeatedRecordControl(...parts: string[]): boolean {
   const [accessibleName = "", controlId = ""] = parts;
+  if (/discoverability-control$/i.test(controlId)) return false;
   const visibleAction = accessibleName.trim() || controlId;
   return /\b(edit|delete|remove|archive|complete|finish|reopen|mark|open|view)\b/i.test(
     visibleAction,
@@ -1326,6 +1330,8 @@ function finalizeJourneyIsolation(input: {
         ...handoff,
         fixtureId: producerFixture.id,
         expectedText: fixtureText(producerFixture) || handoff.expectedText,
+        assertionTransform:
+          producerSave.operation === "update" ? "append_updated" : "none",
         expectedPresence: producerSave.operation !== "delete",
         consumerControl:
           producerSave.operation !== "delete" && handoff.consumerControl

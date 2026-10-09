@@ -425,7 +425,7 @@ describe("Stage 14I isolated acceptance compiler", () => {
       ACCEPTANCE_MANIFEST_SOURCE_PATH,
       ACCEPTANCE_COMPILED_SPEC_PATH,
     ]);
-    expect(files[ACCEPTANCE_MANIFEST_SOURCE_PATH]).toContain('"version": 5');
+    expect(files[ACCEPTANCE_MANIFEST_SOURCE_PATH]).toContain('"version": 6');
     expect(files[ACCEPTANCE_COMPILED_SPEC_PATH]).toContain(
       "VoiceForge compiled workflow acceptance",
     );
@@ -852,6 +852,115 @@ describe("Stage 14I isolated acceptance compiler", () => {
     expect(filterChoice?.interactionValue).toBe("Active");
     expect(compiled.compiledSource).toContain('+ " updated"');
     expect(compiled.compiledSource).toContain('selectAcceptanceOption(control, "Active")');
+  });
+
+  it("keeps a simple one-screen browser app in one proportionate journey", () => {
+    const input = golden("simple-local-storage");
+    const compiled = compileAcceptanceTests(input);
+    const journey = compiled.manifest.journeys[0];
+    const workflowOrder = journey
+      ? [...new Set(journey.steps.map((step) => step.workflowId))]
+      : [];
+
+    expect(compiled.blockingIssues).toEqual([]);
+    expect(compiled.manifest.journeys).toHaveLength(1);
+    expect(workflowOrder.at(-1)).toContain("delete-item");
+    expect(compiled.manifest.summary.steps).toBe(
+      input.architecture.workflowContracts.reduce(
+        (total, contract) => total + contract.steps.length,
+        0,
+      ),
+    );
+  });
+
+  it("asserts a producer record before opening its consumer edit state", () => {
+    const input = golden("simple-local-storage");
+    const producer = input.architecture.workflowContracts.find((contract) =>
+      contract.handoffs.some((handoff) =>
+        handoff.consumerWorkflowId.includes("edit-item"),
+      ),
+    );
+    const handoffContract = producer?.handoffs.find((handoff) =>
+      handoff.consumerWorkflowId.includes("edit-item"),
+    );
+    const consumer = input.architecture.workflowContracts.find(
+      (contract) => contract.id === handoffContract?.consumerWorkflowId,
+    );
+    const consumerStep = consumer?.steps.find(
+      (step) => step.controlId === handoffContract?.consumerControlId,
+    );
+    const consumerControl = consumer?.controls.find(
+      (control) => control.id === handoffContract?.consumerControlId,
+    );
+    if (!consumerStep || !consumerControl) {
+      throw new Error("Expected an edit handoff control");
+    }
+    consumerStep.kind = "navigate";
+    consumerControl.kind = "link";
+    const compiled = compileAcceptanceTests(input);
+    const handoff = compiled.manifest.journeys
+      .flatMap((journey) => journey.handoffs)
+      .find((candidate) => candidate.consumerWorkflowId.includes("edit-item"));
+    if (!handoff) throw new Error("Expected an edit handoff");
+
+    const marker = `workflowHandoffTitle(${JSON.stringify(handoff.id)})`;
+    const start = compiled.compiledSource.indexOf(marker);
+    const end = compiled.compiledSource.indexOf("});", start);
+    const handoffSource = compiled.compiledSource.slice(start, end);
+
+    expect(handoffSource.indexOf("toContainText")).toBeGreaterThan(-1);
+    expect(handoffSource.indexOf("toContainText")).toBeLessThan(
+      handoffSource.indexOf("await consumer.click()"),
+    );
+  });
+
+  it("carries updated fixture values into later handoff assertions", () => {
+    const input = golden("simple-local-storage");
+    const compiled = compileAcceptanceTests(input);
+    const handoff = compiled.manifest.journeys
+      .flatMap((journey) => journey.handoffs)
+      .find((candidate) => candidate.producerWorkflowId.includes("edit-item"));
+    if (!handoff) throw new Error("Expected a handoff from the edit workflow");
+
+    expect(handoff.assertionTransform).toBe("append_updated");
+    const marker = `workflowHandoffTitle(${JSON.stringify(handoff.id)})`;
+    const start = compiled.compiledSource.indexOf(marker);
+    const end = compiled.compiledSource.indexOf("});", start);
+    expect(compiled.compiledSource.slice(start, end)).toContain('+ " updated"');
+  });
+
+  it("keeps discoverability controls at page scope", () => {
+    const input = golden("simple-local-storage");
+    const filter = input.architecture.workflowContracts.find((contract) =>
+      contract.name.toLowerCase().includes("filter"),
+    );
+    const control = filter?.controls[0];
+    if (!filter || !control) throw new Error("Expected a filter control");
+    const previousControlId = control.id;
+    control.id = `${filter.id}-discoverability-control`;
+    control.accessibleName = "Open Restore saved list";
+    filter.steps = filter.steps.map((step) => ({
+      ...step,
+      controlId:
+        step.controlId === previousControlId ? control.id : step.controlId,
+    }));
+    for (const contract of input.architecture.workflowContracts) {
+      contract.handoffs = contract.handoffs.map((handoff) =>
+        handoff.consumerWorkflowId === filter.id
+          ? { ...handoff, consumerControlId: control.id }
+          : handoff,
+      );
+    }
+
+    const compiled = compileAcceptanceTests(input);
+    const handoff = compiled.manifest.journeys
+      .flatMap((journey) => journey.handoffs)
+      .find((candidate) => candidate.consumerWorkflowId === filter.id);
+
+    expect(handoff?.consumerControl).toMatchObject({
+      controlId: control.id,
+      recordScope: null,
+    });
   });
 
   it("uses the entity named by a dashboard result for page-level assertions", () => {

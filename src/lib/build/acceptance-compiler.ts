@@ -712,7 +712,10 @@ function compileHandoff(
   const fixture = handoff.fixtureId
     ? fixtureNames.get(handoff.fixtureId)
     : null;
-  const expected = fixture ?? JSON.stringify(handoff.expectedText);
+  const expected = transformedValueExpression(
+    fixture ?? JSON.stringify(handoff.expectedText),
+    handoff.assertionTransform,
+  );
   const assertion = handoff.expectedPresence
     ? `await expect(page.locator("body")).toContainText(${expected});`
     : `await expect(page.locator("body")).not.toContainText(${expected});`;
@@ -758,8 +761,8 @@ function compileHandoff(
   await expect(page).toHaveURL(${routeRegex(handoff.consumerRoute)});
   ${revealPath}
   ${consumer}
-  ${continuation}
   ${assertion}
+  ${continuation}
   ${restoreFixtureRoute}
 });`;
 }

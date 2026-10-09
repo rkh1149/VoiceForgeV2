@@ -9,6 +9,8 @@ import type {
 export const WORKFLOW_ACCEPTANCE_PLAN_VERSION = 2 as const;
 export const WORKFLOW_ACCEPTANCE_MAX_WORKFLOWS_PER_JOURNEY = 3;
 export const WORKFLOW_ACCEPTANCE_MAX_STEPS_PER_JOURNEY = 14;
+export const SIMPLE_ACCEPTANCE_MAX_WORKFLOWS_PER_JOURNEY = 8;
+export const SIMPLE_ACCEPTANCE_MAX_STEPS_PER_JOURNEY = 32;
 
 export type WorkflowAcceptanceFixture = {
   entityName: string;
@@ -160,11 +162,18 @@ export function synthesizeWorkflowAcceptancePlan(
   const deviceLocationRequired = architecture.platformServices.some(
     (service) => service.service === "device_location" && service.required,
   );
+  const journeyLimits = acceptanceJourneyLimits(architecture, spec);
 
   const journeys = connectedWorkflowComponents(userActionContracts)
     .flatMap((component, componentIndex) => {
-      const orderedComponent = topologicalContractOrder(component, orderById);
-      const chunks = partitionJourneyContracts(orderedComponent);
+      const topologicalComponent = topologicalContractOrder(component, orderById);
+      const orderedComponent = journeyLimits.simple
+        ? moveTerminalDestructiveWorkflowsLast(topologicalComponent)
+        : topologicalComponent;
+      const journeyOrderById = journeyLimits.simple
+        ? new Map(orderedComponent.map((contract, index) => [contract.id, index]))
+        : orderById;
+      const chunks = partitionJourneyContracts(orderedComponent, journeyLimits);
       const journeyIds = chunks.map((chunk, chunkIndex) =>
         journeyIdForContracts(
           chunk,
@@ -183,7 +192,7 @@ export function synthesizeWorkflowAcceptancePlan(
           dependsOnJourneyIds:
             chunkIndex === 0 ? [] : [journeyIds[chunkIndex - 1]],
           contractById,
-          orderById,
+          orderById: journeyOrderById,
           entityDefinitions,
           appRoles,
           anonymousSharedWrite:
@@ -325,13 +334,14 @@ export function validateWorkflowAcceptancePlan(
     }
   }
 
+  const journeyLimits = acceptanceJourneyLimits(architecture);
   for (const journey of plan.journeys) {
-    if (journey.workflowIds.length > WORKFLOW_ACCEPTANCE_MAX_WORKFLOWS_PER_JOURNEY) {
+    if (journey.workflowIds.length > journeyLimits.maxWorkflows) {
       blockingIssues.push(
-        `acceptance_plan: Journey ${journey.id} exceeds the ${WORKFLOW_ACCEPTANCE_MAX_WORKFLOWS_PER_JOURNEY}-workflow limit.`,
+        `acceptance_plan: Journey ${journey.id} exceeds the ${journeyLimits.maxWorkflows}-workflow limit.`,
       );
     }
-    if (journey.steps.length > WORKFLOW_ACCEPTANCE_MAX_STEPS_PER_JOURNEY) {
+    if (journey.steps.length > journeyLimits.maxSteps) {
       warnings.push(
         `acceptance_plan: Journey ${journey.id} has ${journey.steps.length} contract steps because one workflow could not be split safely; keep its browser test focused and use helper functions for repeated setup.`,
       );
@@ -704,17 +714,16 @@ function connectedWorkflowComponents(
 
 function partitionJourneyContracts(
   contracts: WorkflowContract[],
+  limits: ReturnType<typeof acceptanceJourneyLimits>,
 ): WorkflowContract[][] {
   const chunks: WorkflowContract[][] = [];
   let current: WorkflowContract[] = [];
   let currentSteps = 0;
   for (const contract of contracts) {
-    const wouldExceedWorkflowLimit =
-      current.length >= WORKFLOW_ACCEPTANCE_MAX_WORKFLOWS_PER_JOURNEY;
+    const wouldExceedWorkflowLimit = current.length >= limits.maxWorkflows;
     const wouldExceedStepLimit =
       current.length > 0 &&
-      currentSteps + contract.steps.length >
-        WORKFLOW_ACCEPTANCE_MAX_STEPS_PER_JOURNEY;
+      currentSteps + contract.steps.length > limits.maxSteps;
     if (wouldExceedWorkflowLimit || wouldExceedStepLimit) {
       chunks.push(current);
       current = [];
@@ -725,6 +734,64 @@ function partitionJourneyContracts(
   }
   if (current.length > 0) chunks.push(current);
   return chunks;
+}
+
+function acceptanceJourneyLimits(
+  architecture: ArchitecturePlan,
+  spec?: AppSpec,
+): {
+  simple: boolean;
+  maxWorkflows: number;
+  maxSteps: number;
+} {
+  const simple =
+    architecture.implementationTier === "personal" &&
+    architecture.pageMap.length === 1 &&
+    architecture.dataModel.length <= 2 &&
+    architecture.dataModel.every((entity) =>
+      ["localStorage", "none"].includes(entity.storage),
+    ) &&
+    architecture.platformServices.every((service) => !service.required) &&
+    architecture.workflowContracts.length <=
+      SIMPLE_ACCEPTANCE_MAX_WORKFLOWS_PER_JOURNEY &&
+    (!spec ||
+      (!spec.needsLogin &&
+        spec.sharingModel === "private" &&
+        spec.screens.length === 1 &&
+        spec.workflows.length === architecture.workflowContracts.length));
+  return simple
+    ? {
+        simple,
+        maxWorkflows: SIMPLE_ACCEPTANCE_MAX_WORKFLOWS_PER_JOURNEY,
+        maxSteps: SIMPLE_ACCEPTANCE_MAX_STEPS_PER_JOURNEY,
+      }
+    : {
+        simple,
+        maxWorkflows: WORKFLOW_ACCEPTANCE_MAX_WORKFLOWS_PER_JOURNEY,
+        maxSteps: WORKFLOW_ACCEPTANCE_MAX_STEPS_PER_JOURNEY,
+      };
+}
+
+function moveTerminalDestructiveWorkflowsLast(
+  contracts: WorkflowContract[],
+): WorkflowContract[] {
+  const ids = new Set(contracts.map((contract) => contract.id));
+  const terminalDestructive = contracts.filter(
+    (contract) =>
+      contract.expectedSaves.some((save) => save.operation === "delete") &&
+      !contract.handoffs.some((handoff) => ids.has(handoff.consumerWorkflowId)) &&
+      !contracts.some(
+        (candidate) =>
+          candidate.id !== contract.id &&
+          candidate.dependencies.workflowIds.includes(contract.id),
+      ),
+  );
+  if (terminalDestructive.length === 0) return contracts;
+  const terminalIds = new Set(terminalDestructive.map((contract) => contract.id));
+  return [
+    ...contracts.filter((contract) => !terminalIds.has(contract.id)),
+    ...terminalDestructive,
+  ];
 }
 
 function journeyIdForContracts(
