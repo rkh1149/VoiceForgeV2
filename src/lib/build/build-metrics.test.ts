@@ -165,6 +165,11 @@ describe("build metrics", () => {
       ),
     ).toBe("workflow_contract");
     expect(categorizeBuildFailure("Vercel deployment failed")).toBe("vercel");
+    expect(
+      categorizeBuildFailure(
+        "Vercel Sandbox could not start because this team's Sandbox usage allowance is exhausted (HTTP 402). VoiceForge preserved the durable testing checkpoint.",
+      ),
+    ).toBe("vercel");
     expect(categorizeBuildFailure("GitHub returned HTTP 503")).toBe("github");
     expect(categorizeBuildFailure("Max turns (22) exceeded")).toBe(
       "code_generation",

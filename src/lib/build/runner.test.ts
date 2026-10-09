@@ -3,11 +3,30 @@ import { readFileSync } from "node:fs";
 import {
   E2E_PROGRESS_HEARTBEAT_MS,
   SANDBOX_BROWSER_PACKAGES,
+  describeSandboxCreationError,
   focusedRunCommand,
   sandboxBrowserSetupPlan,
 } from "./runner";
 
 describe("sandbox browser setup", () => {
+  it("turns sandbox provider failures into actionable checkpoint-safe messages", () => {
+    expect(
+      describeSandboxCreationError({
+        response: { status: 402 },
+        message: "Status code 402 is not ok",
+      }),
+    ).toContain("Sandbox usage allowance is unavailable or exhausted");
+    expect(
+      describeSandboxCreationError(new Error("Status code 429 is not ok")),
+    ).toContain("temporarily rate-limited");
+    expect(
+      describeSandboxCreationError({
+        statusCode: 503,
+        message: "provider unavailable",
+      }),
+    ).toContain("temporarily unavailable");
+  });
+
   it("targets one workflow journey or affected unit-test file", () => {
     expect(
       focusedRunCommand({

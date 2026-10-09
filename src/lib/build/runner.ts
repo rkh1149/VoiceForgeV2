@@ -219,6 +219,45 @@ export async function createRunner(
   return createLocalRunner(buildRunId, options);
 }
 
+export function describeSandboxCreationError(error: unknown): string {
+  const status = sandboxErrorStatus(error);
+  if (status === 402) {
+    return "Vercel Sandbox could not start because this team's Sandbox usage allowance is unavailable or exhausted (HTTP 402). VoiceForge preserved the durable testing checkpoint. Review Vercel Usage > Sandbox, then use Try building again after capacity is restored or the team plan is upgraded.";
+  }
+  if (status === 429) {
+    return "Vercel Sandbox could not start because the service is temporarily rate-limited (HTTP 429). VoiceForge preserved the durable testing checkpoint. Wait briefly, then use Try building again.";
+  }
+  if (status === 503) {
+    return "Vercel Sandbox is temporarily unavailable (HTTP 503). VoiceForge preserved the durable testing checkpoint. Use Try building again after Vercel Sandbox recovers.";
+  }
+
+  const detail =
+    error instanceof Error && error.message.trim()
+      ? `: ${error.message.trim()}`
+      : ".";
+  return `Vercel Sandbox could not start${status ? ` (HTTP ${status})` : ""}${detail}`;
+}
+
+function sandboxErrorStatus(error: unknown): number | null {
+  if (typeof error !== "object" || error === null) return null;
+
+  const record = error as Record<string, unknown>;
+  const response =
+    typeof record.response === "object" && record.response !== null
+      ? (record.response as Record<string, unknown>)
+      : null;
+  const candidates = [response?.status, record.status, record.statusCode];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isInteger(candidate)) {
+      return candidate;
+    }
+  }
+
+  const message = typeof record.message === "string" ? record.message : "";
+  const match = message.match(/status code\s+(\d{3})/i);
+  return match ? Number(match[1]) : null;
+}
+
 // ---------------------------------------------------------------------------
 // Local backend
 // ---------------------------------------------------------------------------
@@ -368,6 +407,8 @@ async function createSandboxRunner(options: RunnerOptions): Promise<Runner> {
   const sandbox = await Sandbox.create({
     runtime: "node24",
     timeout: 25 * 60_000, // hard ceiling for the whole build
+  }).catch((error: unknown) => {
+    throw new Error(describeSandboxCreationError(error), { cause: error });
   });
   let browserReady = false;
 

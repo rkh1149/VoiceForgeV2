@@ -364,6 +364,12 @@ export function buildMetricsPayload(metrics: BuildMetrics): Record<string, unkno
 export function categorizeBuildFailure(message: string): BuildFailureCategory {
   const text = message.toLowerCase();
   if (
+    text.includes("vercel sandbox") ||
+    (text.includes("sandbox") && text.includes("http 402"))
+  ) {
+    return "vercel";
+  }
+  if (
     text.includes("max turns") ||
     text.includes("generation phase") ||
     text.includes("code agent")
