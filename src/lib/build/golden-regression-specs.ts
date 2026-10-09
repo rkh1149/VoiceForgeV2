@@ -6,7 +6,9 @@ export type GoldenRegressionSpecId =
   | "file-export"
   | "notification-reminder"
   | "integration-search-report"
-  | "family-recipe-ai-shared";
+  | "family-recipe-ai-shared"
+  | "route-location-planner"
+  | "board-calendar-planner";
 
 export type GoldenRegressionSpec = {
   id: GoldenRegressionSpecId;
@@ -469,6 +471,129 @@ export const GOLDEN_REGRESSION_SPECS: GoldenRegressionSpec[] = [
       acceptanceCriteria: [
         criterion("Create AI recipe", "A creator generates and saves a recipe", "The creator is signed in", "They generate a recipe and save normalized fields", "The recipe remains visible after refresh"),
         criterion("Submit suggestion", "A non-creator suggests a change", "A recipe exists", "They submit a suggestion", "The creator can see the saved suggestion"),
+      ],
+    }),
+  },
+  {
+    id: "route-location-planner",
+    label: "Route And Location Planner",
+    purpose: "Generic regression app for maps, durable route handoff, GPS tracking, files, and exports.",
+    expectedTier: "advanced",
+    expectedServices: ["data", "users", "files", "integrations", "device_location", "reports"],
+    spec: makeSpec({
+      appName: "Outdoor Route Planner",
+      purpose: "Plan dated outdoor routes with Google Maps, save one route, track device location against it, attach photos, and export the result.",
+      targetUsers: "A signed-in planning group",
+      screens: [
+        { name: "Plan", description: "Create a dated itinerary." },
+        { name: "Routes", description: "Calculate route alternatives, distance, and elevation." },
+        { name: "Track", description: "Select a saved route and record device location points." },
+        { name: "Export", description: "Download GPX, CSV, or PDF route summaries." },
+      ],
+      features: ["Calculate Google Maps route alternatives", "Save a selected route", "Track GPS location", "Upload route photos", "Export GPX CSV and PDF"],
+      dataToStore: ["Dated itineraries, selected route alternatives, GPS track points, and photo file references"],
+      needsLogin: true,
+      sharingModel: "shared",
+      capabilityTier: "advanced",
+      userRoles: baseUserRoles,
+      dataEntities: [
+        {
+          name: "Itinerary",
+          description: "A dated shared plan.",
+          ownership: "shared",
+          fields: [field("Title", "Title", "text", true), field("Trip Date", "Trip date", "date", true)],
+          relationships: [],
+        },
+        {
+          name: "Route Option",
+          description: "A calculated route selected for one itinerary.",
+          ownership: "shared",
+          fields: [
+            field("Itinerary ID", "Itinerary", "relation", true),
+            field("Route Name", "Route name", "text", true),
+            field("Distance Metres", "Distance", "number", true),
+            field("Elevation Gain Metres", "Elevation gain", "number", false),
+            field("Encoded Path", "Encoded path", "long_text", true),
+          ],
+          relationships: [{ type: "belongs_to", targetEntity: "Itinerary", description: "Route belongs to one itinerary." }],
+        },
+        {
+          name: "Track Point",
+          description: "One GPS point saved against a selected route.",
+          ownership: "shared",
+          fields: [
+            field("Route Option ID", "Route option", "relation", true),
+            field("Latitude", "Latitude", "number", true),
+            field("Longitude", "Longitude", "number", true),
+            field("Recorded At", "Recorded at", "datetime", true),
+          ],
+          relationships: [{ type: "belongs_to", targetEntity: "Route Option", description: "Track point belongs to one saved route." }],
+        },
+      ],
+      workflows: [
+        workflow("Create itinerary", "Editor", "A dated plan is needed", ["Open Plan", "Enter a title and date", "Save the itinerary"]),
+        workflow("Calculate and save route", "Editor", "An itinerary needs a route", ["Open Routes", "Choose origin and destination", "Calculate alternatives", "Save one route option"]),
+        workflow("Track saved route", "Editor", "A saved route is ready to follow", ["Open Track", "Select the saved route", "Start GPS tracking", "Save a track point"]),
+        workflow("Export tracked route", "Viewer", "A route summary is needed", ["Open Export", "Select a saved route", "Download GPX or PDF"]),
+      ],
+      permissionRules: [
+        ...sharedPermissions("Itinerary"),
+        ...sharedPermissions("Route Option"),
+        ...sharedPermissions("Track Point"),
+      ],
+      fileRequirements: [{ name: "Route photos", attachedTo: "Itinerary", acceptedTypes: ["image/jpeg", "image/png"], maxSizeMb: 10, required: false }],
+      integrations: [{ name: "Google Maps", purpose: "Find places, calculate route alternatives, and retrieve elevation profiles.", direction: "import", requiredForLaunch: true }],
+      reports: [{ name: "Route summary", description: "Summarize the selected route and GPS track.", dataNeeded: ["Route Name", "Distance Metres", "Elevation Gain Metres", "Track Point"], exportFormats: ["screen", "csv", "pdf"] }],
+      acceptanceCriteria: [
+        criterion("Saved route reaches tracking", "An editor calculates and selects a route", "A dated itinerary exists", "They save a route and open Track", "The saved route appears in Route to Track and accepts a GPS point"),
+        criterion("Export tracked route", "A member exports a route", "A route and track point exist", "They download the route summary", "A valid route export is downloaded"),
+      ],
+    }),
+  },
+  {
+    id: "board-calendar-planner",
+    label: "Board And Calendar Planner",
+    purpose: "Generic regression app for drag-and-drop persistence, search, dates, and cross-screen handoff.",
+    expectedTier: "shared",
+    expectedServices: ["data", "users", "search"],
+    spec: makeSpec({
+      appName: "Shared Planning Board",
+      purpose: "Create shared dated work items, move them between board columns, and confirm the saved status on a calendar.",
+      targetUsers: "A small signed-in group",
+      screens: [
+        { name: "Items", description: "Create, edit, search, filter, and sort work items." },
+        { name: "Board", description: "Move work items between status columns." },
+        { name: "Calendar", description: "View saved work items by date and status." },
+      ],
+      features: ["Create work item", "Search and filter items", "Drag and drop status", "View dated calendar"],
+      dataToStore: ["Shared work items with title, due date, status, and board order"],
+      needsLogin: true,
+      sharingModel: "shared",
+      capabilityTier: "shared",
+      userRoles: baseUserRoles,
+      dataEntities: [
+        {
+          name: "Work Item",
+          description: "A dated item shown in lists, board columns, and calendar.",
+          ownership: "shared",
+          fields: [
+            field("Title", "Title", "text", true),
+            field("Due Date", "Due date", "date", true),
+            field("Status", "Status", "select", true),
+            field("Board Order", "Board order", "number", true),
+          ],
+          relationships: [],
+        },
+      ],
+      workflows: [
+        workflow("Create work item", "Editor", "A new item needs planning", ["Open Items", "Enter title and due date", "Save the work item"]),
+        workflow("Move work item", "Editor", "An item changes status", ["Open Board", "Drag the item to another status column", "Save the new status and order"]),
+        workflow("Find item on calendar", "Viewer", "A member needs the dated plan", ["Open Calendar", "Choose the saved date", "See the item with its current status"]),
+      ],
+      permissionRules: sharedPermissions("Work Item"),
+      searchRequirements: [{ target: "Work Item", fields: ["Title", "Status"], filters: ["due date", "status", "sort by due date or board order"] }],
+      acceptanceCriteria: [
+        criterion("Persist board move", "An editor moves an item", "A dated work item exists", "They drag it to Done and reload", "The item remains in Done and the calendar shows the saved status"),
       ],
     }),
   },

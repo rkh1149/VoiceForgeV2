@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   buildMetricsArtifactStatus,
   buildMetricsPayload,
+  buildReliabilityOutcome,
   categorizeBuildFailure,
   createBuildMetrics,
   recordDebugRoundMetric,
   recordGeneratedPhaseMetrics,
   recordReviewMetrics,
+  setBuildComplexityTier,
   setBuildFailureCategory,
   summarizeBuildMetrics,
+  summarizeBuildReliability,
 } from "./build-metrics";
 
 describe("build metrics", () => {
@@ -117,6 +120,30 @@ describe("build metrics", () => {
     );
   });
 
+  it("tracks historical failures and reliability outcomes by tier", () => {
+    const first = createBuildMetrics();
+    setBuildComplexityTier(first, "simple");
+    const repaired = createBuildMetrics();
+    setBuildComplexityTier(repaired, "advanced");
+    recordDebugRoundMetric(repaired, { step: "e2e" });
+    const failed = createBuildMetrics();
+    setBuildComplexityTier(failed, "advanced");
+    setBuildFailureCategory(
+      failed,
+      "integration_review_gate",
+      "Record data failed validation: unknown field recipeTitle",
+    );
+
+    expect(buildReliabilityOutcome(first)).toBe("first_attempt");
+    expect(buildReliabilityOutcome(repaired)).toBe("automatic_repair");
+    expect(buildReliabilityOutcome(failed)).toBe("manual_intervention");
+    expect(failed.historicalRegressionIds).toContain("VFREG-009");
+    expect(summarizeBuildReliability([first, repaired, failed])).toMatchObject({
+      simple: { first_attempt: 1 },
+      advanced: { automatic_repair: 1, manual_intervention: 1 },
+    });
+  });
+
   it("categorizes known failure messages", () => {
     expect(categorizeBuildFailure("typecheck failed with TS2322")).toBe(
       "typecheck",
@@ -141,6 +168,9 @@ describe("build metrics", () => {
     expect(categorizeBuildFailure("GitHub returned HTTP 503")).toBe("github");
     expect(categorizeBuildFailure("Max turns (22) exceeded")).toBe(
       "code_generation",
+    );
+    expect(categorizeBuildFailure("e2e still failing after 5 debug rounds")).toBe(
+      "browser_accessibility",
     );
     expect(
       categorizeBuildFailure(

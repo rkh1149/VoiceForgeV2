@@ -244,7 +244,15 @@ describe("Stage 14I isolated acceptance compiler", () => {
         computeSpecComplexity(item.spec),
       );
       const plan = synthesizeWorkflowAcceptancePlan(item.spec, architecture);
-      const compiled = compileAcceptanceTests({ spec: item.spec, architecture });
+      const initial = compileAcceptanceTests({ spec: item.spec, architecture });
+      const adapterSource = `export const acceptanceAdapters = {\n${initial.manifest.adapters
+        .map((adapter) => `  ${JSON.stringify(adapter.id)}: async () => undefined,`)
+        .join("\n")}\n};`;
+      const compiled = compileAcceptanceTests({
+        spec: item.spec,
+        architecture,
+        existingAdapterSource: adapterSource,
+      });
 
       expect.soft(compiled.blockingIssues, item.id).toEqual([]);
       expect.soft(compiled.manifest.summary.journeys, item.id).toBe(

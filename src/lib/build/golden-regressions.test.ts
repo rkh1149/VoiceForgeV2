@@ -58,6 +58,8 @@ describe("golden regression specs", () => {
       "notification-reminder",
       "integration-search-report",
       "family-recipe-ai-shared",
+      "route-location-planner",
+      "board-calendar-planner",
     ]);
   });
 

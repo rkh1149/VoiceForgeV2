@@ -17,6 +17,7 @@ import {
   synthesizeWorkflowAcceptancePlan,
   type WorkflowAcceptanceJourney,
 } from "./workflow-acceptance-plan";
+import { identifyHistoricalRegressions } from "./historical-regressions";
 
 export const WORKFLOW_REPAIR_PACKAGE_VERSION = 1 as const;
 
@@ -127,6 +128,7 @@ export type WorkflowRepairPackage = {
     failureFingerprint?: FailureFingerprint;
     previousAttempts: string[];
     browserDiagnostics: BrowserFailureEvidence | null;
+    historicalRegressionIds: string[];
   };
   scope: {
     inspectionPaths: string[];
@@ -396,6 +398,9 @@ export function createWorkflowRepairPackage(
       failureFingerprint: input.failureFingerprint,
       previousAttempts: [...(input.previousAttempts ?? [])],
       browserDiagnostics: browserEvidence ?? null,
+      historicalRegressionIds: identifyHistoricalRegressions(
+        [input.errorOutput, ...blockingIssues].join("\n"),
+      ),
     },
     scope,
     focusedValidation: {

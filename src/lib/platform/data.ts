@@ -17,6 +17,7 @@ import {
 } from "../../db/schema";
 import {
   PLATFORM_RECORD_EXPORT_MAX_RECORDS,
+  PLATFORM_RECORD_QUERY_MAX_RESPONSE_RECORDS,
   buildPlatformRecordReport,
   normalizeFieldList,
   normalizeRecordQuery,
@@ -825,31 +826,47 @@ export async function exportPlatformRecordsCsv(
   await assertCanReadAppData(db, input.appId, input.user);
   const entityKey = normalizeEntityKey(input.entityKey);
   await getEntityDefinition(db, input.appId, entityKey);
-  const search = await searchPlatformRecords(db, {
-    appId: input.appId,
-    entityKey,
-    user: input.user,
-    query: {
-      ...(isPlainObject(input.query) ? input.query : {}),
-      limit: PLATFORM_RECORD_EXPORT_MAX_RECORDS,
-    },
-  });
+  const query = isPlainObject(input.query) ? input.query : {};
+  const startOffset =
+    typeof query.offset === "number" && Number.isInteger(query.offset)
+      ? Math.max(query.offset, 0)
+      : 0;
+  const records: Awaited<ReturnType<typeof listRecords>> = [];
+  while (records.length < PLATFORM_RECORD_EXPORT_MAX_RECORDS) {
+    const page = await searchPlatformRecords(db, {
+      appId: input.appId,
+      entityKey,
+      user: input.user,
+      query: {
+        ...query,
+        offset: startOffset + records.length,
+        limit: Math.min(
+          PLATFORM_RECORD_QUERY_MAX_RESPONSE_RECORDS,
+          PLATFORM_RECORD_EXPORT_MAX_RECORDS - records.length,
+        ),
+      },
+    });
+    records.push(...page.records);
+    if (page.records.length === 0 || startOffset + records.length >= page.total) {
+      break;
+    }
+  }
   const fields = isPlainObject(input.query) && Array.isArray(input.query.fields)
     ? input.query.fields.filter((field): field is string => typeof field === "string")
     : [];
-  const csv = platformRecordsToCsv(search.records, fields);
+  const csv = platformRecordsToCsv(records, fields);
   const fileName = `${normalizeExportFileName(input.fileName ?? entityKey)}.csv`;
   await db.insert(appRecordEvents).values({
     appId: input.appId,
     userId: input.user.id,
     eventType: "record_csv_export",
-    payload: { entityKey, rowCount: search.records.length, fileName },
+    payload: { entityKey, rowCount: records.length, fileName },
   });
   return {
     fileName,
     contentType: "text/csv",
     csv,
-    rowCount: search.records.length,
+    rowCount: records.length,
   };
 }
 

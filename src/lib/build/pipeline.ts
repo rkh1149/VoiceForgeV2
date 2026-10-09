@@ -67,10 +67,13 @@ import {
   buildMetricsPayload,
   categorizeBuildFailure,
   createBuildMetrics,
+  markBuildSucceeded,
   recordDebugRoundMetric,
   recordGeneratedPhaseMetrics,
+  recordHistoricalRegressionEvidence,
   recordReviewMetrics,
   recordWorkflowRepairMetric,
+  setBuildComplexityTier,
   setBuildFailureCategory,
   summarizeBuildMetrics,
   type BuildMetrics,
@@ -315,6 +318,15 @@ function restoreBuildMetrics(value: unknown): BuildMetrics {
     workflowRepairs: Array.isArray(value.workflowRepairs)
       ? (value.workflowRepairs as BuildMetrics["workflowRepairs"])
       : base.workflowRepairs,
+    complexityTier:
+      value.complexityTier === "simple" ||
+      value.complexityTier === "intermediate" ||
+      value.complexityTier === "advanced"
+        ? value.complexityTier
+        : base.complexityTier,
+    historicalRegressionIds: Array.isArray(value.historicalRegressionIds)
+      ? stringArray(value.historicalRegressionIds)
+      : base.historicalRegressionIds,
     failureCategory:
       typeof value.failureCategory === "string"
         ? (value.failureCategory as BuildMetrics["failureCategory"])
@@ -781,6 +793,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
   const spec = normalizeAppSpec(requirement.spec);
   const complexity = computeSpecComplexity(spec);
   const metrics = createBuildMetrics();
+  setBuildComplexityTier(metrics, complexity.level);
 
   try {
     await setStatus(buildRunId, "generating", { startedAt: new Date() });
@@ -1383,6 +1396,7 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
       reviewProgress,
     });
 
+    markBuildSucceeded(metrics);
     await saveBuildCheckpoint({
       appId: app.id,
       buildRunId,
@@ -1416,7 +1430,11 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    setBuildFailureCategory(metrics, categorizeBuildFailure(message));
+    setBuildFailureCategory(
+      metrics,
+      categorizeBuildFailure(message),
+      message,
+    );
     await recordBuildMetricsArtifact({
       appId: app.id,
       buildRunId,
@@ -1878,6 +1896,9 @@ async function runTestGauntlet(input: {
           failureFingerprint: result.failureFingerprint,
         },
       });
+      if (!result.ok) {
+        recordHistoricalRegressionEvidence(input.metrics, [result.output]);
+      }
 
       if (
         !result.ok &&
@@ -3493,6 +3514,9 @@ export async function resumeBuildPipelineContinuation(
       .set({ plan: architecture })
       .where(eq(architecturePlans.id, architectureRow.id));
   }
+  const metadata = checkpoint.metadata;
+  const metrics = restoreBuildMetrics(metadata.metrics);
+  setBuildComplexityTier(metrics, computeSpecComplexity(spec).level);
 
   try {
     const refreshedTemplateFiles = await refreshResumedTemplateFiles(
@@ -3560,7 +3584,6 @@ export async function resumeBuildPipelineContinuation(
         ? "Resuming workflow reviews from the best saved source checkpoint…"
         : "Resuming checks from the saved source checkpoint…",
     );
-    const metadata = checkpoint.metadata;
     const generated = restoreGeneratedResult(metadata.generated);
     const refreshedAcceptance = refreshDeterministicAcceptanceCompiler({
       spec,
@@ -3594,7 +3617,6 @@ export async function resumeBuildPipelineContinuation(
       });
       return;
     }
-    const metrics = restoreBuildMetrics(metadata.metrics);
     const debugBudget = options?.resetDebugBudget
       ? createDebugBudget({
           maxRoundsPerStep: MAX_DEBUG_ROUNDS_PER_STEP,
@@ -3678,6 +3700,7 @@ export async function resumeBuildPipelineContinuation(
       workflowRepairs,
       reviewProgress,
     });
+    markBuildSucceeded(metrics);
     await saveBuildCheckpoint({
       appId: app.id,
       buildRunId: run.id,
@@ -3700,6 +3723,7 @@ export async function resumeBuildPipelineContinuation(
       run.id,
       `Durable checkpoint saved for publishing (${Object.keys(checkpoint.files).length} files).`,
     );
+    markBuildSucceeded(metrics);
     await recordBuildMetricsArtifact({
       appId: app.id,
       buildRunId: run.id,
@@ -3715,6 +3739,16 @@ export async function resumeBuildPipelineContinuation(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    setBuildFailureCategory(
+      metrics,
+      categorizeBuildFailure(message),
+      message,
+    );
+    await recordBuildMetricsArtifact({
+      appId: app.id,
+      buildRunId: run.id,
+      metrics,
+    });
     await markBuildFailed({
       app,
       buildRunId: run.id,

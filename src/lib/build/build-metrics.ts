@@ -1,4 +1,11 @@
 import type { BuildAgentArtifactStatus } from "./agent-artifact-utils";
+import { identifyHistoricalRegressions } from "./historical-regressions";
+
+export type BuildComplexityTier = "simple" | "intermediate" | "advanced";
+export type BuildReliabilityOutcome =
+  | "first_attempt"
+  | "automatic_repair"
+  | "manual_intervention";
 
 export type BuildFailureCategory =
   | "architecture_capability"
@@ -63,6 +70,8 @@ export type BuildMetrics = {
   acceptanceJourneyCoverage: AcceptanceJourneyCoverageMetric | null;
   humanCompletenessCoverage: HumanCompletenessCoverageMetric | null;
   workflowRepairs: WorkflowRepairMetric[];
+  complexityTier: BuildComplexityTier | null;
+  historicalRegressionIds: string[];
   failureCategory: BuildFailureCategory | null;
 };
 
@@ -115,6 +124,8 @@ export function createBuildMetrics(): BuildMetrics {
     acceptanceJourneyCoverage: null,
     humanCompletenessCoverage: null,
     workflowRepairs: [],
+    complexityTier: null,
+    historicalRegressionIds: [],
     failureCategory: null,
   };
 }
@@ -191,6 +202,10 @@ export function recordReviewMetrics(
         blockingIssues: [...review.blockingIssues],
       });
     }
+    recordHistoricalRegressionEvidence(metrics, [
+      ...review.warnings,
+      ...review.blockingIssues,
+    ]);
   }
 }
 
@@ -217,8 +232,59 @@ export function recordWorkflowRepairMetric(
 export function setBuildFailureCategory(
   metrics: BuildMetrics,
   category: BuildFailureCategory,
+  evidence = "",
 ): void {
   metrics.failureCategory = category;
+  recordHistoricalRegressionEvidence(metrics, [evidence]);
+}
+
+export function setBuildComplexityTier(
+  metrics: BuildMetrics,
+  tier: BuildComplexityTier,
+): void {
+  metrics.complexityTier = tier;
+}
+
+export function markBuildSucceeded(metrics: BuildMetrics): void {
+  metrics.failureCategory = null;
+}
+
+export function recordHistoricalRegressionEvidence(
+  metrics: BuildMetrics,
+  evidence: readonly string[],
+): void {
+  metrics.historicalRegressionIds = uniqueStrings([
+    ...metrics.historicalRegressionIds,
+    ...evidence.flatMap(identifyHistoricalRegressions),
+  ]);
+}
+
+export function buildReliabilityOutcome(
+  metrics: BuildMetrics,
+): BuildReliabilityOutcome {
+  if (metrics.failureCategory) return "manual_intervention";
+  if (metrics.debugRounds.length > 0 || metrics.workflowRepairs.length > 0) {
+    return "automatic_repair";
+  }
+  return "first_attempt";
+}
+
+export function summarizeBuildReliability(
+  samples: readonly BuildMetrics[],
+): Record<BuildComplexityTier, Record<BuildReliabilityOutcome, number>> {
+  const result = {
+    simple: { first_attempt: 0, automatic_repair: 0, manual_intervention: 0 },
+    intermediate: { first_attempt: 0, automatic_repair: 0, manual_intervention: 0 },
+    advanced: { first_attempt: 0, automatic_repair: 0, manual_intervention: 0 },
+  } satisfies Record<
+    BuildComplexityTier,
+    Record<BuildReliabilityOutcome, number>
+  >;
+  for (const sample of samples) {
+    if (!sample.complexityTier) continue;
+    result[sample.complexityTier][buildReliabilityOutcome(sample)] += 1;
+  }
+  return result;
 }
 
 export function buildMetricsArtifactStatus(
@@ -268,6 +334,9 @@ export function buildMetricsPayload(metrics: BuildMetrics): Record<string, unkno
     acceptanceJourneyCoverage: metrics.acceptanceJourneyCoverage,
     humanCompletenessCoverage: metrics.humanCompletenessCoverage,
     workflowRepairs: metrics.workflowRepairs,
+    complexityTier: metrics.complexityTier,
+    reliabilityOutcome: buildReliabilityOutcome(metrics),
+    historicalRegressionIds: metrics.historicalRegressionIds,
     failureCategory: metrics.failureCategory,
     totals: {
       generatedFileChanges: metrics.generatedFilesByPhase.reduce(
@@ -320,12 +389,12 @@ export function categorizeBuildFailure(message: string): BuildFailureCategory {
   }
   if (text.includes("typecheck") || /\bts\d{4}\b/.test(text)) return "typecheck";
   if (text.includes("lint") || text.includes("eslint")) return "lint";
+  if (text.includes("e2e") || text.includes("browser") || text.includes("axe")) {
+    return "browser_accessibility";
+  }
   if (text.includes("test") || text.includes("vitest")) return "unit_test";
   if (text.includes("prerender") || text.includes("build")) {
     return "build_prerender";
-  }
-  if (text.includes("e2e") || text.includes("browser") || text.includes("axe")) {
-    return "browser_accessibility";
   }
   if (
     text.includes("review failed") ||
