@@ -567,6 +567,76 @@ describe("Stage 14I isolated acceptance compiler", () => {
     }
   });
 
+  it("does not click a handoff consumer while preparing prerequisite fixtures", () => {
+    const input = splitJourneyInput();
+    const producer = input.architecture.workflowContracts[0];
+    const consumer = input.architecture.workflowContracts[1];
+    const producerSave = producer?.expectedSaves[0];
+    const entity = consumer?.requiredData[0];
+    if (!producer || !consumer || !producerSave || !entity) {
+      throw new Error("Split prerequisite handoff contracts are incomplete");
+    }
+    const editControl = {
+      id: "edit-prerequisite-record",
+      kind: "link" as const,
+      accessibleName: "Edit item",
+      route: consumer.start.route,
+      roles: consumer.actor.roles,
+      action: "Open the saved item for editing.",
+    };
+    consumer.controls.push(editControl);
+    consumer.steps.push({
+      id: "open-prerequisite-record",
+      description: "Open the saved item for editing.",
+      kind: "navigate",
+      route: consumer.start.route,
+      controlId: editControl.id,
+      reads: [entity.entityKey],
+      writes: [],
+      visibleResult: "The saved item is ready to edit.",
+    });
+    producer.handoffs = [
+      {
+        id: "saved-record-for-edit",
+        fromStepId: producerSave.stepId,
+        produces: producerSave.producedReference,
+        storage: producerSave.storage,
+        consumerWorkflowId: consumer.id,
+        consumerRoute: consumer.start.route,
+        consumerControlId: editControl.id,
+        loadRule: "Load the saved item before editing it.",
+      },
+    ];
+
+    const compiled = compileAcceptanceTests(input);
+    const target = compiled.manifest.journeys.find(
+      (journey) => journey.prerequisites.length > 0,
+    );
+    const prerequisite = target?.prerequisites[0];
+    if (!target || !prerequisite) {
+      throw new Error("Expected an isolated journey with prerequisite setup");
+    }
+    const setupMarker = `workflowFixtureSetupTitle(${JSON.stringify(
+      target.id,
+    )}, ${JSON.stringify(prerequisite.journeyId)})`;
+    const setupStart = compiled.compiledSource.indexOf(setupMarker);
+    const setupEnd = compiled.compiledSource.indexOf(
+      `acceptanceRetryProbe(testInfo, ${JSON.stringify(target.id)})`,
+      setupStart,
+    );
+    const setupSource = compiled.compiledSource.slice(setupStart, setupEnd);
+
+    expect(setupSource).toContain(
+      `workflowFixtureHandoffTitle(${JSON.stringify(
+        target.id,
+      )}, ${JSON.stringify(prerequisite.journeyId)}, "saved-record-for-edit")`,
+    );
+    expect(setupSource).toContain(
+      'const consumer = vfRecordControl(consumerRecord, "workflow-2", "edit-prerequisite-record")',
+    );
+    expect(setupSource).not.toContain("await consumer.click();");
+  });
+
   it("does not replay an alternative delete workflow as prerequisite setup", () => {
     const input = splitJourneyInput();
     const contracts = input.architecture.workflowContracts;

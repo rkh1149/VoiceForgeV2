@@ -735,12 +735,16 @@ function compileHandoff(
   const revealPath = consumerJourney
     ? compileHandoffRevealPath(handoff, consumerJourney, fixtureNames)
     : "";
-  const continuation = consumerJourney
+  const continuation = consumerJourney && !setup
     ? compileHandoffConsumerContinuation(
         handoff,
         consumerJourney,
         fixtureNames,
       )
+    : "";
+  const restoreFixtureRoute = setup
+    ? `await page.goto(${JSON.stringify(handoff.consumerRoute)});
+  await expect(page).toHaveURL(${routeRegex(handoff.consumerRoute)});`
     : "";
   const marker = setup
     ? `workflowFixtureHandoffTitle(${JSON.stringify(
@@ -756,6 +760,7 @@ function compileHandoff(
   ${consumer}
   ${continuation}
   ${assertion}
+  ${restoreFixtureRoute}
 });`;
 }
 

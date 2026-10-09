@@ -10,7 +10,7 @@ import {
 } from "./workflow-acceptance-plan";
 
 export const ACCEPTANCE_MANIFEST_VERSION = 4 as const;
-export const ACCEPTANCE_COMPILER_VERSION = 4 as const;
+export const ACCEPTANCE_COMPILER_VERSION = 5 as const;
 
 export type AcceptanceLocatorMode = "contract" | "accessible_name_fallback";
 
