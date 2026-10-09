@@ -10,7 +10,7 @@ import {
 } from "./workflow-acceptance-plan";
 
 export const ACCEPTANCE_MANIFEST_VERSION = 6 as const;
-export const ACCEPTANCE_COMPILER_VERSION = 7 as const;
+export const ACCEPTANCE_COMPILER_VERSION = 8 as const;
 
 export type AcceptanceLocatorMode = "contract" | "accessible_name_fallback";
 
@@ -22,6 +22,9 @@ export type AcceptancePrimitive =
   | "check"
   | "upload"
   | "click"
+  | "fill_record_textbox"
+  | "assert_record_textbox"
+  | "assert_control"
   | "download"
   | "assert_visible"
   | "adapter";
@@ -264,7 +267,15 @@ export function createAcceptanceTestManifest(input: {
         fixtureId: fixture?.id ?? null,
         expectedText: fixtureText(fixture) || handoff.produces,
         assertionTransform:
-          producerSave?.operation === "update" ? "append_updated" : "none",
+          producerSave?.operation === "update" &&
+          fixture &&
+          workflowChangesFixtureText(
+            steps,
+            handoff.producerWorkflowId,
+            fixture.id,
+          )
+            ? "append_updated"
+            : "none",
         expectedPresence: producerSave?.operation !== "delete",
       } satisfies AcceptanceManifestHandoff;
     });
@@ -575,7 +586,6 @@ function manifestStep(input: {
   locatorMode: AcceptanceLocatorMode;
 }): AcceptanceManifestStep {
   const fixtures = fixturesForStep(input.step, input.fixtures, input.fixtureByEntity);
-  const primitive = primitiveForStep(input.step, fixtures.length);
   const recordFixture = repeatedRecordFixture(input.step, input.fixtureByEntity);
   const assertionFixture = assertionRecordFixture(
     input.step,
@@ -602,6 +612,13 @@ function manifestStep(input: {
   const currentStepIndex = input.journey.steps.findIndex(
     (candidate) => candidate.id === input.step.id,
   );
+  const workflowSaveStepIndex = workflowSave
+    ? input.journey.steps.findIndex(
+        (candidate) =>
+          candidate.workflowId === workflowSave.workflowId &&
+          candidate.contractStepId === workflowSave.stepId,
+      )
+    : -1;
   const deletedBeforeOrAtStep = Boolean(
     assertionFixture &&
       input.journey.saves.some((save) => {
@@ -651,9 +668,39 @@ function manifestStep(input: {
     ...input.step.writes,
     ...(matchingSave ? [matchingSave.entityKey] : []),
   ]);
-  const updateOccurred =
+  const assertionFixtureEdited = Boolean(
     workflowSave?.operation === "update" &&
-    priorSave?.operation === "update";
+      assertionFixture &&
+      workflowInputChangesFixtureBeforeStep({
+        journey: input.journey,
+        workflowId: input.step.workflowId,
+        fixture: assertionFixture,
+        fixtures: input.fixtures,
+        fixtureByEntity: input.fixtureByEntity,
+        currentStepIndex,
+      }),
+  );
+  const deterministicRecordInput =
+    workflowSave?.operation === "update" &&
+    isDeterministicRecordTextInput(input.step, fixtures);
+  const redundantPreSaveAction =
+    Boolean(workflowSave) &&
+    workflowSaveStepIndex > currentStepIndex &&
+    isRedundantPreSaveAction(input.step, input.journey, workflowSave?.stepId ?? "");
+  const pendingEditedFixtureAssertion =
+    assertionFixtureEdited &&
+    workflowSaveStepIndex > currentStepIndex &&
+    (input.step.kind === "automatic" || input.step.kind === "result");
+  const primitive: AcceptancePrimitive = deterministicRecordInput
+    ? "fill_record_textbox"
+    : redundantPreSaveAction
+      ? "assert_control"
+      : pendingEditedFixtureAssertion
+        ? "assert_record_textbox"
+        : primitiveForStep(input.step, fixtures.length);
+  const assertionFixtureChanged =
+    assertionFixtureEdited &&
+    (priorSave?.operation === "update" || primitive === "assert_record_textbox");
   const adapterId =
     primitive === "adapter"
       ? `adapter-${slugify(input.journey.id)}-${slugify(input.step.workflowId)}-${slugify(input.step.contractStepId)}`
@@ -674,7 +721,12 @@ function manifestStep(input: {
           controlId: input.step.controlId,
           accessibleName: input.step.accessibleName,
           locatorMode: input.locatorMode,
-          recordScope: recordFixture
+          recordScope:
+            recordFixture &&
+            !(
+              assertionFixtureEdited &&
+              workflowSaveStepIndex >= currentStepIndex
+            )
             ? {
                 entityKey: recordFixture.entityKey,
                 fixtureId: recordFixture.id,
@@ -691,8 +743,8 @@ function manifestStep(input: {
     expectedText,
     assertionFixtureId: assertionFixture?.id ?? null,
     assertionText: conciseStateText(input.step, input.fixtureByEntity),
-    assertionTransform: updateOccurred ? "append_updated" : "none",
-    assertionScope: assertionFixture && input.step.controlId && !updateOccurred
+    assertionTransform: assertionFixtureChanged ? "append_updated" : "none",
+    assertionScope: assertionFixture && input.step.controlId && !assertionFixtureChanged
       ? {
           entityKey: assertionFixture.entityKey,
           fixtureId: assertionFixture.id,
@@ -742,6 +794,71 @@ function workflowEffect(
     postcondition: "unchanged",
     entityKeys: uniqueStrings(entityKeys),
   };
+}
+
+function workflowInputChangesFixtureBeforeStep(input: {
+  journey: WorkflowAcceptanceJourney;
+  workflowId: string;
+  fixture: AcceptanceManifestFixture;
+  fixtures: AcceptanceManifestFixture[];
+  fixtureByEntity: Map<string, AcceptanceManifestFixture[]>;
+  currentStepIndex: number;
+}): boolean {
+  return input.journey.steps
+    .slice(0, input.currentStepIndex + 1)
+    .some(
+      (step) =>
+        step.workflowId === input.workflowId &&
+        step.kind === "input" &&
+        fixturesForStep(step, input.fixtures, input.fixtureByEntity).some(
+          (fixture) => fixture.id === input.fixture.id,
+        ),
+    );
+}
+
+function workflowChangesFixtureText(
+  steps: AcceptanceManifestStep[],
+  workflowId: string,
+  fixtureId: string,
+): boolean {
+  return steps.some(
+    (step) =>
+      step.workflowId === workflowId &&
+      step.interactionTransform === "append_updated" &&
+      step.fixtureIds.includes(fixtureId),
+  );
+}
+
+function isDeterministicRecordTextInput(
+  step: WorkflowAcceptanceStep,
+  fixtures: AcceptanceManifestFixture[],
+): boolean {
+  const fixture = fixtures[0];
+  return Boolean(
+    step.kind === "input" &&
+      !step.controlId &&
+      !step.controlKind &&
+      fixtures.length === 1 &&
+      fixture &&
+      (fixture.type === "text" || fixture.type === "long_text") &&
+      /\b(edit|rename|change|update|revise)\b/i.test(step.description),
+  );
+}
+
+function isRedundantPreSaveAction(
+  step: WorkflowAcceptanceStep,
+  journey: WorkflowAcceptanceJourney,
+  saveStepId: string,
+): boolean {
+  if (step.kind !== "action" || !step.controlId) return false;
+  const saveStep = journey.steps.find(
+    (candidate) =>
+      candidate.workflowId === step.workflowId &&
+      candidate.contractStepId === saveStepId,
+  );
+  if (!saveStep?.controlId || saveStep.controlId === step.controlId) return false;
+  const saveWords = /\b(save|submit|confirm|apply|update)\b/i;
+  return saveWords.test(step.description) && saveWords.test(saveStep.description);
 }
 
 function interactionValueForStep(
@@ -1331,7 +1448,14 @@ function finalizeJourneyIsolation(input: {
         fixtureId: producerFixture.id,
         expectedText: fixtureText(producerFixture) || handoff.expectedText,
         assertionTransform:
-          producerSave.operation === "update" ? "append_updated" : "none",
+          producerSave.operation === "update" &&
+          workflowChangesFixtureText(
+            producerJourney?.steps ?? [],
+            handoff.producerWorkflowId,
+            producerFixture.id,
+          )
+            ? "append_updated"
+            : "none",
         expectedPresence: producerSave.operation !== "delete",
         consumerControl:
           producerSave.operation !== "delete" && handoff.consumerControl

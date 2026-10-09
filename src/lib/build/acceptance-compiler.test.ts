@@ -854,6 +854,46 @@ describe("Stage 14I isolated acceptance compiler", () => {
     expect(compiled.compiledSource).toContain('selectAcceptanceOption(control, "Active")');
   });
 
+  it("fills an inline record textbox deterministically when edit input has no control id", () => {
+    const input = golden("simple-local-storage");
+    const edit = input.architecture.workflowContracts.find((contract) =>
+      /\bedit\b/i.test(contract.name),
+    );
+    const editInput = edit?.steps.find((step) => step.kind === "input");
+    if (!edit || !editInput) throw new Error("Expected an edit input step");
+    edit.controls = edit.controls.filter(
+      (control) => control.id !== editInput.controlId,
+    );
+    editInput.controlId = "";
+    editInput.description = "Change the item name.";
+
+    const compiled = compileAcceptanceTests(input);
+    const compiledInput = compiled.manifest.journeys
+      .flatMap((journey) => journey.steps)
+      .find(
+        (step) =>
+          step.workflowId === edit.id &&
+          step.contractStepId === editInput.id,
+      );
+    const saveStepId = edit.expectedSaves[0]?.stepId;
+    const compiledSave = compiled.manifest.journeys
+      .flatMap((journey) => journey.steps)
+      .find(
+        (step) =>
+          step.workflowId === edit.id && step.contractStepId === saveStepId,
+      );
+
+    expect(compiledInput).toMatchObject({
+      primitive: "fill_record_textbox",
+      interactionTransform: "append_updated",
+      adapterId: null,
+    });
+    expect(compiledSave?.control?.recordScope).toBeNull();
+    expect(compiled.compiledSource).toContain(
+      'vfRecords(page, "list_item").getByRole("textbox")',
+    );
+  });
+
   it("keeps a simple one-screen browser app in one proportionate journey", () => {
     const input = golden("simple-local-storage");
     const compiled = compileAcceptanceTests(input);
@@ -927,6 +967,34 @@ describe("Stage 14I isolated acceptance compiler", () => {
     const start = compiled.compiledSource.indexOf(marker);
     const end = compiled.compiledSource.indexOf("});", start);
     expect(compiled.compiledSource.slice(start, end)).toContain('+ " updated"');
+  });
+
+  it("does not rename a record fixture when an update only changes completion", () => {
+    const input = golden("simple-local-storage");
+    const completion = input.architecture.workflowContracts.find((contract) =>
+      /(?:complete|completion)/i.test(contract.name),
+    );
+    if (!completion) throw new Error("Expected a completion workflow");
+
+    const compiled = compileAcceptanceTests(input);
+    const completionSteps = compiled.manifest.journeys.flatMap((journey) =>
+      journey.steps.filter((step) => step.workflowId === completion.id),
+    );
+    const completionHandoffs = compiled.manifest.journeys.flatMap((journey) =>
+      journey.handoffs.filter(
+        (handoff) => handoff.producerWorkflowId === completion.id,
+      ),
+    );
+
+    expect(completionSteps).not.toHaveLength(0);
+    expect(completionSteps.every((step) => step.assertionTransform === "none")).toBe(
+      true,
+    );
+    expect(
+      completionHandoffs.every(
+        (handoff) => handoff.assertionTransform === "none",
+      ),
+    ).toBe(true);
   });
 
   it("keeps discoverability controls at page scope", () => {

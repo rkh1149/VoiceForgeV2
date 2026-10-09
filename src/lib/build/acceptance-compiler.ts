@@ -971,6 +971,31 @@ await expect(page).toHaveURL(${routeRegex(step.expectedRoute)});`;
       action = `await control.fill(String(${primaryFixture}));
 await expect(control).toHaveValue(String(${primaryFixture}));`;
       break;
+    case "fill_record_textbox":
+      action = primaryFixtureDefinition
+        ? `const recordInput = vfRecords(page, ${JSON.stringify(
+            primaryFixtureDefinition.entityKey,
+          )}).getByRole("textbox");
+await expect(recordInput).toHaveCount(1);
+await recordInput.fill(String(${primaryFixture}));
+await expect(recordInput).toHaveValue(String(${primaryFixture}));`
+        : 'throw new Error("Record textbox input is missing its entity fixture.");';
+      break;
+    case "assert_record_textbox":
+      action = primaryFixtureDefinition
+        ? `const recordInput = vfRecords(page, ${JSON.stringify(
+            primaryFixtureDefinition.entityKey,
+          )}).getByRole("textbox");
+await expect(recordInput).toHaveCount(1);
+await expect(recordInput).toHaveValue(String(${transformedValueExpression(
+            fixtures[0] ?? JSON.stringify(step.interactionValue),
+            step.assertionTransform,
+          )}));`
+        : 'throw new Error("Record textbox assertion is missing its entity fixture.");';
+      break;
+    case "assert_control":
+      action = "await expect(control).toBeVisible();";
+      break;
     case "complete_form":
       action = `await completeAcceptanceForm(page, control, ${fixtureArray(
         step,
