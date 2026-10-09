@@ -512,6 +512,17 @@ export function classifyWorkflowRepairFailure(input: {
       "A deterministic acceptance-test finding identifies missing or unrecognized proof in the generated Playwright journey.",
     );
   }
+  if (/\btests_review:/i.test(text)) {
+    return result(
+      "generated_test_defect",
+      /getbyrole[\s\S]*exact|byroleoptions/i.test(text)
+        ? "unsupported_testing_library_role_option"
+        : "generated_unit_test_defect",
+      "generated_test",
+      "high",
+      "The generated-test reviewer identified invalid or brittle unit-test code; repair the named test rather than changing working application behavior.",
+    );
+  }
   if (/\bcontract_control:/i.test(text)) {
     return result(
       "missing_control",
@@ -927,8 +938,14 @@ function deriveWorkflowRepairScope(input: {
       ? []
       : input.targetSurface === "generated_test"
         ? usesDeterministicCompiler
-          ? acceptanceAdapterPaths
-          : e2ePaths
+          ? uniqueStrings([
+              ...acceptanceAdapterPaths,
+              ...mentionedPaths.filter(isUnitTestPath),
+            ])
+          : uniqueStrings([
+              ...e2ePaths,
+              ...mentionedPaths.filter(isUnitTestPath),
+            ])
         : appMutationPaths.slice(0, 24);
   const inspectionPaths = uniqueStrings([
     ...mutationPaths,
@@ -989,7 +1006,14 @@ function findWorkflow(input: {
   const completenessWorkflowId = input.text.match(
     /human_completeness:workflow:([a-z0-9][a-z0-9-]*)/i,
   )?.[1];
+  const reviewWorkflow = input.text.match(
+    /\bWorkflow\s+"([^"]+)"(?:\s+\(([a-z0-9][a-z0-9-]*)\))?/i,
+  );
+  const reviewWorkflowName = reviewWorkflow?.[1];
+  const reviewWorkflowId = reviewWorkflow?.[2];
   return (
+    input.contracts.find((contract) => contract.id === reviewWorkflowId) ??
+    input.contracts.find((contract) => contract.name === reviewWorkflowName) ??
     input.contracts.find(
       (contract) => contract.id === completenessWorkflowId,
     ) ??
@@ -1091,7 +1115,7 @@ function createTarget(input: {
   return {
     kind,
     id,
-    workflowId: input.markers.workflowId || input.workflow?.id || "",
+    workflowId: input.workflow?.id || input.markers.workflowId || "",
     workflowName: input.workflow?.name || input.journey?.name || "Workflow",
     controlId: input.markers.controlId,
     stepId: input.markers.stepId,

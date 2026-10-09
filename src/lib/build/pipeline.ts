@@ -1648,14 +1648,22 @@ async function runTestGauntlet(input: {
           details: { focused: true, output: typecheck.output },
         });
         if (!typecheck.ok) {
-          return {
-            ok: false,
-            reason: "The workflow candidate failed focused typecheck.",
-            failedStep: "typecheck",
-            failureFingerprint:
-              typecheck.failureFingerprint ??
-              createFailureFingerprint("typecheck", typecheck.output),
-          };
+          const fingerprint =
+            typecheck.failureFingerprint ??
+            createFailureFingerprint("typecheck", typecheck.output);
+          if (workflowRepairOwnsFailure(repair, fingerprint)) {
+            return {
+              ok: false,
+              reason:
+                "The workflow candidate failed focused typecheck in a file changed by this repair.",
+              failedStep: "typecheck",
+              failureFingerprint: fingerprint,
+            };
+          }
+          await log(
+            input.buildRunId,
+            "Focused workflow typecheck found a failure outside the repair's changed files. The workflow improvement was preserved and the unrelated failure will be handled by its responsible pipeline step.",
+          );
         }
       }
 

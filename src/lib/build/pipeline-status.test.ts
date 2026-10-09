@@ -27,6 +27,12 @@ describe("build pipeline app status fallbacks", () => {
     expect(source).toContain("loadBuildCheckpointById");
     expect(source).toContain("workflowRepairSnapshots");
     expect(source).toContain("workflowRepairOwnsFailure");
+    expect(source).toContain(
+      "failure outside the repair's changed files",
+    );
+    expect(source).toContain(
+      "the unrelated failure will be handled by its responsible pipeline step",
+    );
     expect(source).toContain("candidateProgressed");
     expect(source).toContain("Checkpointed partial");
     expect(source).toMatch(

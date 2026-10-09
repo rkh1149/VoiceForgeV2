@@ -112,6 +112,17 @@ export const GOLDEN_REGRESSION_SPECS: GoldenRegressionSpec[] = [
           "Save the item",
           "See it in the unpacked list",
         ]),
+        {
+          name: "Filter items",
+          actor: "Traveler",
+          trigger: "The traveler wants to view all, unpacked, or packed items.",
+          steps: [
+            "Choose a filter.",
+            "Display only items matching that filter.",
+          ],
+          successOutcome: "Only packing items matching the chosen filter are visible.",
+          failureStates: [],
+        },
       ],
       permissionRules: [],
       searchRequirements: [
@@ -128,6 +139,13 @@ export const GOLDEN_REGRESSION_SPECS: GoldenRegressionSpec[] = [
           "The checklist is open",
           "The traveler enters an item and saves",
           "The item appears in the list",
+        ),
+        criterion(
+          "Filter packing items",
+          "A traveler filters the packing checklist",
+          "Packed and unpacked items exist",
+          "The traveler chooses a filter",
+          "Only matching packing items remain visible",
         ),
       ],
     }),

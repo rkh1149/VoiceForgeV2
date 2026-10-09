@@ -6,8 +6,8 @@ import {
   type AppSpec,
 } from "./spec";
 
-export const WORKFLOW_CONTRACT_VERSION = 2 as const;
-export const LEGACY_WORKFLOW_CONTRACT_VERSIONS = [1] as const;
+export const WORKFLOW_CONTRACT_VERSION = 3 as const;
+export const LEGACY_WORKFLOW_CONTRACT_VERSIONS = [1, 2] as const;
 
 export const workflowContractRoleSchema = z.enum([
   "owner",
@@ -960,6 +960,7 @@ function normalizeContractInteractionSemantics(
     )
     .map((control) => ({
       ...control,
+      kind: normalizeControlKind(control, steps),
       accessibleName: conciseControlLabel(control, contract),
     }));
 
@@ -1154,6 +1155,9 @@ function isVisibleOutcomeDescription(value: string): boolean {
       value,
     ) ||
     /^\s*(?:the\s+)?(?:user|player|rider|member|child|parent|guest|visitor|customer|student|teacher|participant|person)\s+(?:sees?|receives?|is shown)\b/i.test(
+      value,
+    ) ||
+    /^\s*(?:display|show|render|present)\s+(?:only\s+)?(?:the\s+)?(?:items?|records?|results?|entries?|tasks?|notes?|recipes?|routes?)\b[\s\S]*\b(?:match|matching|filtered|filter)\b/i.test(
       value,
     ) ||
     /\b(?:appears?|is shown|is displayed|is visible|becomes visible|shows? (?:the )?(?:result|score|feedback|message))\b/i.test(
@@ -1613,6 +1617,7 @@ function inferControlKind(
   if (/drag|drop|move between/.test(lower)) return "drag_drop";
   if (/\b(date|day|time)\b/.test(lower)) return "date";
   if (/check|toggle|complete/.test(lower)) return "checkbox";
+  if (isFilterChoiceDescription(lower)) return "button";
   if (/choose|select|pick/.test(lower) && isFieldInputDescription(lower)) {
     return "combobox";
   }
@@ -1621,6 +1626,29 @@ function inferControlKind(
     return "link";
   }
   return "button";
+}
+
+function normalizeControlKind(
+  control: WorkflowContract["controls"][number],
+  steps: WorkflowContract["steps"],
+): WorkflowContract["controls"][number]["kind"] {
+  const linkedStep = steps.find((step) => step.controlId === control.id);
+  if (
+    linkedStep &&
+    control.kind === "textbox" &&
+    isFilterChoiceDescription(linkedStep.description)
+  ) {
+    return "button";
+  }
+  return control.kind;
+}
+
+function isFilterChoiceDescription(value: string): boolean {
+  return (
+    /\b(?:choose|select|pick)\b/i.test(value) &&
+    /\bfilter\b/i.test(value) &&
+    !/\b(?:enter|type|write|search)\b/i.test(value)
+  );
 }
 
 function inferStepKind(

@@ -57,6 +57,14 @@ describe("coder shared rules", () => {
     expect(source).toContain("text/plain fallback overwrite");
   });
 
+  it("separates React Testing Library role matching from Playwright exact matching", () => {
+    const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("ByRoleOptions, which does not support exact: true");
+    expect(source).toContain("{ name: /^Save$/ }");
+    expect(source).toContain("In Playwright only");
+  });
+
   it("forbids raw generated images in platform data payloads", () => {
     const source = readFileSync(new URL("./coder.ts", import.meta.url), "utf8");
 

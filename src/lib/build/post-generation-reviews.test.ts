@@ -505,6 +505,26 @@ test("loads", async ({ page }) => { await page.goto("/"); await expect(page.getB
     expect(getPostGenerationBlockingIssues(reviews)).toEqual([]);
   });
 
+  it("blocks Playwright-only exact role options in React Testing Library tests", () => {
+    const spec = normalizeAppSpec(personalSpecInput);
+    const reviews = review({
+      spec,
+      architecture: buildArchitecture(spec),
+      allFiles: {
+        "src/app/page.tsx":
+          "export default function Page() { return <main><h1>Packing Helper</h1><button>Save</button></main>; }",
+        "src/components/packing-list.test.tsx": `import { screen } from "@testing-library/react";
+screen.getByRole("button", { name: "Save", exact: true });`,
+      },
+    });
+    const testReview = findReview(reviews, "test_reviewer");
+
+    expect(testReview.status).toBe("failed");
+    expect(testReview.blockingIssues).toContainEqual(
+      expect.stringContaining("ByRoleOptions does not support exact"),
+    );
+  });
+
   it("records a blocking interface-readiness artifact for a hidden workflow route", () => {
     const spec = normalizeAppSpec(sharedSpecInput);
     const planned = buildArchitecture(spec);

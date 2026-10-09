@@ -14,7 +14,7 @@ export const BUILD_CHECKPOINT_MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 // deterministic artifacts; only older archive/schema formats restart cleanly.
 export const BUILD_CHECKPOINT_SCHEMA_VERSION = 6;
 export const MINIMUM_MIGRATABLE_CHECKPOINT_SCHEMA_VERSION = 5;
-export const REVIEW_SEMANTICS_VERSION = 1;
+export const REVIEW_SEMANTICS_VERSION = 2;
 
 type BuildPipelineIdentity = {
   checkpointSchemaVersion: number;

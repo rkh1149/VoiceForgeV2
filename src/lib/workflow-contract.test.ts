@@ -267,6 +267,94 @@ describe("workflow contract layer", () => {
     expect(validation.blockingIssues).toEqual([]);
   });
 
+  it("models a finite filter choice as one button and its display effect as automatic", () => {
+    const spec = normalizeAppSpec({
+      ...personalInput,
+      appName: "My Quick List",
+      purpose: "Keep a short personal list in the browser.",
+    });
+    spec.dataEntities = [
+      {
+        name: "List Item",
+        description: "One personal list item.",
+        ownership: "per_user",
+        fields: [
+          {
+            name: "name",
+            label: "Name",
+            type: "text",
+            required: true,
+            validation: "Required",
+          },
+          {
+            name: "completed",
+            label: "Completed",
+            type: "boolean",
+            required: false,
+            validation: "",
+          },
+        ],
+        relationships: [],
+      },
+    ];
+    spec.workflows = [
+      {
+        name: "Filter items",
+        actor: "User",
+        trigger: "The user wants to see all, active, or completed items.",
+        steps: [
+          "Choose a filter.",
+          "Display only items matching that filter.",
+        ],
+        successOutcome: "Only matching list items are visible.",
+        failureStates: [],
+      },
+    ];
+    spec.acceptanceCriteria = [];
+    spec.testScenarios = [];
+
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const filter = architecture.workflowContracts[0];
+
+    expect(filter.controls).toEqual([
+      expect.objectContaining({
+        kind: "button",
+        accessibleName: "Choose a filter.",
+      }),
+    ]);
+    expect(filter.steps).toEqual([
+      expect.objectContaining({ kind: "action", controlId: filter.controls[0].id }),
+      expect.objectContaining({ kind: "result", controlId: "" }),
+    ]);
+
+    const legacy = structuredClone(architecture);
+    legacy.workflowContractVersion = 2 as typeof legacy.workflowContractVersion;
+    legacy.workflowContracts[0].controls[0].kind = "textbox";
+    legacy.workflowContracts[0].controls.push({
+      id: `${filter.id}-control-2`,
+      kind: "textbox",
+      accessibleName: "Display only items matching that filter.",
+      route: "/",
+      roles: ["owner"],
+      action: "Display only items matching that filter.",
+    });
+    legacy.workflowContracts[0].steps[1].kind = "action";
+    legacy.workflowContracts[0].steps[1].controlId = `${filter.id}-control-2`;
+
+    const migrated = ensureWorkflowContracts(spec, legacy);
+    expect(migrated.workflowContractVersion).toBe(WORKFLOW_CONTRACT_VERSION);
+    expect(migrated.workflowContracts[0].controls).toEqual([
+      expect.objectContaining({ kind: "button" }),
+    ]);
+    expect(migrated.workflowContracts[0].steps[1]).toMatchObject({
+      kind: "result",
+      controlId: "",
+    });
+  });
+
   it("records the route-to-GPS persistence handoff for Bike Journey Planner", () => {
     const spec = bikeSpec();
     const architecture = createFallbackArchitecturePlan(
@@ -1164,7 +1252,7 @@ describe("workflow contract layer", () => {
 
     const normalized = ensureWorkflowContracts(spec, legacy);
 
-    expect(normalized.workflowContractVersion).toBe(2);
+    expect(normalized.workflowContractVersion).toBe(WORKFLOW_CONTRACT_VERSION);
     expect(normalized.workflowContracts[0].id).toBe(
       "permanent-family-route-workflow",
     );

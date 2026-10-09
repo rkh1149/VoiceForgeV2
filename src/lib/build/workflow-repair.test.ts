@@ -386,6 +386,54 @@ describe("workflow-aware repairs", () => {
     expect(repair.scope.protectedPaths).toContain("src/app/gps/page.tsx");
   });
 
+  it("targets the named workflow in a review finding before an unrelated journey marker", () => {
+    const repair = createWorkflowRepairPackage({
+      spec,
+      architecture,
+      files,
+      failedStep: "review_gate",
+      repairDomain: "interface",
+      errorOutput: [
+        'ui_affordance: Workflow "Track saved route" (track-saved-route) requires a visible control.',
+        "STRUCTURED REVIEW EVIDENCE:",
+        "[voiceforge-workflow:save-calculated-route]",
+      ].join("\n"),
+      blockingIssues: [
+        'ui_affordance: Workflow "Track saved route" (track-saved-route) requires a visible control.',
+      ],
+    });
+
+    expect(repair.target.workflowId).toBe("track-saved-route");
+    expect(repair.target.workflowName).toBe("Track saved route");
+  });
+
+  it("classifies an invalid Testing Library role option as a generated unit-test repair", () => {
+    const unitTestPath = "src/components/quick-list-view.test.tsx";
+    const repair = createWorkflowRepairPackage({
+      spec,
+      architecture,
+      files: {
+        ...deterministicAcceptanceFiles,
+        [unitTestPath]:
+          'screen.getByRole("button", { name: "Save", exact: true });',
+      },
+      failedStep: "review_gate",
+      repairDomain: "acceptance",
+      errorOutput: `tests_review: ${unitTestPath} passes exact: true to getByRole, but ByRoleOptions does not support exact.`,
+      blockingIssues: [
+        `tests_review: ${unitTestPath} passes exact: true to getByRole, but ByRoleOptions does not support exact.`,
+      ],
+    });
+
+    expect(repair.classification).toMatchObject({
+      category: "generated_test_defect",
+      subtype: "unsupported_testing_library_role_option",
+      targetSurface: "generated_test",
+    });
+    expect(repair.scope.mutationPaths).toContain(unitTestPath);
+    expect(repair.scope.mutationPaths).not.toContain("src/app/gps/page.tsx");
+  });
+
   it("keeps a save-triggered navigation timeout in joint application/test diagnosis", () => {
     const repair = createWorkflowRepairPackage({
       spec,

@@ -149,6 +149,8 @@ const FORM_CONTROL_PATTERN = /<(input|select|textarea)\b(?![^>]*type=["']hidden[
 const ACCESSIBLE_NAME_PATTERN = /(<label\b|htmlFor=|aria-label=|aria-labelledby=)/i;
 const IMAGE_WITHOUT_ALT_PATTERN = /<img\b(?![^>]*\balt=)/i;
 const H1_PATTERN = /<h1(\s|>)/i;
+const RTL_GET_BY_ROLE_EXACT_PATTERN =
+  /\b(?:screen\s*\.\s*)?(?:getByRole|findByRole|queryByRole)\s*\([\s\S]{0,500}?\bexact\s*:\s*true\b/;
 const WRITE_ACTION_WORDS = [
   "add",
   "calculate",
@@ -1037,6 +1039,14 @@ function reviewGeneratedTests(
     warnings.push(
       `tests_review: Tests include timing patterns that are usually brittle: ${unstableTestSignals.join(", ")}.`,
     );
+  }
+
+  for (const path of unitTestFiles) {
+    if (RTL_GET_BY_ROLE_EXACT_PATTERN.test(input.allFiles[path] ?? "")) {
+      blockingIssues.push(
+        `tests_review: ${path} passes exact: true to a React Testing Library role query, but ByRoleOptions does not support exact. Use an anchored accessible-name regular expression such as /^Save$/ or a unique scoped query instead.`,
+      );
+    }
   }
 
   blockingIssues.push(
