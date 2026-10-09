@@ -329,6 +329,9 @@ describe("workflow contract layer", () => {
       expect.objectContaining({ kind: "action", controlId: filter.controls[0].id }),
       expect.objectContaining({ kind: "result", controlId: "" }),
     ]);
+    expect(filter.requiredData[0]?.operations).toEqual(["read"]);
+    expect(filter.expectedSaves).toEqual([]);
+    expect(validateWorkflowContracts(spec, architecture).blockingIssues).toEqual([]);
 
     const legacy = structuredClone(architecture);
     legacy.workflowContractVersion = 2 as typeof legacy.workflowContractVersion;
@@ -343,6 +346,7 @@ describe("workflow contract layer", () => {
     });
     legacy.workflowContracts[0].steps[1].kind = "action";
     legacy.workflowContracts[0].steps[1].controlId = `${filter.id}-control-2`;
+    legacy.workflowContracts[0].requiredData[0].operations = ["read", "update"];
 
     const migrated = ensureWorkflowContracts(spec, legacy);
     expect(migrated.workflowContractVersion).toBe(WORKFLOW_CONTRACT_VERSION);
@@ -353,6 +357,84 @@ describe("workflow contract layer", () => {
       kind: "result",
       controlId: "",
     });
+    expect(migrated.workflowContracts[0].requiredData[0].operations).toEqual([
+      "read",
+    ]);
+  });
+
+  it("keeps validation and browser persistence effects behind one add command", () => {
+    const spec = normalizeAppSpec({
+      ...personalInput,
+      appName: "My Quick List Fresh",
+      purpose: "Keep a short personal list in the browser.",
+    });
+    spec.dataEntities = [
+      {
+        name: "List Item",
+        description: "One personal list item.",
+        ownership: "per_user",
+        fields: [
+          {
+            name: "name",
+            label: "Name",
+            type: "text",
+            required: true,
+            validation: "Required",
+          },
+          {
+            name: "completed",
+            label: "Completed",
+            type: "boolean",
+            required: false,
+            validation: "",
+          },
+        ],
+        relationships: [],
+      },
+    ];
+    spec.workflows = [
+      {
+        name: "Add list item",
+        actor: "User",
+        trigger: "User enters a name and chooses to add it.",
+        steps: [
+          "Enter an item name.",
+          "Submit the add action.",
+          "Check that the name is not blank after trimming spaces.",
+          "Create an incomplete item and show it in the list.",
+          "Save the updated list in the browser.",
+        ],
+        successOutcome: "A new active item appears and remains available after refresh.",
+        failureStates: ["A blank name is rejected."],
+      },
+    ];
+    spec.acceptanceCriteria = [];
+    spec.testScenarios = [];
+
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const contract = architecture.workflowContracts[0];
+
+    expect(contract.controls.map((control) => control.accessibleName)).toEqual([
+      "Enter an item name.",
+      "Submit the add action.",
+    ]);
+    expect(contract.steps.map((step) => step.kind)).toEqual([
+      "input",
+      "save",
+      "automatic",
+      "automatic",
+      "automatic",
+    ]);
+    expect(contract.expectedSaves).toEqual([
+      expect.objectContaining({
+        stepId: contract.steps[1].id,
+        operation: "create",
+      }),
+    ]);
+    expect(validateWorkflowContracts(spec, architecture).blockingIssues).toEqual([]);
   });
 
   it("records the route-to-GPS persistence handoff for Bike Journey Planner", () => {

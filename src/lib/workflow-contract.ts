@@ -939,12 +939,24 @@ function normalizeContractMutationSemantics(
   contract: WorkflowContract,
   spec: AppSpec,
 ): WorkflowContract {
-  if (contract.expectedSaves.length === 0) return contract;
   const sourceWorkflow = spec.workflows.find(
     (workflow) =>
       normalizeText(workflow.name) === normalizeText(contract.source.workflowName) ||
       normalizeText(workflow.name) === normalizeText(contract.name),
   );
+  if (sourceWorkflow && isReadOnlyQueryWorkflow(sourceWorkflow)) {
+    return {
+      ...contract,
+      steps: contract.steps.map((step) => ({ ...step, writes: [] })),
+      requiredData: contract.requiredData.map((data) => ({
+        ...data,
+        operations: ["read"],
+      })),
+      expectedSaves: [],
+      handoffs: [],
+    };
+  }
+  if (contract.expectedSaves.length === 0) return contract;
   const canonicalOperation =
     inferNamedMutationOperation(contract.name) ??
     (sourceWorkflow ? inferNamedMutationOperation(sourceWorkflow.name) : undefined);
@@ -1033,6 +1045,9 @@ function normalizeContractInteractionSemantics(
     expectedSaves.map((save) => save.producedReference),
   );
   const canonicalMutation = contract.expectedSaves[0]?.operation;
+  const originallyLinkedControlIds = new Set(
+    contract.steps.map((step) => step.controlId).filter(Boolean),
+  );
   let lastGestureControlId = "";
   let hasMutationGesture = false;
   let steps = contract.steps.map((step) => {
@@ -1043,13 +1058,20 @@ function normalizeContractInteractionSemantics(
     const isConceptualPersistenceEffect =
       hasMutationGesture &&
       canonicalMutation !== undefined &&
-      isConceptualPersistenceDescription(step.description, canonicalMutation);
+      isConceptualPersistenceDescription(step.description);
+    const isPostMutationImplementationEffect =
+      hasMutationGesture &&
+      canonicalMutation !== undefined &&
+      step.writes.length === 0 &&
+      mutationOperationFromText(step.description) === canonicalMutation &&
+      !isExplicitRepeatedGestureDescription(step.description);
     const repeatsPriorGesture =
       Boolean(step.controlId) &&
       step.controlId === lastGestureControlId &&
       !isExplicitRepeatedGestureDescription(step.description);
     if (
       isConceptualPersistenceEffect ||
+      isPostMutationImplementationEffect ||
       (repeatsPriorGesture && (kind === "action" || kind === "save"))
     ) {
       kind = "automatic";
@@ -1065,6 +1087,7 @@ function normalizeContractInteractionSemantics(
     if (
       kind !== "automatic" &&
       kind !== "result" &&
+      (kind === "save" || writes.length > 0) &&
       mutationOperationFromText(step.description) === canonicalMutation
     ) {
       hasMutationGesture = true;
@@ -1085,13 +1108,13 @@ function normalizeContractInteractionSemantics(
       (control) =>
         actionableControlIds.has(control.id) ||
         control.id.endsWith("discoverability-control") ||
-        ((isUserGestureDescription(control.accessibleName) ||
+        (!originallyLinkedControlIds.has(control.id) &&
+          (isUserGestureDescription(control.accessibleName) ||
           isUserGestureDescription(control.action)) &&
           !(
             canonicalMutation &&
             isConceptualPersistenceDescription(
               `${control.accessibleName} ${control.action}`,
-              canonicalMutation,
             )
           )),
     )
@@ -1195,19 +1218,15 @@ function normalizeContractInteractionSemantics(
   };
 }
 
-function isConceptualPersistenceDescription(
-  value: string,
-  operation: WorkflowMutationOperation,
-): boolean {
+function isConceptualPersistenceDescription(value: string): boolean {
   const normalized = normalizeText(value);
-  const describedOperation = mutationOperationFromText(value);
-  if (describedOperation === operation) return false;
-  return (
+  const looksLikeImplementationEffect =
     /^(?:save|persist|store|write|update|refresh)\b/.test(normalized) &&
-    /\b(?:updated|changed|remaining|new|current|latest|list|record|records|data|state|storage)\b/.test(
+    /\b(?:updated|changed|remaining|current|latest|list|records|data|state|storage)\b/.test(
       normalized,
-    )
-  );
+    );
+  if (looksLikeImplementationEffect) return true;
+  return false;
 }
 
 function isExplicitRepeatedGestureDescription(value: string): boolean {
@@ -1292,6 +1311,9 @@ function isUserGestureDescription(value: string): boolean {
 
 function isAutomaticEffectDescription(value: string): boolean {
   return (
+    /^\s*(?:check|ensure|validate|verify)\b[\s\S]*\b(?:blank|required|trim|valid|validation)\b/i.test(
+      value,
+    ) ||
     /^\s*(?:the\s+)?(?:app|application|system|game|screen|page)\s+(?:automatically\s+)?(?:checks?|clears?|compares?|creates?|generates?|loads?|calculates?|moves?|navigates?|persists?|resets?|redirects?|advances?|saves?|starts?|prepares?|stores?|updates?|records?|chooses?|selects?|validates?)\b/i.test(
       value,
     ) ||
@@ -1304,6 +1326,7 @@ function isAutomaticEffectDescription(value: string): boolean {
 function isVisibleOutcomeDescription(value: string): boolean {
   return (
     /^\s*see\b/i.test(value) ||
+    /^\s*(?:display|show|render|present)\b/i.test(value) ||
     /^\s*(?:confirm|verify)\b[\s\S]*\b(?:remains?|persists?|appears?|absent|visible|after refresh)\b/i.test(
       value,
     ) ||
@@ -1692,6 +1715,7 @@ function inferOperations(
   const text = workflowText(workflow).toLowerCase();
   const operations: Array<z.infer<typeof workflowDataOperationSchema>> = ["read"];
   if (isReadOnlyActor(workflow.actor)) return operations;
+  if (isReadOnlyQueryWorkflow(workflow)) return operations;
   if (/\b(add|create|save|upload|record|schedule|start)\b/.test(text)) {
     operations.push("create");
   }
@@ -1746,16 +1770,36 @@ function mutationOperationFromText(
     return "delete";
   }
   if (
-    /\b(?:edit|update|change|rename|mark|toggle|complete|completed|incomplete|finish|move|assign)\b/.test(
+    /\b(?:add|create|new|upload|record|schedule|plan|start|generate)\b/.test(
+      normalized,
+    )
+  ) {
+    return "create";
+  }
+  if (
+    /\b(?:edit|edited|edits|update|updated|updates|change|changed|changes|rename|renamed|renames|mark|marked|marks|toggle|toggled|toggles|complete|completed|completes|incomplete|finish|finished|finishes|move|moved|moves|assign|assigned|assigns)\b/.test(
       normalized,
     )
   ) {
     return "update";
   }
-  if (/\b(?:add|create|new|save|upload|record|schedule|plan|start|generate)\b/.test(normalized)) {
+  if (/\b(?:save|saved|saves)\b/.test(normalized)) {
     return "create";
   }
   return undefined;
+}
+
+function isReadOnlyQueryWorkflow(
+  workflow: AppSpec["workflows"][number],
+): boolean {
+  if (!/^(?:browse|filter|find|read|restore|search|sort|view)\b/i.test(workflow.name.trim())) {
+    return false;
+  }
+  return !workflow.steps.some((step) =>
+    /^\s*(?:(?:the\s+)?(?:user|member|owner|editor|creator|admin)\s+)?(?:adds?|archives?|changes?|completes?|creates?|deletes?|edits?|finishes?|marks?|moves?|records?|removes?|renames?|saves?|schedules?|stores?|toggles?|updates?|uploads?)\b/i.test(
+      step,
+    ),
+  );
 }
 
 function selectMutationStepIndex(
@@ -1769,8 +1813,15 @@ function selectMutationStepIndex(
       const normalized = normalizeText(description);
       const describedOperation = mutationOperationFromText(description);
       let score = describedOperation === operation ? 100 : 0;
-      if (/\b(?:confirm|save|apply|finish)\b/.test(normalized)) score += 20;
-      if (isConceptualPersistenceDescription(description, operation)) score -= 80;
+      if (
+        score > 0 &&
+        /\b(?:choose|click|confirm|press|save|submit|apply|finish)\b/.test(
+          normalized,
+        )
+      ) {
+        score += 20;
+      }
+      if (isConceptualPersistenceDescription(description)) score -= 80;
       if (isAutomaticEffectDescription(description)) score -= 100;
       if (isVisibleOutcomeDescription(description)) score -= 200;
       return { index, score };
@@ -1903,6 +1954,13 @@ function inferStepKind(
 function isFieldInputDescription(value: string): boolean {
   if (
     /\b(enter|type|write|upload|attach|check|uncheck|toggle|drag|drop|change .*date)\b/.test(
+      value,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:change|edit|rename)\b[\s\S]*\b(?:name|title|text|description|notes?|value|field)\b/.test(
       value,
     )
   ) {
@@ -2117,6 +2175,7 @@ function contractPromisesPersistence(
   contract: WorkflowContract,
   workflow: AppSpec["workflows"][number] | undefined,
 ): boolean {
+  if (workflow && isReadOnlyQueryWorkflow(workflow)) return false;
   const declaresWrite =
     contract.steps.some(
       (step) => step.kind === "save" || step.writes.length > 0,
