@@ -6,8 +6,8 @@ import {
   type AppSpec,
 } from "./spec";
 
-export const WORKFLOW_CONTRACT_VERSION = 3 as const;
-export const LEGACY_WORKFLOW_CONTRACT_VERSIONS = [1, 2] as const;
+export const WORKFLOW_CONTRACT_VERSION = 4 as const;
+export const LEGACY_WORKFLOW_CONTRACT_VERSIONS = [1, 2, 3] as const;
 
 export const workflowContractRoleSchema = z.enum([
   "owner",
@@ -209,6 +209,7 @@ export type WorkflowContractStats = {
 };
 
 const WRITE_OPERATIONS = new Set(["create", "update", "delete"]);
+type WorkflowMutationOperation = "create" | "update" | "delete";
 const VAGUE_CONTROL_LABELS = new Set([
   "continue",
   "go",
@@ -254,7 +255,10 @@ export function ensureWorkflowContracts<T extends WorkflowContractArchitecture>(
       ? supplied.map((contract) => normalizeSuppliedContract(contract, spec))
       : compileWorkflowContracts(spec, approvedArchitecture);
   const interactionSafeContracts = contracts.map((contract) =>
-    normalizeContractInteractionSemantics(contract, approvedArchitecture),
+    normalizeContractInteractionSemantics(
+      normalizeContractMutationSemantics(contract, spec),
+      approvedArchitecture,
+    ),
   );
 
   return {
@@ -293,10 +297,12 @@ export function compileWorkflowContracts(
         entity.storage,
       ]),
     );
-    const saveOperation = operations.find((operation) =>
-      WRITE_OPERATIONS.has(operation),
-    ) as "create" | "update" | "delete" | undefined;
-    const saveStepId = `${id}-step-${Math.max(1, workflow.steps.length)}`;
+    const saveOperation = inferPrimaryMutationOperation(workflow);
+    const saveStepIndex = selectMutationStepIndex(
+      workflow.steps,
+      saveOperation,
+    );
+    const saveStepId = `${id}-step-${saveStepIndex + 1}`;
     const expectedSaves = saveOperation
       ? requiredData
           .filter(
@@ -324,7 +330,10 @@ export function compileWorkflowContracts(
         (candidate) => candidate.id === `${id}-control-${stepIndex + 1}`,
       );
       const isLast = stepIndex === workflow.steps.length - 1;
-      const kind = inferStepKind(description, isLast && expectedSaves.length > 0);
+      const kind = inferStepKind(
+        description,
+        stepIndex === saveStepIndex && expectedSaves.length > 0,
+      );
       return {
         id: `${id}-step-${stepIndex + 1}`,
         description,
@@ -348,8 +357,8 @@ export function compileWorkflowContracts(
         visibleResult: workflow.successOutcome,
       });
     } else if (expectedSaves.length > 0 && !steps.some((step) => step.kind === "save")) {
-      steps[steps.length - 1] = {
-        ...steps[steps.length - 1],
+      steps[saveStepIndex] = {
+        ...steps[saveStepIndex],
         kind: "save",
         writes: writeKeys,
       };
@@ -553,6 +562,28 @@ export function validateWorkflowContracts(
           `${label} promises a save, but its roles do not have write access.`,
         );
       }
+    }
+    const namedOperation = inferNamedMutationOperation(contract.name);
+    if (
+      namedOperation &&
+      contract.expectedSaves.some((save) => save.operation !== namedOperation)
+    ) {
+      blockingIssues.push(
+        `${label} promises ${namedOperation}, but its saved record transition declares a different operation.`,
+      );
+    }
+    const mutationControlIds = unique(
+      contract.steps.flatMap((step) =>
+        step.controlId &&
+        (step.kind === "save" || step.writes.length > 0)
+          ? [step.controlId]
+          : [],
+      ),
+    );
+    if (contract.expectedSaves.length > 0 && mutationControlIds.length > 1) {
+      blockingIssues.push(
+        `${label} exposes more than one persistence control for the same user intent: ${mutationControlIds.join(", ")}.`,
+      );
     }
 
     const sourceWorkflow = sourceWorkflows.get(normalizeText(contract.name));
@@ -898,6 +929,88 @@ function normalizeApprovedDataModel(
   });
 }
 
+/**
+ * Treat the workflow name as the authoritative user intent when an architect
+ * accidentally mixes persistence verbs. For example, "Delete item" may end
+ * with the implementation detail "save the updated list"; that is still one
+ * delete transition, never a create transition.
+ */
+function normalizeContractMutationSemantics(
+  contract: WorkflowContract,
+  spec: AppSpec,
+): WorkflowContract {
+  if (contract.expectedSaves.length === 0) return contract;
+  const sourceWorkflow = spec.workflows.find(
+    (workflow) =>
+      normalizeText(workflow.name) === normalizeText(contract.source.workflowName) ||
+      normalizeText(workflow.name) === normalizeText(contract.name),
+  );
+  const canonicalOperation =
+    inferNamedMutationOperation(contract.name) ??
+    (sourceWorkflow ? inferNamedMutationOperation(sourceWorkflow.name) : undefined);
+  const suppliedOperations = unique(
+    contract.expectedSaves.map((save) => save.operation),
+  );
+  if (!canonicalOperation || suppliedOperations.length > 1) return contract;
+
+  const saveStepIndex = selectMutationStepIndex(
+    contract.steps.map((step) => step.description),
+    canonicalOperation,
+  );
+  const saveStep = contract.steps[saveStepIndex];
+  if (!saveStep) return contract;
+  const savedEntityKeys = new Set(
+    contract.expectedSaves.map((save) => save.entityKey),
+  );
+  const priorSaveStepIds = new Set(
+    contract.expectedSaves.map((save) => save.stepId),
+  );
+  const expectedSaves = contract.expectedSaves.map((save) => ({
+    ...save,
+    operation: canonicalOperation,
+    stepId: saveStep.id,
+  }));
+
+  return {
+    ...contract,
+    steps: contract.steps.map((step) => {
+      const isCanonicalSave = step.id === saveStep.id;
+      const writes = unique([
+        ...step.writes.filter(
+          (entityKey) =>
+            !savedEntityKeys.has(entityKey) ||
+            isCanonicalSave ||
+            !priorSaveStepIds.has(step.id),
+        ),
+        ...(isCanonicalSave ? [...savedEntityKeys] : []),
+      ]);
+      return {
+        ...step,
+        kind: isCanonicalSave
+          ? "save"
+          : priorSaveStepIds.has(step.id) && writes.length === 0
+            ? normalizedStepKind({ ...step, writes })
+            : step.kind,
+        writes,
+      };
+    }),
+    requiredData: contract.requiredData.map((data) =>
+      savedEntityKeys.has(data.entityKey)
+        ? {
+            ...data,
+            operations: unique([
+              ...data.operations.filter(
+                (operation) => !WRITE_OPERATIONS.has(operation),
+              ),
+              canonicalOperation,
+            ]),
+          }
+        : data,
+    ),
+    expectedSaves,
+  };
+}
+
 function normalizeContractInteractionSemantics(
   contract: WorkflowContract,
   architecture: WorkflowContractArchitecture,
@@ -919,17 +1032,26 @@ function normalizeContractInteractionSemantics(
   const producedReferences = new Set(
     expectedSaves.map((save) => save.producedReference),
   );
+  const canonicalMutation = contract.expectedSaves[0]?.operation;
   let lastGestureControlId = "";
+  let hasMutationGesture = false;
   let steps = contract.steps.map((step) => {
     const writes = step.writes.filter((entityKey) =>
       persistentEntityKeys.has(entityKey),
     );
     let kind = normalizedStepKind({ ...step, writes });
+    const isConceptualPersistenceEffect =
+      hasMutationGesture &&
+      canonicalMutation !== undefined &&
+      isConceptualPersistenceDescription(step.description, canonicalMutation);
     const repeatsPriorGesture =
       Boolean(step.controlId) &&
       step.controlId === lastGestureControlId &&
       !isExplicitRepeatedGestureDescription(step.description);
-    if (repeatsPriorGesture && (kind === "action" || kind === "save")) {
+    if (
+      isConceptualPersistenceEffect ||
+      (repeatsPriorGesture && (kind === "action" || kind === "save"))
+    ) {
       kind = "automatic";
     } else if (
       step.controlId &&
@@ -939,6 +1061,13 @@ function normalizeContractInteractionSemantics(
         kind === "save")
     ) {
       lastGestureControlId = step.controlId;
+    }
+    if (
+      kind !== "automatic" &&
+      kind !== "result" &&
+      mutationOperationFromText(step.description) === canonicalMutation
+    ) {
+      hasMutationGesture = true;
     }
     return {
       ...step,
@@ -955,8 +1084,16 @@ function normalizeContractInteractionSemantics(
     .filter(
       (control) =>
         actionableControlIds.has(control.id) ||
-        isUserGestureDescription(control.accessibleName) ||
-        isUserGestureDescription(control.action),
+        control.id.endsWith("discoverability-control") ||
+        ((isUserGestureDescription(control.accessibleName) ||
+          isUserGestureDescription(control.action)) &&
+          !(
+            canonicalMutation &&
+            isConceptualPersistenceDescription(
+              `${control.accessibleName} ${control.action}`,
+              canonicalMutation,
+            )
+          )),
     )
     .map((control) => ({
       ...control,
@@ -1058,6 +1195,21 @@ function normalizeContractInteractionSemantics(
   };
 }
 
+function isConceptualPersistenceDescription(
+  value: string,
+  operation: WorkflowMutationOperation,
+): boolean {
+  const normalized = normalizeText(value);
+  const describedOperation = mutationOperationFromText(value);
+  if (describedOperation === operation) return false;
+  return (
+    /^(?:save|persist|store|write|update|refresh)\b/.test(normalized) &&
+    /\b(?:updated|changed|remaining|new|current|latest|list|record|records|data|state|storage)\b/.test(
+      normalized,
+    )
+  );
+}
+
 function isExplicitRepeatedGestureDescription(value: string): boolean {
   return (
     /^\s*(?:the\s+)?(?:user|player|rider|member|owner|editor|child|parent|guest|visitor|customer|student|teacher|participant|person)\s+(?:clicks?|taps?|presses?|chooses?|selects?|requests?|saves?|submits?)\b/i.test(
@@ -1151,6 +1303,10 @@ function isAutomaticEffectDescription(value: string): boolean {
 
 function isVisibleOutcomeDescription(value: string): boolean {
   return (
+    /^\s*see\b/i.test(value) ||
+    /^\s*(?:confirm|verify)\b[\s\S]*\b(?:remains?|persists?|appears?|absent|visible|after refresh)\b/i.test(
+      value,
+    ) ||
     /^\s*(?:the\s+)?(?:app|application|system|game|screen|page)\s+(?:shows?|displays?|renders?|presents?|provides?|reveals?)\b/i.test(
       value,
     ) ||
@@ -1546,6 +1702,84 @@ function inferOperations(
   return unique(operations);
 }
 
+function inferPrimaryMutationOperation(
+  workflow: AppSpec["workflows"][number],
+): WorkflowMutationOperation | undefined {
+  return (
+    inferNamedMutationOperation(workflow.name) ??
+    workflow.steps
+      .map(mutationOperationFromText)
+      .find((operation): operation is WorkflowMutationOperation => Boolean(operation)) ??
+    mutationOperationFromText(workflow.successOutcome)
+  );
+}
+
+function inferNamedMutationOperation(
+  value: string,
+): WorkflowMutationOperation | undefined {
+  const normalized = normalizeText(value);
+  if (/^(?:delete|remove|archive|clear|discard)\b/.test(normalized)) {
+    return "delete";
+  }
+  if (
+    /^(?:edit|update|change|rename|mark|toggle|complete|finish|move|assign)\b/.test(
+      normalized,
+    )
+  ) {
+    return "update";
+  }
+  if (
+    /^(?:add|create|new|save|upload|record|schedule|plan|start|generate)\b/.test(
+      normalized,
+    )
+  ) {
+    return "create";
+  }
+  return undefined;
+}
+
+function mutationOperationFromText(
+  value: string,
+): WorkflowMutationOperation | undefined {
+  const normalized = normalizeText(value);
+  if (/\b(?:delete|deletion|remove|removal|archive|clear|discard)\b/.test(normalized)) {
+    return "delete";
+  }
+  if (
+    /\b(?:edit|update|change|rename|mark|toggle|complete|completed|incomplete|finish|move|assign)\b/.test(
+      normalized,
+    )
+  ) {
+    return "update";
+  }
+  if (/\b(?:add|create|new|save|upload|record|schedule|plan|start|generate)\b/.test(normalized)) {
+    return "create";
+  }
+  return undefined;
+}
+
+function selectMutationStepIndex(
+  steps: readonly string[],
+  operation: WorkflowMutationOperation | undefined,
+): number {
+  if (steps.length === 0) return 0;
+  if (!operation) return steps.length - 1;
+  const ranked = steps
+    .map((description, index) => {
+      const normalized = normalizeText(description);
+      const describedOperation = mutationOperationFromText(description);
+      let score = describedOperation === operation ? 100 : 0;
+      if (/\b(?:confirm|save|apply|finish)\b/.test(normalized)) score += 20;
+      if (isConceptualPersistenceDescription(description, operation)) score -= 80;
+      if (isAutomaticEffectDescription(description)) score -= 100;
+      if (isVisibleOutcomeDescription(description)) score -= 200;
+      return { index, score };
+    })
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score || right.index - left.index);
+  return ranked[0]?.index ?? steps.length - 1;
+}
+
 function isReadOnlyActor(actor: string): boolean {
   const normalized = normalizeText(actor);
   const namesReadOnlyRole = /\b(viewer|observer|guest|read only|view only)\b/.test(
@@ -1616,8 +1850,8 @@ function inferControlKind(
   if (/upload|photo|image|attachment|file/.test(lower)) return "file";
   if (/drag|drop|move between/.test(lower)) return "drag_drop";
   if (/\b(date|day|time)\b/.test(lower)) return "date";
+  if (isFilterChoiceDescription(lower)) return "combobox";
   if (/check|toggle|complete/.test(lower)) return "checkbox";
-  if (isFilterChoiceDescription(lower)) return "button";
   if (/choose|select|pick/.test(lower) && isFieldInputDescription(lower)) {
     return "combobox";
   }
@@ -1635,10 +1869,10 @@ function normalizeControlKind(
   const linkedStep = steps.find((step) => step.controlId === control.id);
   if (
     linkedStep &&
-    control.kind === "textbox" &&
+    (control.kind === "textbox" || control.kind === "button") &&
     isFilterChoiceDescription(linkedStep.description)
   ) {
-    return "button";
+    return "combobox";
   }
   return control.kind;
 }

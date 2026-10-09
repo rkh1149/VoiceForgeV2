@@ -1105,10 +1105,45 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
 
     // 1. Assemble files: locked (always-fresh) template + app code.
     await log(buildRunId, "Loading app template…");
+    const requiredPlatformServices = new Set(
+      architectureForStorage.platformServices
+        .filter(
+          (service) =>
+            service.required && service.availability === "available",
+        )
+        .map((service) => service.service),
+    );
+    const dependencyProfiles = new Set(
+      architectureForStorage.dependencyProfile ?? [],
+    );
+    const needsFiles =
+      spec.fileRequirements.length > 0 || requiredPlatformServices.has("files");
+    const needsNotifications =
+      spec.notifications.length > 0 ||
+      requiredPlatformServices.has("email") ||
+      requiredPlatformServices.has("jobs");
+    const needsIntegrations = requiredPlatformServices.has("integrations");
     const files = await loadTemplate({
       slug: app.slug,
       name: app.name,
       purpose: spec.purpose,
+      capabilities: {
+        data:
+          usesPlatformData ||
+          needsFiles ||
+          needsNotifications ||
+          needsIntegrations,
+        files: needsFiles,
+        ai: spec.aiFeatures.length > 0 || requiredPlatformServices.has("ai"),
+        notifications: needsNotifications,
+        integrations: needsIntegrations,
+        deviceLocation: requiredPlatformServices.has("device_location"),
+        reusableComponents: dependencyProfiles.has("advancedInterface"),
+        utilityModules:
+          dependencyProfiles.has("dataDisplay") ||
+          dependencyProfiles.has("dateScheduling") ||
+          dependencyProfiles.has("fileExport"),
+      },
     });
 
     let generated: CodegenResult;

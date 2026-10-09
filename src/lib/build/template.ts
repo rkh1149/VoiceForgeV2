@@ -4,6 +4,17 @@ import path from "path";
 /** Repo-relative path -> file content. */
 export type FileMap = Record<string, string>;
 
+export type TemplateCapabilities = {
+  data: boolean;
+  files: boolean;
+  ai: boolean;
+  notifications: boolean;
+  integrations: boolean;
+  deviceLocation: boolean;
+  reusableComponents: boolean;
+  utilityModules: boolean;
+};
+
 const TEMPLATE_DIR = path.join(process.cwd(), "templates", "nextjs-base");
 
 export const TEMPLATE_MAX_FILE_COUNT = 500;
@@ -167,11 +178,15 @@ export async function loadTemplate(vars: {
   slug: string;
   name: string;
   purpose: string;
+  capabilities?: TemplateCapabilities;
 }): Promise<FileMap> {
   const paths = await listTemplateFiles();
   const map: FileMap = {};
   let sourceBytes = 0;
   for (const rel of paths) {
+    if (vars.capabilities && !templatePathEnabled(rel, vars.capabilities)) {
+      continue;
+    }
     const raw = await fs.readFile(path.join(TEMPLATE_DIR, rel), "utf8");
     sourceBytes += Buffer.byteLength(rel, "utf8") + Buffer.byteLength(raw, "utf8");
     if (sourceBytes > TEMPLATE_MAX_SOURCE_BYTES) {
@@ -186,6 +201,43 @@ export async function loadTemplate(vars: {
       .replaceAll("__APP_PURPOSE__", sanitize(vars.purpose));
   }
   return map;
+}
+
+function templatePathEnabled(
+  filePath: string,
+  capabilities: TemplateCapabilities,
+): boolean {
+  const capabilityFiles: Partial<Record<keyof TemplateCapabilities, string[]>> = {
+    data: [
+      "src/app/api/data/route.ts",
+      "src/lib/platform-data.ts",
+      "src/lib/platform-mutation-policy.ts",
+    ],
+    files: ["src/app/api/files/route.ts", "src/lib/platform-files.ts"],
+    ai: [
+      "src/app/api/ai/route.ts",
+      "src/lib/voiceforge-ai.ts",
+      "src/lib/voiceforge-ai.test.ts",
+    ],
+    notifications: [
+      "src/app/api/notifications/route.ts",
+      "src/lib/platform-notifications.ts",
+    ],
+    integrations: [
+      "src/app/api/integrations/route.ts",
+      "src/lib/platform-integrations.ts",
+      "src/components/voiceforge-google-map.tsx",
+    ],
+    deviceLocation: ["src/lib/device-location.ts"],
+    reusableComponents: ["src/components/voiceforge-reusable.tsx"],
+    utilityModules: ["src/lib/voiceforge-modules.ts"],
+  };
+  for (const [capability, files] of Object.entries(capabilityFiles) as Array<
+    [keyof TemplateCapabilities, string[]]
+  >) {
+    if (files.includes(filePath)) return capabilities[capability];
+  }
+  return true;
 }
 
 /** Refresh compatible locked test infrastructure in a durable source checkpoint. */

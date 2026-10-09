@@ -107,4 +107,29 @@ describe("template loader", () => {
     expect(files["e2e/smoke.spec.ts"]).toContain("html=${node.html.slice");
     expect(files["e2e/smoke.spec.ts"]).toContain("node.failureSummary");
   });
+
+  it("omits platform capabilities that a simple generated app explicitly does not use", async () => {
+    const files = await loadTemplate({
+      slug: "simple-browser-list",
+      name: "Simple Browser List",
+      purpose: "Store a short personal list in localStorage.",
+      capabilities: {
+        data: false,
+        files: false,
+        ai: false,
+        notifications: false,
+        integrations: false,
+        deviceLocation: false,
+        reusableComponents: false,
+        utilityModules: false,
+      },
+    });
+
+    expect(files["src/app/page.tsx"]).toBeDefined();
+    expect(files["e2e/smoke.spec.ts"]).toBeDefined();
+    expect(files["src/app/api/ai/route.ts"]).toBeUndefined();
+    expect(files["src/app/api/data/route.ts"]).toBeUndefined();
+    expect(files["src/components/voiceforge-reusable.tsx"]).toBeUndefined();
+    expect(files["src/lib/voiceforge-modules.ts"]).toBeUndefined();
+  });
 });

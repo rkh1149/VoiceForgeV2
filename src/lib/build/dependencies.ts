@@ -59,6 +59,7 @@ export const APPROVED_DEV_DEPENDENCIES: Record<string, string> = {
   "@eslint/eslintrc": "3.3.1",
   "@playwright/test": "1.61.1",
   "@tailwindcss/postcss": "4.3.0",
+  "@testing-library/dom": "10.4.1",
   "@testing-library/jest-dom": "6.9.1",
   "@testing-library/react": "16.3.2",
   "@types/node": "22.19.1",
@@ -150,6 +151,7 @@ const APPROVED_BARE_IMPORTS = new Set([
   ...Object.keys(APPROVED_RUNTIME_DEPENDENCIES),
   ...Object.keys(APPROVED_DEV_DEPENDENCIES),
 ]);
+const REQUIRED_RUNTIME_DEPENDENCIES = new Set(["next", "react", "react-dom"]);
 const NODE_BUILTIN_IMPORTS = new Set([
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
@@ -244,10 +246,20 @@ export function inferDependencyProfiles(spec: AppSpec): DependencyProfileId[] {
 export function validateGeneratedAppDependencies(files: FileMap): DependencyCheckResult {
   const problems: DependencyCheckProblem[] = [];
   const packageJson = files["package.json"];
+  let declaredPackages = new Set<string>();
   if (!packageJson) {
     problems.push({ path: "package.json", message: "package.json is missing." });
   } else {
     validatePackageJson(packageJson, problems);
+    try {
+      const parsed = JSON.parse(packageJson) as Record<string, unknown>;
+      declaredPackages = new Set([
+        ...Object.keys(dependencyRecord(parsed.dependencies)),
+        ...Object.keys(dependencyRecord(parsed.devDependencies)),
+      ]);
+    } catch {
+      // validatePackageJson reports the invalid manifest.
+    }
   }
 
   for (const [filePath, content] of Object.entries(files)) {
@@ -262,6 +274,14 @@ export function validateGeneratedAppDependencies(files: FileMap): DependencyChec
         problems.push({
           path: filePath,
           message: `Import "${specifier}" uses unapproved package "${packageName}".`,
+        });
+      } else if (
+        APPROVED_BARE_IMPORTS.has(packageName) &&
+        !declaredPackages.has(packageName)
+      ) {
+        problems.push({
+          path: filePath,
+          message: `Import "${specifier}" requires declared dependency "${packageName}".`,
         });
       }
     }
@@ -309,21 +329,32 @@ export function reconcileGeneratedAppDependencies(
 
   const beforeRuntime = dependencyRecord(parsed.dependencies);
   const beforeDev = dependencyRecord(parsed.devDependencies);
+  const importedPackages = importedApprovedPackages(files);
+  const desiredRuntime = sortRecord(
+    Object.fromEntries(
+      Object.entries(APPROVED_RUNTIME_DEPENDENCIES).filter(
+        ([name]) =>
+          REQUIRED_RUNTIME_DEPENDENCIES.has(name) || importedPackages.has(name),
+      ),
+    ),
+  );
+  const desiredDev = sortRecord(APPROVED_DEV_DEPENDENCIES);
   const added = [
-    ...missingDependencyNames(beforeRuntime, APPROVED_RUNTIME_DEPENDENCIES),
-    ...missingDependencyNames(beforeDev, APPROVED_DEV_DEPENDENCIES),
+    ...missingDependencyNames(beforeRuntime, desiredRuntime),
+    ...missingDependencyNames(beforeDev, desiredDev),
   ];
   const removed = [
     ...unapprovedDependencyNames(beforeRuntime, APPROVED_RUNTIME_DEPENDENCIES),
     ...unapprovedDependencyNames(beforeDev, APPROVED_DEV_DEPENDENCIES),
+    ...Object.keys(beforeRuntime).filter((name) => !(name in desiredRuntime)),
   ];
   const corrected = [
-    ...changedDependencyNames(beforeRuntime, APPROVED_RUNTIME_DEPENDENCIES),
-    ...changedDependencyNames(beforeDev, APPROVED_DEV_DEPENDENCIES),
+    ...changedDependencyNames(beforeRuntime, desiredRuntime),
+    ...changedDependencyNames(beforeDev, desiredDev),
   ];
 
-  parsed.dependencies = sortRecord(APPROVED_RUNTIME_DEPENDENCIES);
-  parsed.devDependencies = sortRecord(APPROVED_DEV_DEPENDENCIES);
+  parsed.dependencies = desiredRuntime;
+  parsed.devDependencies = desiredDev;
   const next = `${JSON.stringify(parsed, null, 2)}\n`;
   const changed = next !== content;
   if (changed) files["package.json"] = next;
@@ -381,12 +412,14 @@ function validatePackageJson(
     "dependencies",
     parsed.dependencies ?? {},
     APPROVED_RUNTIME_DEPENDENCIES,
+    REQUIRED_RUNTIME_DEPENDENCIES,
     problems,
   );
   compareDependencySection(
     "devDependencies",
     parsed.devDependencies ?? {},
     APPROVED_DEV_DEPENDENCIES,
+    new Set(Object.keys(APPROVED_DEV_DEPENDENCIES)),
     problems,
   );
 }
@@ -395,6 +428,7 @@ function compareDependencySection(
   sectionName: "dependencies" | "devDependencies",
   actual: Record<string, string>,
   expected: Record<string, string>,
+  required: Set<string>,
   problems: DependencyCheckProblem[],
 ): void {
   for (const [name, version] of Object.entries(actual)) {
@@ -411,6 +445,7 @@ function compareDependencySection(
     }
   }
   for (const [name, version] of Object.entries(expected)) {
+    if (!required.has(name)) continue;
     if (actual[name] !== version) {
       problems.push({
         path: "package.json",
@@ -418,6 +453,20 @@ function compareDependencySection(
       });
     }
   }
+}
+
+function importedApprovedPackages(files: FileMap): Set<string> {
+  const packages = new Set<string>();
+  for (const [filePath, content] of Object.entries(files)) {
+    if (!shouldScanImports(filePath)) continue;
+    for (const specifier of importSpecifiers(content)) {
+      const packageName = packageNameFromSpecifier(specifier);
+      if (packageName && APPROVED_BARE_IMPORTS.has(packageName)) {
+        packages.add(packageName);
+      }
+    }
+  }
+  return packages;
 }
 
 function importSpecifiers(content: string): string[] {

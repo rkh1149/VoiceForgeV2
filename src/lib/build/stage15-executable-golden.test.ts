@@ -3,6 +3,7 @@ import os from "os";
 import path from "path";
 import { describe, expect, it } from "vitest";
 import { STAGE15_BROWSER_GOLDEN_FILES } from "./fixtures/stage15-browser-golden";
+import { reconcileGeneratedAppDependencies } from "./dependencies";
 import { createRunner, type StepName } from "./runner";
 import { loadTemplate } from "./template";
 
@@ -19,8 +20,21 @@ describe("Stage 15 executable browser golden", () => {
           slug: "stage15-browser-golden",
           name: "Stage 15 Planning Board",
           purpose: "Exercise persistent generated-app workflows.",
+          capabilities: {
+            data: false,
+            files: false,
+            ai: false,
+            notifications: false,
+            integrations: false,
+            deviceLocation: false,
+            reusableComponents: false,
+            utilityModules: false,
+          },
         });
-        await runner.writeFiles({ ...files, ...STAGE15_BROWSER_GOLDEN_FILES });
+        const generatedFiles = { ...files, ...STAGE15_BROWSER_GOLDEN_FILES };
+        const reconciliation = reconcileGeneratedAppDependencies(generatedFiles);
+        expect(reconciliation.problems).toEqual([]);
+        await runner.writeFiles(generatedFiles);
         const steps: StepName[] = [
           "install",
           "typecheck",

@@ -255,7 +255,7 @@ describe("Stage 14I isolated acceptance compiler", () => {
       });
 
       expect.soft(compiled.blockingIssues, item.id).toEqual([]);
-      expect.soft(compiled.manifest.summary.journeys, item.id).toBe(
+      expect.soft(compiled.manifest.summary.journeys, item.id).toBeGreaterThanOrEqual(
         plan.journeys.length,
       );
       expect.soft(compiled.manifest.summary.steps, item.id).toBe(
@@ -270,7 +270,7 @@ describe("Stage 14I isolated acceptance compiler", () => {
       expect.soft(compiled.compiledSource, item.id).not.toMatch(
         /TODO|test\.skip|test\.fixme|placeholder assertion/i,
       );
-      for (const journey of plan.journeys) {
+      for (const journey of compiled.manifest.journeys) {
         expect
           .soft(
             occurrences(
@@ -280,6 +280,8 @@ describe("Stage 14I isolated acceptance compiler", () => {
             `${item.id}:${journey.id}`,
           )
           .toBe(1);
+      }
+      for (const journey of plan.journeys) {
         for (const step of journey.steps) {
           expect
             .soft(
@@ -369,9 +371,9 @@ describe("Stage 14I isolated acceptance compiler", () => {
     expect(adapter).toBeDefined();
     expect(unresolved.blockingIssues.join(" ")).toContain("is unresolved");
 
-    const adapterSource = `export const acceptanceAdapters = { ${JSON.stringify(
-      adapter.id,
-    )}: async () => {} };`;
+    const adapterSource = `export const acceptanceAdapters = { ${unresolved.manifest.adapters
+      .map((candidate) => `${JSON.stringify(candidate.id)}: async () => {}`)
+      .join(", ")} };`;
     const resolved = compileAcceptanceTests({
       ...input,
       existingAdapterSource: adapterSource,
@@ -423,7 +425,7 @@ describe("Stage 14I isolated acceptance compiler", () => {
       ACCEPTANCE_MANIFEST_SOURCE_PATH,
       ACCEPTANCE_COMPILED_SPEC_PATH,
     ]);
-    expect(files[ACCEPTANCE_MANIFEST_SOURCE_PATH]).toContain('"version": 4');
+    expect(files[ACCEPTANCE_MANIFEST_SOURCE_PATH]).toContain('"version": 5');
     expect(files[ACCEPTANCE_COMPILED_SPEC_PATH]).toContain(
       "VoiceForge compiled workflow acceptance",
     );
@@ -795,6 +797,61 @@ describe("Stage 14I isolated acceptance compiler", () => {
       expectedPresence: false,
     });
     expect(compiled.compiledSource).toContain(".not.toContainText(");
+  });
+
+  it("compiles the simple CRUD delete workflow as present to absent", () => {
+    const input = golden("simple-local-storage");
+    const remove = input.architecture.workflowContracts.find(
+      (contract) => contract.name === "Delete item",
+    );
+    if (!remove) throw new Error("Delete item workflow missing");
+
+    const compiled = compileAcceptanceTests(input);
+    const removeSave = compiled.manifest.journeys
+      .flatMap((journey) => journey.saves)
+      .find((save) => save.workflowId === remove.id);
+    const removeStep = compiled.manifest.journeys
+      .flatMap((journey) => journey.steps)
+      .find(
+        (step) =>
+          step.workflowId === remove.id && step.contractStepId === removeSave?.stepId,
+      );
+
+    expect(removeSave).toMatchObject({
+      operation: "delete",
+      expectedPresence: false,
+    });
+    expect(removeStep).toMatchObject({
+      expectedPresence: false,
+      control: expect.objectContaining({
+        accessibleName: expect.stringContaining("Delete"),
+      }),
+      effect: {
+        operation: "delete",
+        precondition: "present",
+        postcondition: "absent",
+      },
+    });
+    expect(compiled.compiledSource).toContain(".not.toContainText(");
+  });
+
+  it("uses a distinct edit value and an explicit finite filter choice", () => {
+    const input = golden("simple-local-storage");
+    const compiled = compileAcceptanceTests(input);
+    const steps = compiled.manifest.journeys.flatMap((journey) => journey.steps);
+    const editInput = steps.find(
+      (step) =>
+        step.workflowId.includes("edit-item") && step.primitive === "fill",
+    );
+    const filterChoice = steps.find(
+      (step) =>
+        step.workflowId.includes("filter-items") && step.primitive === "select",
+    );
+
+    expect(editInput?.interactionTransform).toBe("append_updated");
+    expect(filterChoice?.interactionValue).toBe("Active");
+    expect(compiled.compiledSource).toContain('+ " updated"');
+    expect(compiled.compiledSource).toContain('selectAcceptanceOption(control, "Active")');
   });
 
   it("uses the entity named by a dashboard result for page-level assertions", () => {
@@ -1471,8 +1528,18 @@ function relationJourneyInput() {
 
 function splitJourneyInput() {
   const input = golden("simple-local-storage");
-  const template = input.architecture.workflowContracts[0];
+  const template = structuredClone(input.architecture.workflowContracts[0]);
   if (!template) throw new Error("Golden contract missing");
+  const saveStepId = template.expectedSaves[0]?.stepId;
+  template.steps = template.steps.filter(
+    (step, index) => index === 0 || step.id === saveStepId || step.kind === "result",
+  );
+  const retainedControlIds = new Set(
+    template.steps.map((step) => step.controlId).filter(Boolean),
+  );
+  template.controls = template.controls.filter((control) =>
+    retainedControlIds.has(control.id),
+  );
   const contracts = Array.from({ length: 4 }, (_, index) => {
     const contract = structuredClone(template);
     const number = index + 1;

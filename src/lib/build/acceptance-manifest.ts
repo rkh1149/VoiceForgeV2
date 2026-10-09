@@ -9,8 +9,8 @@ import {
   type WorkflowAcceptanceStep,
 } from "./workflow-acceptance-plan";
 
-export const ACCEPTANCE_MANIFEST_VERSION = 4 as const;
-export const ACCEPTANCE_COMPILER_VERSION = 5 as const;
+export const ACCEPTANCE_MANIFEST_VERSION = 5 as const;
+export const ACCEPTANCE_COMPILER_VERSION = 6 as const;
 
 export type AcceptanceLocatorMode = "contract" | "accessible_name_fallback";
 
@@ -75,15 +75,23 @@ export type AcceptanceManifestStep = {
   control: AcceptanceManifestControl | null;
   fixtureIds: string[];
   interactionValue: unknown;
+  interactionTransform: "none" | "append_updated";
   expectedText: string;
   assertionFixtureId: string | null;
   assertionText: string;
+  assertionTransform: "none" | "append_updated";
   assertionScope: {
     entityKey: string;
     fixtureId: string;
   } | null;
   expectedRoute: string;
   expectedPresence: boolean;
+  effect: {
+    operation: "none" | "read" | "create" | "update" | "delete";
+    precondition: "any" | "present" | "absent";
+    postcondition: "unchanged" | "present" | "updated" | "absent";
+    entityKeys: string[];
+  };
   adapterId: string | null;
 };
 
@@ -430,6 +438,11 @@ export function validateAcceptanceTestManifest(input: {
   const adapterIds = input.manifest.adapters.map((adapter) => adapter.id);
   for (const journey of input.manifest.journeys) {
     for (const step of journey.steps) {
+      const plannedSave = journey.saves.find(
+        (save) =>
+          save.workflowId === step.workflowId &&
+          save.stepId === step.contractStepId,
+      );
       if (step.primitive === "adapter" && !step.adapterId) {
         blockingIssues.push(
           `acceptance_compiler: Adapter step ${step.workflowId}/${step.contractStepId} has no adapter id.`,
@@ -446,6 +459,27 @@ export function validateAcceptanceTestManifest(input: {
       if (step.control && !step.control.controlId) {
         blockingIssues.push(
           `acceptance_compiler: Step ${step.workflowId}/${step.contractStepId} has an empty stable control id.`,
+        );
+      }
+      if (plannedSave && step.effect.operation !== plannedSave.operation) {
+        blockingIssues.push(
+          `acceptance_compiler: Step ${step.workflowId}/${step.contractStepId} declares ${step.effect.operation} but its save contract requires ${plannedSave.operation}.`,
+        );
+      }
+      if (
+        step.effect.operation === "delete" &&
+        (step.effect.postcondition !== "absent" || step.expectedPresence)
+      ) {
+        blockingIssues.push(
+          `acceptance_compiler: Delete step ${step.workflowId}/${step.contractStepId} must assert that the affected record is absent.`,
+        );
+      }
+      if (
+        step.effect.operation === "create" &&
+        step.effect.postcondition !== "present"
+      ) {
+        blockingIssues.push(
+          `acceptance_compiler: Create step ${step.workflowId}/${step.contractStepId} must assert that the affected record is present.`,
         );
       }
     }
@@ -553,6 +587,9 @@ function manifestStep(input: {
     success?.visibleResult ||
     fixtureText(fixtures[0]);
   const interactionValue = interactionValueForStep(input.step, fixtures);
+  const workflowSave = input.journey.saves.find(
+    (save) => save.workflowId === input.step.workflowId,
+  );
   const deleteStep = input.journey.saves.some(
     (save) =>
       save.workflowId === input.step.workflowId &&
@@ -580,6 +617,40 @@ function manifestStep(input: {
         return saveStepIndex >= 0 && saveStepIndex <= currentStepIndex;
       }),
   );
+  const matchingSave = input.journey.saves.find(
+    (save) =>
+      save.workflowId === input.step.workflowId &&
+      save.stepId === input.step.contractStepId,
+  );
+  const priorSave = input.journey.saves
+    .filter((save) => save.workflowId === input.step.workflowId)
+    .map((save) => ({
+      save,
+      index: input.journey.steps.findIndex(
+        (candidate) =>
+          candidate.workflowId === save.workflowId &&
+          candidate.contractStepId === save.stepId,
+      ),
+    }))
+    .filter(
+      (candidate) =>
+        candidate.index >= 0 && candidate.index <= currentStepIndex,
+    )
+    .sort((left, right) => right.index - left.index)[0]?.save;
+  const effectOperation =
+    matchingSave?.operation ??
+    ((input.step.kind === "result" || input.step.kind === "automatic") && priorSave
+      ? priorSave.operation
+      : input.step.reads.length > 0
+        ? "read"
+        : "none");
+  const effect = workflowEffect(effectOperation, [
+    ...input.step.writes,
+    ...(matchingSave ? [matchingSave.entityKey] : []),
+  ]);
+  const updateOccurred =
+    workflowSave?.operation === "update" &&
+    priorSave?.operation === "update";
   const adapterId =
     primitive === "adapter"
       ? `adapter-${slugify(input.journey.id)}-${slugify(input.step.workflowId)}-${slugify(input.step.contractStepId)}`
@@ -610,18 +681,63 @@ function manifestStep(input: {
       : null,
     fixtureIds: fixtures.map((fixture) => fixture.id),
     interactionValue,
+    interactionTransform:
+      workflowSave?.operation === "update" && input.step.kind === "input"
+        ? "append_updated"
+        : "none",
     expectedText,
     assertionFixtureId: assertionFixture?.id ?? null,
     assertionText: conciseStateText(input.step, input.fixtureByEntity),
-    assertionScope: assertionFixture && input.step.controlId
+    assertionTransform: updateOccurred ? "append_updated" : "none",
+    assertionScope: assertionFixture && input.step.controlId && !updateOccurred
       ? {
           entityKey: assertionFixture.entityKey,
           fixtureId: assertionFixture.id,
         }
       : null,
     expectedRoute: input.step.route,
-    expectedPresence: !deleteStep && !deletedBeforeOrAtStep,
+    expectedPresence:
+      effect.postcondition !== "absent" &&
+      !deleteStep &&
+      !deletedBeforeOrAtStep,
+    effect,
     adapterId,
+  };
+}
+
+function workflowEffect(
+  operation: AcceptanceManifestStep["effect"]["operation"],
+  entityKeys: string[],
+): AcceptanceManifestStep["effect"] {
+  if (operation === "create") {
+    return {
+      operation,
+      precondition: "absent",
+      postcondition: "present",
+      entityKeys: uniqueStrings(entityKeys),
+    };
+  }
+  if (operation === "update") {
+    return {
+      operation,
+      precondition: "present",
+      postcondition: "updated",
+      entityKeys: uniqueStrings(entityKeys),
+    };
+  }
+  if (operation === "delete") {
+    return {
+      operation,
+      precondition: "present",
+      postcondition: "absent",
+      entityKeys: uniqueStrings(entityKeys),
+    };
+  }
+  return {
+    operation,
+    precondition: "any",
+    postcondition: "unchanged",
+    entityKeys: uniqueStrings(entityKeys),
   };
 }
 
@@ -629,10 +745,20 @@ function interactionValueForStep(
   step: WorkflowAcceptanceStep,
   fixtures: AcceptanceManifestFixture[],
 ): unknown {
-  if (fixtures.length > 0) return fixtures[0].value;
   const identity = normalizedPhrase(
     `${step.controlId} ${step.accessibleName} ${step.description}`,
   );
+  if (
+    (step.controlKind === "combobox" ||
+      step.controlKind === "radio" ||
+      step.controlKind === "menu") &&
+    /\bfilter\b/.test(identity)
+  ) {
+    if (/\bactive\b/.test(identity)) return "Active";
+    if (/\bcompleted\b/.test(identity)) return "Completed";
+    return "All";
+  }
+  if (fixtures.length > 0) return fixtures[0].value;
   if (/\b(date|day)\b/.test(identity)) return "2030-06-15";
   if (/\b(email)\b/.test(identity)) return "voiceforge@example.test";
   if (/\b(phone|telephone)\b/.test(identity)) return "555-0100";

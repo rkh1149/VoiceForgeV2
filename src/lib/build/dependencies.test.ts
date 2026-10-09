@@ -15,6 +15,7 @@ const basePackageJson = JSON.stringify({
     "@eslint/eslintrc": "3.3.1",
     "@playwright/test": "1.61.1",
     "@tailwindcss/postcss": "4.3.0",
+    "@testing-library/dom": "10.4.1",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.2",
     "@types/node": "22.19.1",
@@ -79,7 +80,7 @@ export default function Page() { return <Calendar aria-label="Calendar" />; }`,
     ).toBe(true);
   });
 
-  it("deterministically restores the approved package catalogue before install", () => {
+  it("deterministically restores only approved packages used by the generated app", () => {
     const files = {
       "package.json": JSON.stringify({
         name: "family-recipe-library",
@@ -87,6 +88,7 @@ export default function Page() { return <Calendar aria-label="Calendar" />; }`,
         dependencies: { next: "0.0.1", axios: "1.0.0" },
         devDependencies: {},
       }),
+      "src/app/page.tsx": 'import { z } from "zod"; export default function Page() { return String(z.string()); }',
     };
 
     const result = reconcileGeneratedAppDependencies(files);
@@ -98,9 +100,15 @@ export default function Page() { return <Calendar aria-label="Calendar" />; }`,
     expect(result.changed).toBe(true);
     expect(result.removed).toContain("axios");
     expect(result.corrected).toContain("next");
-    expect(result.added).toContain("utif");
+    expect(result.added).toContain("react");
+    expect(result.added).not.toContain("utif");
     expect(manifest.name).toBe("family-recipe-library");
-    expect(manifest.dependencies).toEqual(APPROVED_RUNTIME_DEPENDENCIES);
+    expect(manifest.dependencies).toEqual({
+      next: APPROVED_RUNTIME_DEPENDENCIES.next,
+      react: APPROVED_RUNTIME_DEPENDENCIES.react,
+      "react-dom": APPROVED_RUNTIME_DEPENDENCIES["react-dom"],
+      zod: APPROVED_RUNTIME_DEPENDENCIES.zod,
+    });
     expect(validateGeneratedAppDependencies(files).ok).toBe(true);
   });
 

@@ -267,7 +267,7 @@ describe("workflow contract layer", () => {
     expect(validation.blockingIssues).toEqual([]);
   });
 
-  it("models a finite filter choice as one button and its display effect as automatic", () => {
+  it("models a finite filter choice as one explicit selector and its display effect as automatic", () => {
     const spec = normalizeAppSpec({
       ...personalInput,
       appName: "My Quick List",
@@ -321,7 +321,7 @@ describe("workflow contract layer", () => {
 
     expect(filter.controls).toEqual([
       expect.objectContaining({
-        kind: "button",
+        kind: "combobox",
         accessibleName: "Choose a filter.",
       }),
     ]);
@@ -347,7 +347,7 @@ describe("workflow contract layer", () => {
     const migrated = ensureWorkflowContracts(spec, legacy);
     expect(migrated.workflowContractVersion).toBe(WORKFLOW_CONTRACT_VERSION);
     expect(migrated.workflowContracts[0].controls).toEqual([
-      expect.objectContaining({ kind: "button" }),
+      expect.objectContaining({ kind: "combobox" }),
     ]);
     expect(migrated.workflowContracts[0].steps[1]).toMatchObject({
       kind: "result",
@@ -797,7 +797,7 @@ describe("workflow contract layer", () => {
     expect(validation.blockingIssues).toEqual([]);
   });
 
-  it("removes downstream handoffs from deleted records", () => {
+  it("corrects a delete workflow misclassified as create and removes its handoffs", () => {
     const spec = bikeSpec();
     const supplied = createFallbackArchitecturePlan(
       spec,
@@ -807,8 +807,8 @@ describe("workflow contract layer", () => {
     const consumer = supplied.workflowContracts[1];
     const save = producer.expectedSaves[0];
     if (!save || !consumer) throw new Error("Missing handoff fixtures");
-    save.operation = "delete";
-    producer.requiredData[0].operations = ["read", "delete"];
+    producer.name = "Delete saved route";
+    producer.source.workflowName = "Delete saved route";
     producer.steps = producer.steps.map((step) => ({
       ...step,
       writes: step.id === save.stepId ? [save.entityKey] : step.writes,
@@ -831,6 +831,9 @@ describe("workflow contract layer", () => {
       (contract) => contract.id === producer.id,
     );
 
+    expect(normalizedProducer?.expectedSaves[0]?.operation).toBe("delete");
+    expect(normalizedProducer?.requiredData[0]?.operations).toContain("delete");
+    expect(normalizedProducer?.requiredData[0]?.operations).not.toContain("create");
     expect(normalizedProducer?.handoffs).toEqual([]);
   });
 

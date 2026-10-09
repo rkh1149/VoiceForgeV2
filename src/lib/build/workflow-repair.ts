@@ -464,6 +464,20 @@ export function classifyWorkflowRepairFailure(input: {
       "The failure reports an external provider or quota response; generated source should remain unchanged.",
     );
   }
+  if (
+    input.failedStep === "e2e" &&
+    /e2e\/generated\/voiceforge-compiled\.spec\.ts/i.test(text) &&
+    /\b(?:delete|deleted|remove|removed|archive|archived)\b/i.test(text) &&
+    /\b(?:tobevisible|expected.*visible|locator.*not found|received.*0)\b/i.test(text)
+  ) {
+    return result(
+      "generated_test_defect",
+      "contradictory_destructive_postcondition",
+      "generated_test",
+      "high",
+      "The deterministic journey expected a destructively changed record to remain visible. This is a compiler postcondition defect, so application source must remain protected.",
+    );
+  }
   if (input.failedStep === "e2e" && input.browserEvidence) {
     const evidence = input.browserEvidence;
     if (evidence.likelySurface === "external_environment") {

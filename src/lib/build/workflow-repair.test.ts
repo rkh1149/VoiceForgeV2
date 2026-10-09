@@ -434,6 +434,25 @@ describe("workflow-aware repairs", () => {
     expect(repair.scope.mutationPaths).not.toContain("src/app/gps/page.tsx");
   });
 
+  it("protects app source when the deterministic compiler expects a deleted record to stay visible", () => {
+    const classification = classifyWorkflowRepairFailure({
+      failedStep: "e2e",
+      errorOutput: [
+        "e2e/generated/voiceforge-compiled.spec.ts:368",
+        "Delete item: click Remove the item from the list",
+        "expect(locator).toBeVisible() failed because the deleted record was not found",
+      ].join("\n"),
+      hasGeneratedJourney: true,
+    });
+
+    expect(classification).toMatchObject({
+      category: "generated_test_defect",
+      subtype: "contradictory_destructive_postcondition",
+      targetSurface: "generated_test",
+      confidence: "high",
+    });
+  });
+
   it("keeps a save-triggered navigation timeout in joint application/test diagnosis", () => {
     const repair = createWorkflowRepairPackage({
       spec,

@@ -940,8 +940,19 @@ function compileStep(
   const fixtures = step.fixtureIds
     .map((id) => fixtureNames.get(id))
     .filter((value): value is string => Boolean(value));
-  const primaryFixture =
-    fixtures[0] ?? JSON.stringify(step.interactionValue);
+  const primaryFixtureDefinition = step.fixtureIds[0]
+    ? journey.fixtures.find((fixture) => fixture.id === step.fixtureIds[0])
+    : undefined;
+  const hasExplicitInteractionValue =
+    primaryFixtureDefinition !== undefined &&
+    JSON.stringify(primaryFixtureDefinition.value) !==
+      JSON.stringify(step.interactionValue);
+  const primaryFixture = transformedValueExpression(
+    hasExplicitInteractionValue
+      ? JSON.stringify(step.interactionValue)
+      : fixtures[0] ?? JSON.stringify(step.interactionValue),
+    step.interactionTransform,
+  );
   let action: string;
   switch (step.primitive) {
     case "navigate":
@@ -1067,7 +1078,9 @@ function assertionForStep(
     : null;
   const expected = step.assertionText
     ? JSON.stringify(step.assertionText)
-    : assertionFixture;
+    : assertionFixture
+      ? transformedValueExpression(assertionFixture, step.assertionTransform)
+      : null;
   if (step.assertionScope) {
     const scopeFixture =
       fixtureNames.get(step.assertionScope.fixtureId) ?? JSON.stringify("");
@@ -1084,6 +1097,15 @@ function assertionForStep(
   return step.expectedPresence
     ? `await expect(page.locator("body")).toContainText(${expected});`
     : `await expect(page.locator("body")).not.toContainText(${expected});`;
+}
+
+function transformedValueExpression(
+  expression: string,
+  transform: AcceptanceManifestStep["interactionTransform"],
+): string {
+  return transform === "append_updated"
+    ? `String(${expression}) + " updated"`
+    : expression;
 }
 
 function fixtureArray(
