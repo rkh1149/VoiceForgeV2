@@ -75,13 +75,36 @@ const PROTECTED_FILES = new Set([
   "e2e/generated/voiceforge-compiled.spec.ts", // deterministic Stage 14I Playwright output
 ]);
 
+const CAPABILITY_FILES: Record<keyof TemplateCapabilities, string[]> = {
+  data: [
+    "src/app/api/data/route.ts",
+    "src/lib/platform-data.ts",
+    "src/lib/platform-mutation-policy.ts",
+  ],
+  files: ["src/app/api/files/route.ts", "src/lib/platform-files.ts"],
+  ai: [
+    "src/app/api/ai/route.ts",
+    "src/lib/voiceforge-ai.ts",
+    "src/lib/voiceforge-ai.test.ts",
+  ],
+  notifications: [
+    "src/app/api/notifications/route.ts",
+    "src/lib/platform-notifications.ts",
+  ],
+  integrations: [
+    "src/app/api/integrations/route.ts",
+    "src/lib/platform-integrations.ts",
+    "src/components/voiceforge-google-map.tsx",
+  ],
+  deviceLocation: ["src/lib/device-location.ts"],
+  reusableComponents: ["src/components/voiceforge-reusable.tsx"],
+  utilityModules: ["src/lib/voiceforge-modules.ts"],
+};
+
 const RESUME_REFRESHED_TEMPLATE_FILES = [
   "package.json",
   "package-lock.json",
-  "src/lib/platform-data.ts",
-  "src/lib/voiceforge-ai.ts",
-  "src/lib/voiceforge-ai.test.ts",
-  "src/app/api/data/route.ts",
+  ...Object.values(CAPABILITY_FILES).flat(),
   "e2e/smoke.spec.ts",
   "e2e/voiceforge-acceptance.ts",
   "e2e/voiceforge-progress-reporter.ts",
@@ -207,32 +230,7 @@ function templatePathEnabled(
   filePath: string,
   capabilities: TemplateCapabilities,
 ): boolean {
-  const capabilityFiles: Partial<Record<keyof TemplateCapabilities, string[]>> = {
-    data: [
-      "src/app/api/data/route.ts",
-      "src/lib/platform-data.ts",
-      "src/lib/platform-mutation-policy.ts",
-    ],
-    files: ["src/app/api/files/route.ts", "src/lib/platform-files.ts"],
-    ai: [
-      "src/app/api/ai/route.ts",
-      "src/lib/voiceforge-ai.ts",
-      "src/lib/voiceforge-ai.test.ts",
-    ],
-    notifications: [
-      "src/app/api/notifications/route.ts",
-      "src/lib/platform-notifications.ts",
-    ],
-    integrations: [
-      "src/app/api/integrations/route.ts",
-      "src/lib/platform-integrations.ts",
-      "src/components/voiceforge-google-map.tsx",
-    ],
-    deviceLocation: ["src/lib/device-location.ts"],
-    reusableComponents: ["src/components/voiceforge-reusable.tsx"],
-    utilityModules: ["src/lib/voiceforge-modules.ts"],
-  };
-  for (const [capability, files] of Object.entries(capabilityFiles) as Array<
+  for (const [capability, files] of Object.entries(CAPABILITY_FILES) as Array<
     [keyof TemplateCapabilities, string[]]
   >) {
     if (files.includes(filePath)) return capabilities[capability];
@@ -243,13 +241,24 @@ function templatePathEnabled(
 /** Refresh compatible locked test infrastructure in a durable source checkpoint. */
 export async function refreshResumedTemplateFiles(
   files: FileMap,
-  vars: { slug: string; name: string; purpose: string },
+  vars: {
+    slug: string;
+    name: string;
+    purpose: string;
+    capabilities: TemplateCapabilities;
+  },
 ): Promise<string[]> {
   const template = await loadTemplate(vars);
   const refreshed: string[] = [];
   for (const filePath of RESUME_REFRESHED_TEMPLATE_FILES) {
     const current = template[filePath];
-    if (current === undefined || files[filePath] === current) continue;
+    if (current === undefined) {
+      if (!(filePath in files)) continue;
+      delete files[filePath];
+      refreshed.push(filePath);
+      continue;
+    }
+    if (files[filePath] === current) continue;
     files[filePath] = current;
     refreshed.push(filePath);
   }

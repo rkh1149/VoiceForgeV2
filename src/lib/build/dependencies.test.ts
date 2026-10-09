@@ -88,6 +88,21 @@ export default function Page() { return <Calendar aria-label="Calendar" />; }`,
         dependencies: { next: "0.0.1", axios: "1.0.0" },
         devDependencies: {},
       }),
+      "package-lock.json": JSON.stringify({
+        name: "family-recipe-library",
+        lockfileVersion: 3,
+        packages: {
+          "": {
+            dependencies: { next: "0.0.1", axios: "1.0.0" },
+            devDependencies: {},
+          },
+          "node_modules/next": { version: APPROVED_RUNTIME_DEPENDENCIES.next },
+          "node_modules/react": { version: APPROVED_RUNTIME_DEPENDENCIES.react },
+          "node_modules/react-dom": { version: APPROVED_RUNTIME_DEPENDENCIES["react-dom"] },
+          "node_modules/zod": { version: APPROVED_RUNTIME_DEPENDENCIES.zod },
+          "node_modules/axios": { version: "1.0.0" },
+        },
+      }),
       "src/app/page.tsx": 'import { z } from "zod"; export default function Page() { return String(z.string()); }',
     };
 
@@ -109,6 +124,11 @@ export default function Page() { return <Calendar aria-label="Calendar" />; }`,
       "react-dom": APPROVED_RUNTIME_DEPENDENCIES["react-dom"],
       zod: APPROVED_RUNTIME_DEPENDENCIES.zod,
     });
+    const lock = JSON.parse(files["package-lock.json"]) as {
+      packages: Record<string, { dependencies?: Record<string, string> }>;
+    };
+    expect(lock.packages[""].dependencies).toEqual(manifest.dependencies);
+    expect(lock.packages["node_modules/axios"]).toBeUndefined();
     expect(validateGeneratedAppDependencies(files).ok).toBe(true);
   });
 

@@ -48,29 +48,38 @@ describe("template loader", () => {
       "src/app/page.tsx": "generated app source",
     };
 
-    await expect(
-      refreshResumedTemplateFiles(files, {
+    const refreshed = await refreshResumedTemplateFiles(files, {
         slug: "lending-tracker",
         name: "Lending Tracker",
         purpose: "Track shared equipment",
-      }),
-    ).resolves.toEqual([
-      "package.json",
-      "package-lock.json",
-      "src/lib/platform-data.ts",
-      "src/lib/voiceforge-ai.ts",
-      "src/lib/voiceforge-ai.test.ts",
-      "src/app/api/data/route.ts",
-      "e2e/smoke.spec.ts",
-      "e2e/voiceforge-acceptance.ts",
-      "e2e/voiceforge-progress-reporter.ts",
-      "e2e/voiceforge-isolation-runner.mjs",
-      "playwright.config.ts",
-    ]);
+        capabilities: {
+          data: true,
+          files: false,
+          ai: false,
+          notifications: false,
+          integrations: false,
+          deviceLocation: false,
+          reusableComponents: false,
+          utilityModules: false,
+        },
+      });
+    expect(refreshed).toEqual(
+      expect.arrayContaining([
+        "package.json",
+        "package-lock.json",
+        "src/lib/platform-data.ts",
+        "src/app/api/data/route.ts",
+        "e2e/smoke.spec.ts",
+        "e2e/voiceforge-acceptance.ts",
+        "e2e/voiceforge-progress-reporter.ts",
+        "e2e/voiceforge-isolation-runner.mjs",
+        "playwright.config.ts",
+      ]),
+    );
     expect(files["src/lib/platform-data.ts"]).toContain(
       "data: Partial<TData>",
     );
-    expect(files["src/lib/voiceforge-ai.ts"]).toContain("parseStructuredAiText");
+    expect(files["src/lib/voiceforge-ai.ts"]).toBeUndefined();
     expect(files["src/app/api/data/route.ts"]).toContain(
       "mergeLocalRecordUpdate(record.data, body.data)",
     );

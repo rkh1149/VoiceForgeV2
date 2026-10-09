@@ -36,6 +36,10 @@ import {
   generatePlatformDataStarterApp,
 } from "@/lib/agents/platform-data-starter";
 import {
+  canUseSimpleLocalStorageStarter,
+  generateSimpleLocalStorageStarterApp,
+} from "@/lib/agents/simple-local-storage-starter";
+import {
   createRepoIfMissing,
   createBranch,
   commitFiles,
@@ -118,6 +122,7 @@ import {
   refreshResumedTemplateFiles,
   type FileMap,
 } from "./template";
+import { buildTemplateCapabilities } from "./template-capabilities";
 import { createRunner, type Runner, type StepName } from "./runner";
 import {
   ensureWorkflowContracts,
@@ -1105,45 +1110,11 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
 
     // 1. Assemble files: locked (always-fresh) template + app code.
     await log(buildRunId, "Loading app template…");
-    const requiredPlatformServices = new Set(
-      architectureForStorage.platformServices
-        .filter(
-          (service) =>
-            service.required && service.availability === "available",
-        )
-        .map((service) => service.service),
-    );
-    const dependencyProfiles = new Set(
-      architectureForStorage.dependencyProfile ?? [],
-    );
-    const needsFiles =
-      spec.fileRequirements.length > 0 || requiredPlatformServices.has("files");
-    const needsNotifications =
-      spec.notifications.length > 0 ||
-      requiredPlatformServices.has("email") ||
-      requiredPlatformServices.has("jobs");
-    const needsIntegrations = requiredPlatformServices.has("integrations");
     const files = await loadTemplate({
       slug: app.slug,
       name: app.name,
       purpose: spec.purpose,
-      capabilities: {
-        data:
-          usesPlatformData ||
-          needsFiles ||
-          needsNotifications ||
-          needsIntegrations,
-        files: needsFiles,
-        ai: spec.aiFeatures.length > 0 || requiredPlatformServices.has("ai"),
-        notifications: needsNotifications,
-        integrations: needsIntegrations,
-        deviceLocation: requiredPlatformServices.has("device_location"),
-        reusableComponents: dependencyProfiles.has("advancedInterface"),
-        utilityModules:
-          dependencyProfiles.has("dataDisplay") ||
-          dependencyProfiles.has("dateScheduling") ||
-          dependencyProfiles.has("fileExport"),
-      },
+      capabilities: buildTemplateCapabilities(spec, architectureForStorage),
     });
 
     let generated: CodegenResult;
@@ -1211,6 +1182,20 @@ export async function startBuildPipeline(buildRunId: string): Promise<void> {
     } else {
       await log(buildRunId, `Generating code for "${app.name}"…`);
       if (
+        canUseSimpleLocalStorageStarter({
+          spec,
+          architecture: architectureForStorage,
+        })
+      ) {
+        await log(
+          buildRunId,
+          "Using deterministic simple-app blueprint for this one-screen personal app…",
+        );
+        generated = generateSimpleLocalStorageStarterApp({
+          spec,
+          architecture: architectureForStorage,
+        });
+      } else if (
         usesPlatformData &&
         shouldUsePlatformDataStarterGenerator() &&
         canUsePlatformDataStarter({ spec, architecture: architectureForStorage })
@@ -3568,6 +3553,7 @@ export async function resumeBuildPipelineContinuation(
         slug: app.slug,
         name: app.name,
         purpose: spec.purpose,
+        capabilities: buildTemplateCapabilities(spec, architecture),
       },
     );
     if (refreshedTemplateFiles.length > 0) {

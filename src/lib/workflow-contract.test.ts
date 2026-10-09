@@ -322,7 +322,7 @@ describe("workflow contract layer", () => {
     expect(filter.controls).toEqual([
       expect.objectContaining({
         kind: "combobox",
-        accessibleName: "Choose a filter.",
+        accessibleName: "Filter",
       }),
     ]);
     expect(filter.steps).toEqual([
@@ -418,8 +418,8 @@ describe("workflow contract layer", () => {
     const contract = architecture.workflowContracts[0];
 
     expect(contract.controls.map((control) => control.accessibleName)).toEqual([
-      "Enter an item name.",
-      "Submit the add action.",
+      "Item name",
+      "Add list item",
     ]);
     expect(contract.steps.map((step) => step.kind)).toEqual([
       "input",
@@ -433,6 +433,120 @@ describe("workflow contract layer", () => {
         stepId: contract.steps[1].id,
         operation: "create",
       }),
+    ]);
+    expect(validateWorkflowContracts(spec, architecture).blockingIssues).toEqual([]);
+  });
+
+  it("collapses duplicate edit/save wording into one human-facing mutation control", () => {
+    const spec = normalizeAppSpec({
+      ...personalInput,
+      appName: "Simple Notes",
+      purpose: "Edit a saved note in the browser.",
+    });
+    spec.dataEntities = [
+      {
+        name: "Note",
+        description: "A short note.",
+        ownership: "per_user",
+        fields: [
+          {
+            name: "name",
+            label: "Name",
+            type: "text",
+            required: true,
+            validation: "Required",
+          },
+        ],
+        relationships: [],
+      },
+    ];
+    spec.workflows = [
+      {
+        name: "Edit note",
+        actor: "User",
+        trigger: "The user chooses a note to edit.",
+        steps: [
+          "Open editing for the selected item.",
+          "Enter the changed name.",
+          "Save the edit.",
+          "Update and save the item.",
+        ],
+        successOutcome: "The updated note is visible after refresh.",
+        failureStates: ["A blank name is rejected."],
+      },
+    ];
+    spec.acceptanceCriteria = [];
+    spec.testScenarios = [];
+
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const contract = architecture.workflowContracts[0];
+
+    expect(contract.controls.map((control) => control.accessibleName)).toEqual([
+      "Edit item",
+      "Changed name",
+      "Save changes",
+    ]);
+    expect(contract.steps.filter((step) => step.kind === "save")).toHaveLength(1);
+    expect(contract.expectedSaves[0]?.stepId).toBe(
+      contract.steps.find((step) => step.kind === "save")?.id,
+    );
+    expect(validateWorkflowContracts(spec, architecture).blockingIssues).toEqual([]);
+  });
+
+  it("classifies automatic browser restoration as a system lifecycle", () => {
+    const spec = normalizeAppSpec({
+      ...personalInput,
+      appName: "Saved List",
+      purpose: "Restore a saved list after refresh.",
+    });
+    spec.dataEntities = [
+      {
+        name: "List Item",
+        description: "One saved item.",
+        ownership: "per_user",
+        fields: [
+          {
+            name: "name",
+            label: "Name",
+            type: "text",
+            required: true,
+            validation: "Required",
+          },
+        ],
+        relationships: [],
+      },
+    ];
+    spec.workflows = [
+      {
+        name: "Restore saved list",
+        actor: "User",
+        trigger: "The app opens after a browser refresh.",
+        steps: [
+          "Load saved items from browser storage.",
+          "Display the restored list.",
+        ],
+        successOutcome: "Previously saved items are visible.",
+        failureStates: [],
+      },
+    ];
+    spec.acceptanceCriteria = [];
+    spec.testScenarios = [];
+
+    const architecture = createFallbackArchitecturePlan(
+      spec,
+      computeSpecComplexity(spec),
+    );
+    const contract = architecture.workflowContracts[0];
+
+    expect(contract.trigger).toBe("system");
+    expect(contract.controls).toEqual([]);
+    expect(contract.steps.every((step) => !step.controlId)).toBe(true);
+    expect(contract.steps.map((step) => step.kind)).toEqual([
+      "automatic",
+      "result",
     ]);
     expect(validateWorkflowContracts(spec, architecture).blockingIssues).toEqual([]);
   });

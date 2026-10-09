@@ -9,8 +9,8 @@ import {
   type WorkflowAcceptanceStep,
 } from "./workflow-acceptance-plan";
 
-export const ACCEPTANCE_MANIFEST_VERSION = 6 as const;
-export const ACCEPTANCE_COMPILER_VERSION = 8 as const;
+export const ACCEPTANCE_MANIFEST_VERSION = 7 as const;
+export const ACCEPTANCE_COMPILER_VERSION = 9 as const;
 
 export type AcceptanceLocatorMode = "contract" | "accessible_name_fallback";
 
@@ -163,6 +163,7 @@ export type VoiceForgeAcceptanceManifest = {
   compilerVersion: typeof ACCEPTANCE_COMPILER_VERSION;
   sourcePlanVersion: WorkflowAcceptancePlan["version"];
   locatorMode: AcceptanceLocatorMode;
+  validationProfile: "simple" | "full";
   journeys: AcceptanceManifestJourney[];
   adapters: AcceptanceAdapterRequirement[];
   summary: {
@@ -356,6 +357,7 @@ export function createAcceptanceTestManifest(input: {
     compilerVersion: ACCEPTANCE_COMPILER_VERSION,
     sourcePlanVersion: plan.version,
     locatorMode,
+    validationProfile: acceptanceValidationProfile(input, journeys, adapters),
     journeys,
     adapters,
     summary: {
@@ -384,6 +386,32 @@ export function createAcceptanceTestManifest(input: {
       ).length,
     },
   };
+}
+
+function acceptanceValidationProfile(
+  input: { spec: AppSpec; architecture: ArchitecturePlan },
+  journeys: AcceptanceManifestJourney[],
+  adapters: AcceptanceAdapterRequirement[],
+): "simple" | "full" {
+  const simple =
+    input.spec.capabilityTier === "personal" &&
+    !input.spec.needsLogin &&
+    input.spec.sharingModel === "private" &&
+    input.spec.screens.length === 1 &&
+    input.spec.dataEntities.length <= 1 &&
+    input.spec.aiFeatures.length === 0 &&
+    input.spec.fileRequirements.length === 0 &&
+    input.spec.integrations.length === 0 &&
+    input.spec.notifications.every(
+      (notification) => notification.channel === "none",
+    ) &&
+    input.spec.reports.length === 0 &&
+    !input.architecture.dataModel.some(
+      (entity) => entity.storage === "platformData",
+    ) &&
+    journeys.length <= 1 &&
+    adapters.length === 0;
+  return simple ? "simple" : "full";
 }
 
 export function validateAcceptanceTestManifest(input: {
@@ -599,7 +627,11 @@ function manifestStep(input: {
     success?.message ||
     success?.visibleResult ||
     fixtureText(fixtures[0]);
-  const interactionValue = interactionValueForStep(input.step, fixtures);
+  const interactionValue = interactionValueForStep(
+    input.step,
+    fixtures,
+    input.journey,
+  );
   const workflowSave = input.journey.saves.find(
     (save) => save.workflowId === input.step.workflowId,
   );
@@ -864,6 +896,7 @@ function isRedundantPreSaveAction(
 function interactionValueForStep(
   step: WorkflowAcceptanceStep,
   fixtures: AcceptanceManifestFixture[],
+  journey: WorkflowAcceptanceJourney,
 ): unknown {
   const identity = normalizedPhrase(
     `${step.controlId} ${step.accessibleName} ${step.description}`,
@@ -874,6 +907,26 @@ function interactionValueForStep(
       step.controlKind === "menu") &&
     /\bfilter\b/.test(identity)
   ) {
+    const stepIndex = journey.steps.findIndex(
+      (candidate) => candidate.id === step.id,
+    );
+    const priorWorkflowText = normalizedPhrase(
+      journey.steps
+        .slice(0, Math.max(stepIndex, 0))
+        .map(
+          (candidate) =>
+            `${candidate.workflowId} ${candidate.description} ${candidate.accessibleName}`,
+        )
+        .join(" "),
+    );
+    if (
+      /\b(?:complete|completed|completion|finish|finished|mark done)\b/.test(
+        priorWorkflowText,
+      ) &&
+      !/\b(?:reopen|incomplete)\b/.test(priorWorkflowText)
+    ) {
+      return "Completed";
+    }
     if (/\bactive\b/.test(identity)) return "Active";
     if (/\bcompleted\b/.test(identity)) return "Completed";
     return "All";

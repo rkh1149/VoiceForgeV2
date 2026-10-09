@@ -200,7 +200,7 @@ describe("platform data starter generator", () => {
     const component = result.files["src/components/PlatformDataApp.tsx"];
 
     expect(config).toContain('controlId: string');
-    expect(config).toContain('"accessibleName": "Enter note text"');
+    expect(config).toContain('"accessibleName": "Note text"');
     expect(config).toContain('"accessibleName": "Save note"');
     expect(config).toContain("The saved note appears in the list.");
     expect(component).toContain(

@@ -6,13 +6,22 @@ import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 const compiledPath = "e2e/generated/voiceforge-compiled.spec.ts";
+const manifestPath = "e2e/generated/voiceforge-acceptance-manifest.ts";
+const forceFullMatrix = process.env.VOICEFORGE_FORCE_FULL_E2E === "1";
+const manifestSource = existsSync(manifestPath)
+  ? readFileSync(manifestPath, "utf8")
+  : "";
+const simpleProfile =
+  !forceFullMatrix && manifestSource.includes('"validationProfile": "simple"');
 
 // Establish the complete baseline without overlapping workflows that were
 // classified as unsafe for parallel execution. A separate pass below still
 // proves that explicitly parallel-safe journeys can run concurrently.
 run("baseline full suite", ["playwright", "test", "--workers=1"]);
 
-if (existsSync(compiledPath)) {
+if (simpleProfile) {
+  progress("proportional simple-app validation passed; retry and parallel probes skipped");
+} else if (existsSync(compiledPath)) {
   const compiledSource = readFileSync(compiledPath, "utf8");
   run(
     "independent retry suite",
@@ -43,7 +52,11 @@ if (existsSync(compiledPath)) {
   }
 }
 
-progress("Stage 14I isolation matrix passed");
+progress(
+  simpleProfile
+    ? "proportional E2E suite passed"
+    : "Stage 14I isolation matrix passed",
+);
 
 function run(label, args, extraEnv = {}) {
   progress(`starting ${label}`);

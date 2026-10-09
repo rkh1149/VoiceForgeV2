@@ -24,6 +24,7 @@ export type VoiceForgeAcceptanceManifest = {
   compilerVersion: number;
   sourcePlanVersion: number;
   locatorMode: "contract" | "accessible_name_fallback";
+  validationProfile: "simple" | "full";
   journeys: readonly unknown[];
   adapters: readonly unknown[];
   summary: Record<string, number>;

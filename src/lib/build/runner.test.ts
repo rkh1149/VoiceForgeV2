@@ -112,6 +112,9 @@ describe("sandbox browser setup", () => {
     expect(source).toContain("VOICEFORGE_ACCEPTANCE_RETRY_PROBE");
     expect(source).toContain("--fully-parallel");
     expect(source).toContain("parallel-safe suite");
+    expect(source).toContain('"validationProfile": "simple"');
+    expect(source).toContain("VOICEFORGE_FORCE_FULL_E2E");
+    expect(source).toContain("proportional simple-app validation passed");
   });
 
   it("fails deterministic browser actions quickly and emits progress markers", () => {

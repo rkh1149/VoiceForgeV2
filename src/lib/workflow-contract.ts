@@ -374,7 +374,7 @@ export function compileWorkflowContracts(
         persona: workflow.actor || "User",
         roles,
       },
-      trigger: inferTrigger(workflow.trigger),
+      trigger: inferTrigger(workflow),
       start: {
         route: route.route,
         screen: route.name,
@@ -482,6 +482,11 @@ export function validateWorkflowContracts(
       if (VAGUE_CONTROL_LABELS.has(normalizeText(control.accessibleName))) {
         blockingIssues.push(
           `${label} uses the vague control label "${control.accessibleName}"; name the action clearly.`,
+        );
+      }
+      if (looksLikeTestInstructionLabel(control.accessibleName)) {
+        blockingIssues.push(
+          `${label} uses test-instruction wording in control label "${control.accessibleName}"; use a concise human-facing label.`,
         );
       }
     }
@@ -1038,7 +1043,7 @@ function normalizeContractInteractionSemantics(
       .filter(([, storage]) => isPersistentStorage(storage))
       .map(([entityKey]) => entityKey),
   );
-  const expectedSaves = contract.expectedSaves.filter((save) =>
+  let expectedSaves = contract.expectedSaves.filter((save) =>
     persistentEntityKeys.has(save.entityKey),
   );
   const producedReferences = new Set(
@@ -1050,6 +1055,7 @@ function normalizeContractInteractionSemantics(
   );
   let lastGestureControlId = "";
   let hasMutationGesture = false;
+  const trigger = isSystemLifecycleContract(contract) ? "system" : contract.trigger;
   let steps = contract.steps.map((step) => {
     const writes = step.writes.filter((entityKey) =>
       persistentEntityKeys.has(entityKey),
@@ -1100,6 +1106,27 @@ function normalizeContractInteractionSemantics(
         kind === "automatic" || kind === "result" ? "" : step.controlId,
     };
   });
+  if (trigger === "system" && isSystemLifecycleContract(contract)) {
+    steps = steps.map((step) => ({
+      ...step,
+      kind: isVisibleOutcomeDescription(step.description) ? "result" : "automatic",
+      controlId: "",
+    }));
+  } else if (canonicalMutation) {
+    const anchored = anchorMutationSaveToGesture(
+      steps,
+      expectedSaves,
+    );
+    steps = anchored.steps;
+    expectedSaves = anchored.expectedSaves;
+    const collapsed = collapseSingleMutationGesture(
+      steps,
+      expectedSaves,
+      canonicalMutation,
+    );
+    steps = collapsed.steps;
+    expectedSaves = collapsed.expectedSaves;
+  }
   const actionableControlIds = new Set(
     steps.map((step) => step.controlId).filter(Boolean),
   );
@@ -1128,7 +1155,7 @@ function normalizeContractInteractionSemantics(
     ["navigate", "input", "action", "save"].includes(step.kind),
   );
   const needsCommandTrigger =
-    contract.trigger === "user_action" &&
+    trigger === "user_action" &&
     !hasUserGestureStep &&
     isCommandWorkflowName(contract.name);
 
@@ -1169,7 +1196,7 @@ function normalizeContractInteractionSemantics(
     ];
   }
 
-  if (contract.trigger === "user_action" && controls.length === 0) {
+  if (trigger === "user_action" && controls.length === 0) {
     controls = [createDiscoverabilityControl({ ...contract, start, steps })];
   }
 
@@ -1187,6 +1214,7 @@ function normalizeContractInteractionSemantics(
 
   return {
     ...contract,
+    trigger,
     start,
     controls: uniqueBy(controls, (control) => control.id),
     steps,
@@ -1216,6 +1244,112 @@ function normalizeContractInteractionSemantics(
       ),
     },
   };
+}
+
+function anchorMutationSaveToGesture(
+  steps: WorkflowContract["steps"],
+  expectedSaves: WorkflowContract["expectedSaves"],
+): {
+  steps: WorkflowContract["steps"];
+  expectedSaves: WorkflowContract["expectedSaves"];
+} {
+  const saveStepIds = new Set(expectedSaves.map((save) => save.stepId));
+  const saveSteps = steps.filter((step) => saveStepIds.has(step.id));
+  if (
+    saveSteps.length === 0 ||
+    saveSteps.every(
+      (step) => Boolean(step.controlId) && ["action", "save"].includes(step.kind),
+    )
+  ) {
+    return { steps, expectedSaves };
+  }
+  const firstSaveIndex = Math.min(
+    ...saveSteps.map((step) => steps.findIndex((candidate) => candidate.id === step.id)),
+  );
+  const gesture = steps
+    .slice(0, Math.max(firstSaveIndex, 0) + 1)
+    .findLast(
+      (step) =>
+        Boolean(step.controlId) &&
+        step.kind === "action" &&
+        !/\b(?:open|navigate|visit)\b/i.test(step.description),
+    );
+  if (!gesture) return { steps, expectedSaves };
+  const entityKeys = unique(expectedSaves.map((save) => save.entityKey));
+  return {
+    steps: steps.map((step) => {
+      if (step.id === gesture.id) {
+        return {
+          ...step,
+          kind: "save" as const,
+          writes: unique([...step.writes, ...entityKeys]),
+        };
+      }
+      if (!saveStepIds.has(step.id)) return step;
+      return { ...step, writes: [], kind: normalizedStepKind({ ...step, writes: [] }) };
+    }),
+    expectedSaves: expectedSaves.map((save) => ({ ...save, stepId: gesture.id })),
+  };
+}
+
+function collapseSingleMutationGesture(
+  steps: WorkflowContract["steps"],
+  expectedSaves: WorkflowContract["expectedSaves"],
+  operation: WorkflowMutationOperation,
+): {
+  steps: WorkflowContract["steps"];
+  expectedSaves: WorkflowContract["expectedSaves"];
+} {
+  const candidates = steps.filter(
+    (step) =>
+      Boolean(step.controlId) &&
+      ["action", "save"].includes(step.kind) &&
+      !/\bconfirm(?:ation)?\b/i.test(step.description) &&
+      mutationGestureMatches(step.description, operation),
+  );
+  if (candidates.length < 2) return { steps, expectedSaves };
+
+  const primary = candidates[0];
+  const duplicateIds = new Set(candidates.slice(1).map((step) => step.id));
+  const entityKeys = unique(expectedSaves.map((save) => save.entityKey));
+  return {
+    steps: steps.map((step) => {
+      if (step.id === primary.id) {
+        return {
+          ...step,
+          kind: "save" as const,
+          writes: unique([...step.writes, ...entityKeys]),
+        };
+      }
+      if (!duplicateIds.has(step.id)) return step;
+      return { ...step, kind: "automatic" as const, controlId: "", writes: [] };
+    }),
+    expectedSaves: expectedSaves.map((save) => ({
+      ...save,
+      stepId: primary.id,
+    })),
+  };
+}
+
+function mutationGestureMatches(
+  description: string,
+  operation: WorkflowMutationOperation,
+): boolean {
+  const normalized = normalizeText(description);
+  if (operation === "create") return /\b(?:add|create|save|submit)\b/.test(normalized);
+  if (operation === "update") return /\b(?:update|save|apply|submit)\b/.test(normalized);
+  return /\b(?:delete|remove)\b/.test(normalized);
+}
+
+function isSystemLifecycleContract(contract: WorkflowContract): boolean {
+  if (contract.expectedSaves.length > 0) return false;
+  if (!/^(?:confirm|initialize|load|recover|restore|resume|sync)\b/i.test(contract.name)) {
+    return false;
+  }
+  if (/\b(?:deleted|removed|undo)\b/i.test(contract.name)) return false;
+  return contract.requiredData.every((data) =>
+    data.operations.every((operation) => operation === "read"),
+  );
 }
 
 function isConceptualPersistenceDescription(value: string): boolean {
@@ -1263,7 +1397,7 @@ function normalizedStepKind(
 }
 
 function isDirectUserGestureDescription(value: string): boolean {
-  return /^\s*(?:the\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:may\s+)?(?:clicks?|taps?|presses?|enters?|types?|writes?|chooses?|selects?|picks?|uploads?|attaches?|checks?|unchecks?|toggles?|drags?|drops?|opens?|navigates?|visits?|adds?|creates?|edits?|updates?|deletes?|removes?|saves?|submits?|starts?|stops?|plays?|retries?|restarts?|finishes?|answers?|calculates?|exports?|downloads?|searches?|filters?|sorts?)\b/i.test(
+  return /^\s*(?:the\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:may\s+)?(?:clicks?|taps?|presses?|enters?|types?|writes?|chooses?|selects?|picks?|uploads?|attaches?|checks?|unchecks?|toggles?|drags?|drops?|opens?|navigates?|visits?|adds?|creates?|edits?|updates?|deletes?|removes?|saves?|submits?|schedules?|starts?|stops?|plays?|retries?|restarts?|finishes?|answers?|calculates?|exports?|downloads?|searches?|filters?|sorts?)\b/i.test(
     value,
   );
 }
@@ -1304,7 +1438,7 @@ function isUserGestureDescription(value: string): boolean {
   if (isAutomaticEffectDescription(normalized) || isVisibleOutcomeDescription(normalized)) {
     return false;
   }
-  return /\b(click|tap|press|enter|type|write|choose|select|pick|upload|attach|check|uncheck|toggle|drag|drop|open|go to|navigate|visit|add|create|edit|update|delete|remove|save|submit|start|stop|play|retry|restart|finish|answer|calculate|export|download|search|filter|sort)\b/i.test(
+  return /\b(click|tap|press|enter|type|write|choose|select|pick|upload|attach|check|uncheck|toggle|drag|drop|open|go to|navigate|visit|add|create|edit|update|delete|remove|save|submit|schedule|start|stop|play|retry|restart|finish|answer|calculate|export|download|search|filter|sort)\b/i.test(
     normalized,
   );
 }
@@ -1314,7 +1448,7 @@ function isAutomaticEffectDescription(value: string): boolean {
     /^\s*(?:check|ensure|validate|verify)\b[\s\S]*\b(?:blank|required|trim|valid|validation)\b/i.test(
       value,
     ) ||
-    /^\s*(?:the\s+)?(?:app|application|system|game|screen|page)\s+(?:automatically\s+)?(?:checks?|clears?|compares?|creates?|generates?|loads?|calculates?|moves?|navigates?|persists?|resets?|redirects?|advances?|saves?|starts?|prepares?|stores?|updates?|records?|chooses?|selects?|validates?)\b/i.test(
+    /^\s*(?:the\s+)?(?:app|application|system|game|screen|page)\s+(?:automatically\s+)?(?:checks?|clears?|compares?|creates?|deletes?|removes?|generates?|loads?|calculates?|moves?|navigates?|persists?|resets?|redirects?|advances?|saves?|starts?|prepares?|stores?|updates?|records?|chooses?|selects?|validates?)\b/i.test(
       value,
     ) ||
     /^\s*(?:the\s+)?(?:user|player|rider|member|child|parent|guest|visitor|customer|student|teacher|participant|person)\s+(?:automatically\s+)?(?:begins?|arrives?|returns?|lands?|is taken|is redirected)\b/i.test(
@@ -1346,7 +1480,7 @@ function isVisibleOutcomeDescription(value: string): boolean {
 }
 
 function isCommandWorkflowName(value: string): boolean {
-  return /^\s*(?:add|answer|calculate|change|choose|create|delete|download|edit|export|finish|mark|move|play|record|remove|restart|retry|save|search|select|start|stop|submit|track|try|update|upload)\b/i.test(
+  return /^\s*(?:add|answer|calculate|change|choose|create|delete|download|edit|export|finish|mark|move|play|record|remove|restart|retry|save|schedule|search|select|start|stop|submit|track|try|update|upload)\b/i.test(
     value,
   );
 }
@@ -1355,7 +1489,37 @@ function conciseControlLabel(
   control: WorkflowContract["controls"][number],
   contract: WorkflowContract,
 ): string {
-  const label = control.accessibleName.trim();
+  const label = control.accessibleName.trim().replace(/[.!?:;]+$/, "");
+  const normalized = normalizeText(label);
+  if (["textbox", "textarea", "date", "file"].includes(control.kind)) {
+    const fieldLabel = label.replace(
+      /^(?:enter|type|provide|write|upload|choose)\s+(?:an?|the|your)?\s*/i,
+      "",
+    );
+    return sentenceCase(fieldLabel || contract.name);
+  }
+  if (control.kind === "combobox" && /^(?:choose|select)\b/i.test(label)) {
+    if (/\bfilter\b/i.test(label)) return "Filter";
+    return sentenceCase(
+      label.replace(/^(?:choose|select)\s+(?:an?|the|your)?\s*/i, ""),
+    );
+  }
+  if (control.kind === "checkbox") return sentenceCase(contract.name);
+  if (
+    control.kind === "button" &&
+    /^(?:choose|click|press|select)\b/i.test(label) &&
+    isCommandWorkflowName(contract.name)
+  ) {
+    return sentenceCase(contract.name);
+  }
+  if (looksLikeTestInstructionLabel(label)) {
+    if (/\b(?:save|update)\b/.test(normalized) && /\bedit\b/.test(normalizeText(contract.name))) {
+      return "Save changes";
+    }
+    if (/\b(?:edit|editing)\b/.test(normalized)) return "Edit item";
+    if (/\b(?:delete|remove)\b/.test(normalized)) return "Delete item";
+    return sentenceCase(contract.name);
+  }
   if (
     isAutomaticEffectDescription(label) ||
     isVisibleOutcomeDescription(label) ||
@@ -1363,10 +1527,22 @@ function conciseControlLabel(
     label.split(/\s+/).length > 12
   ) {
     return isCommandWorkflowName(contract.name)
-      ? contract.name
+      ? sentenceCase(contract.name)
       : `Open ${contract.start.screen}`;
   }
-  return label;
+  return sentenceCase(label);
+}
+
+function looksLikeTestInstructionLabel(value: string): boolean {
+  return /^(?:choose|select)\s+(?:the\s+)?(?:.+\s+)?control\b|^submit\s+(?:the\s+)?.+\s+action\b|^open\s+editing\s+for\b|^update\s+and\s+save\b|^save\s+the\s+edit\b/i.test(
+    value.trim(),
+  );
+}
+
+function sentenceCase(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  return `${trimmed[0].toUpperCase()}${trimmed.slice(1)}`;
 }
 
 function bestContractStartPage(
@@ -2127,9 +2303,22 @@ function inferPreconditions(
   return conditions;
 }
 
-function inferTrigger(trigger: string): WorkflowContract["trigger"] {
+function inferTrigger(workflow: AppSpec["workflows"][number]): WorkflowContract["trigger"] {
+  const trigger = workflow.trigger;
   if (/schedule|automatic|daily|weekly|hourly|due/i.test(trigger)) return "scheduled";
   if (/system|background|after .* saved/i.test(trigger)) return "system";
+  if (
+    /^(?:confirm|initialize|load|recover|restore|resume|sync)\b/i.test(workflow.name) &&
+    !/\b(?:deleted|removed|undo)\b/i.test(workflow.name) &&
+    workflow.steps.every(
+      (step) =>
+        isAutomaticEffectDescription(step) ||
+        isVisibleOutcomeDescription(step) ||
+        /^(?:load|read|restore|hydrate|initialize|display|show|confirm)\b/i.test(step),
+    )
+  ) {
+    return "system";
+  }
   return "user_action";
 }
 

@@ -425,7 +425,7 @@ describe("Stage 14I isolated acceptance compiler", () => {
       ACCEPTANCE_MANIFEST_SOURCE_PATH,
       ACCEPTANCE_COMPILED_SPEC_PATH,
     ]);
-    expect(files[ACCEPTANCE_MANIFEST_SOURCE_PATH]).toContain('"version": 6');
+    expect(files[ACCEPTANCE_MANIFEST_SOURCE_PATH]).toContain('"version": 7');
     expect(files[ACCEPTANCE_COMPILED_SPEC_PATH]).toContain(
       "VoiceForge compiled workflow acceptance",
     );
@@ -473,6 +473,7 @@ describe("Stage 14I isolated acceptance compiler", () => {
     const journey = compiled.manifest.journeys[0];
 
     expect(compiled.blockingIssues).toEqual([]);
+    expect(compiled.manifest.validationProfile).toBe("full");
     expect(journey.handoffs[0]?.consumerControl?.recordScope).toMatchObject({
       entityKey: "chore",
     });
@@ -849,9 +850,9 @@ describe("Stage 14I isolated acceptance compiler", () => {
     );
 
     expect(editInput?.interactionTransform).toBe("append_updated");
-    expect(filterChoice?.interactionValue).toBe("Active");
+    expect(filterChoice?.interactionValue).toBe("Completed");
     expect(compiled.compiledSource).toContain('+ " updated"');
-    expect(compiled.compiledSource).toContain('selectAcceptanceOption(control, "Active")');
+    expect(compiled.compiledSource).toContain('selectAcceptanceOption(control, "Completed")');
   });
 
   it("fills an inline record textbox deterministically when edit input has no control id", () => {
@@ -903,6 +904,7 @@ describe("Stage 14I isolated acceptance compiler", () => {
       : [];
 
     expect(compiled.blockingIssues).toEqual([]);
+    expect(compiled.manifest.validationProfile).toBe("simple");
     expect(compiled.manifest.journeys).toHaveLength(1);
     expect(workflowOrder.at(-1)).toContain("delete-item");
     expect(compiled.manifest.summary.steps).toBe(

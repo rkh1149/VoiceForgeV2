@@ -203,8 +203,15 @@ export function inferDependencyProfiles(spec: AppSpec): DependencyProfileId[] {
   const text = searchableSpecText(spec);
   if (
     spec.reports.length > 0 ||
-    spec.searchRequirements.length > 0 ||
-    hasAny(text, ["chart", "dashboard", "metric", "report", "table", "sort"])
+    hasAny(text, [
+      "chart",
+      "dashboard",
+      "metric",
+      "report",
+      "data table",
+      "sortable table",
+      "analytics",
+    ])
   ) {
     profiles.add("dataDisplay");
   }
@@ -261,6 +268,7 @@ export function validateGeneratedAppDependencies(files: FileMap): DependencyChec
       // validatePackageJson reports the invalid manifest.
     }
   }
+  validatePackageLock(files, problems);
 
   for (const [filePath, content] of Object.entries(files)) {
     if (!shouldScanImports(filePath)) continue;
@@ -356,17 +364,129 @@ export function reconcileGeneratedAppDependencies(
   parsed.dependencies = desiredRuntime;
   parsed.devDependencies = desiredDev;
   const next = `${JSON.stringify(parsed, null, 2)}\n`;
-  const changed = next !== content;
-  if (changed) files["package.json"] = next;
+  const manifestChanged = next !== content;
+  if (manifestChanged) files["package.json"] = next;
+  const lockResult = reconcilePackageLock(files, desiredRuntime, desiredDev);
+  const changed = manifestChanged || lockResult.changed;
 
   return {
     changed,
-    filesChanged: changed ? ["package.json"] : [],
+    filesChanged: [
+      ...(manifestChanged ? ["package.json"] : []),
+      ...(lockResult.changed ? ["package-lock.json"] : []),
+    ],
     added: uniqueStrings(added),
     removed: uniqueStrings(removed),
     corrected: uniqueStrings(corrected),
-    problems: [],
+    problems: lockResult.problem
+      ? [{ path: "package-lock.json", message: lockResult.problem }]
+      : [],
   };
+}
+
+function validatePackageLock(
+  files: FileMap,
+  problems: DependencyCheckProblem[],
+): void {
+  const manifestSource = files["package.json"];
+  const lockSource = files["package-lock.json"];
+  if (!manifestSource || !lockSource) return;
+  try {
+    const manifest = JSON.parse(manifestSource) as Record<string, unknown>;
+    const lock = JSON.parse(lockSource) as Record<string, unknown>;
+    const packages = isRecord(lock.packages) ? lock.packages : {};
+    const root = isRecord(packages[""]) ? packages[""] : {};
+    for (const section of ["dependencies", "devDependencies"] as const) {
+      const expected = sortRecord(dependencyRecord(manifest[section]));
+      const actual = sortRecord(dependencyRecord(root[section]));
+      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+        problems.push({
+          path: "package-lock.json",
+          message: `package-lock.json root ${section} must exactly match package.json.`,
+        });
+      }
+    }
+  } catch {
+    problems.push({
+      path: "package-lock.json",
+      message: "package-lock.json is invalid JSON.",
+    });
+  }
+}
+
+function reconcilePackageLock(
+  files: FileMap,
+  runtime: Record<string, string>,
+  development: Record<string, string>,
+): { changed: boolean; problem?: string } {
+  const source = files["package-lock.json"];
+  if (!source) return { changed: false };
+  let lock: Record<string, unknown>;
+  try {
+    const value = JSON.parse(source) as unknown;
+    if (!isRecord(value) || !isRecord(value.packages)) {
+      throw new Error("missing packages map");
+    }
+    lock = value;
+  } catch {
+    return { changed: false, problem: "package-lock.json is invalid JSON." };
+  }
+
+  const packages = lock.packages as Record<string, unknown>;
+  const root = isRecord(packages[""]) ? { ...packages[""] } : {};
+  root.dependencies = runtime;
+  root.devDependencies = development;
+  const retained = new Set<string>([""]);
+  const queue: Array<{ from: string; name: string }> = [
+    ...Object.keys(runtime).map((name) => ({ from: "", name })),
+    ...Object.keys(development).map((name) => ({ from: "", name })),
+  ];
+
+  while (queue.length > 0) {
+    const next = queue.shift()!;
+    const packagePath = resolveLockedPackagePath(packages, next.from, next.name);
+    if (!packagePath || retained.has(packagePath)) continue;
+    retained.add(packagePath);
+    const entry = packages[packagePath];
+    if (!isRecord(entry)) continue;
+    const childNames = uniqueStrings([
+      ...Object.keys(dependencyRecord(entry.dependencies)),
+      ...Object.keys(dependencyRecord(entry.optionalDependencies)),
+      ...Object.keys(dependencyRecord(entry.peerDependencies)),
+    ]);
+    queue.push(...childNames.map((name) => ({ from: packagePath, name })));
+  }
+
+  const prunedPackages: Record<string, unknown> = { "": root };
+  for (const packagePath of [...retained].filter(Boolean).sort()) {
+    prunedPackages[packagePath] = packages[packagePath];
+  }
+  lock.packages = prunedPackages;
+  if (isRecord(lock.dependencies)) {
+    lock.dependencies = Object.fromEntries(
+      Object.entries(lock.dependencies).filter(([name]) => name in runtime || name in development),
+    );
+  }
+  const updated = `${JSON.stringify(lock, null, 2)}\n`;
+  if (updated === source) return { changed: false };
+  files["package-lock.json"] = updated;
+  return { changed: true };
+}
+
+function resolveLockedPackagePath(
+  packages: Record<string, unknown>,
+  from: string,
+  name: string,
+): string | null {
+  let cursor = from;
+  while (cursor) {
+    const nested = `${cursor}/node_modules/${name}`;
+    if (nested in packages) return nested;
+    const marker = cursor.lastIndexOf("/node_modules/");
+    cursor = marker >= 0 ? cursor.slice(0, marker) : "";
+  }
+  const root = `node_modules/${name}`;
+  return root in packages ? root : null;
 }
 
 function validatePdfExports(
