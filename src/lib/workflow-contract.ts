@@ -247,11 +247,15 @@ export function ensureWorkflowContracts<T extends WorkflowContractArchitecture>(
   const dataModel = normalizeApprovedDataModel(spec, architecture.dataModel);
   const approvedArchitecture = { ...architecture, dataModel };
   const supplied = architecture.workflowContracts ?? [];
+  const compileDeterministicSimpleContracts =
+    shouldCompileDeterministicSimpleContracts(spec, approvedArchitecture);
   // Existing plans already contain permanent workflow/control ids. Preserve
   // them while upgrading the surrounding contract format instead of deriving
-  // new ids from labels that may have changed since the original build.
+  // new ids from labels that may have changed since the original build. The
+  // narrow one-screen personal CRUD profile is compiler-owned because its
+  // controls and persistence semantics are fully deterministic.
   const contracts =
-    supplied.length > 0
+    supplied.length > 0 && !compileDeterministicSimpleContracts
       ? supplied.map((contract) => normalizeSuppliedContract(contract, spec))
       : compileWorkflowContracts(spec, approvedArchitecture);
   const interactionSafeContracts = contracts.map((contract) =>
@@ -267,6 +271,53 @@ export function ensureWorkflowContracts<T extends WorkflowContractArchitecture>(
     workflowContractVersion: WORKFLOW_CONTRACT_VERSION,
     workflowContracts: assignSourcesAndHandoffs(interactionSafeContracts, spec),
   };
+}
+
+function shouldCompileDeterministicSimpleContracts(
+  spec: AppSpec,
+  architecture: WorkflowContractArchitecture,
+): boolean {
+  const entity = spec.dataEntities[0];
+  if (!entity) return false;
+  const textFields = entity.fields.filter((field) => field.type === "text");
+  const booleanFields = entity.fields.filter((field) => field.type === "boolean");
+  const supportedFields = entity.fields.every((field) =>
+    ["text", "boolean"].includes(field.type),
+  );
+  const entityKey = normalizeEntityKey(entity.name);
+  const allowedWorkflow =
+    /\b(?:add|create|edit|rename|update|complete|completion|reopen|toggle|mark|delete|remove|filter|view|restore|load|confirm)\b/i;
+  const workflowNames = spec.workflows.map((workflow) => workflow.name);
+  const hasCreate = workflowNames.some((name) => /\b(?:add|create)\b/i.test(name));
+  const hasEdit = workflowNames.some((name) => /\b(?:edit|rename)\b/i.test(name));
+  const hasDelete = workflowNames.some((name) => /\b(?:delete|remove)\b/i.test(name));
+
+  return (
+    spec.capabilityTier === "personal" &&
+    !spec.needsLogin &&
+    spec.sharingModel === "private" &&
+    spec.screens.length === 1 &&
+    spec.dataEntities.length === 1 &&
+    entity.relationships.length === 0 &&
+    textFields.length === 1 &&
+    textFields[0].required &&
+    booleanFields.length <= 1 &&
+    supportedFields &&
+    spec.aiFeatures.length === 0 &&
+    spec.fileRequirements.length === 0 &&
+    spec.integrations.length === 0 &&
+    spec.notifications.every((notification) => notification.channel === "none") &&
+    spec.reports.length === 0 &&
+    spec.workflows.every((workflow) => allowedWorkflow.test(workflow.name)) &&
+    hasCreate &&
+    hasEdit &&
+    hasDelete &&
+    architecture.dataModel.some(
+      (planned) =>
+        normalizeEntityKey(planned.name) === entityKey &&
+        planned.storage === "localStorage",
+    )
+  );
 }
 
 export function compileWorkflowContracts(
@@ -1119,6 +1170,13 @@ function normalizeContractInteractionSemantics(
     );
     steps = anchored.steps;
     expectedSaves = anchored.expectedSaves;
+    const collapsedPreparation = collapsePreparatoryStatusGesture(
+      contract.name,
+      steps,
+      expectedSaves,
+      canonicalMutation,
+    );
+    steps = collapsedPreparation.steps;
     const collapsed = collapseSingleMutationGesture(
       steps,
       expectedSaves,
@@ -1243,6 +1301,36 @@ function normalizeContractInteractionSemantics(
           ),
       ),
     },
+  };
+}
+
+function collapsePreparatoryStatusGesture(
+  workflowName: string,
+  steps: WorkflowContract["steps"],
+  expectedSaves: WorkflowContract["expectedSaves"],
+  operation: WorkflowMutationOperation,
+): { steps: WorkflowContract["steps"] } {
+  if (
+    operation !== "update" ||
+    !/\b(?:complete|completion|reopen|toggle|status)\b/i.test(workflowName)
+  ) {
+    return { steps };
+  }
+  const saveStepIds = new Set(expectedSaves.map((save) => save.stepId));
+  const firstSaveIndex = steps.findIndex((step) => saveStepIds.has(step.id));
+  if (firstSaveIndex <= 0) return { steps };
+
+  return {
+    steps: steps.map((step, index) =>
+      index < firstSaveIndex &&
+      step.kind === "action" &&
+      Boolean(step.controlId) &&
+      /\b(?:choose|select)\b[\s\S]{0,50}\b(?:completion|status)\s+(?:control|checkbox)\b/i.test(
+        step.description,
+      )
+        ? { ...step, kind: "automatic" as const, controlId: "", writes: [] }
+        : step,
+    ),
   };
 }
 
@@ -1382,6 +1470,15 @@ function normalizedStepKind(
   if (step.kind === "result" && !isDirectUserGestureDescription(description)) {
     return step.kind;
   }
+  const directUserGesture =
+    isDirectUserGestureDescription(description) &&
+    !/^\s*(?:the\s+)?(?:app|application|system)\b/i.test(description);
+  if (directUserGesture) {
+    const lower = description.toLowerCase();
+    if (isFieldInputDescription(lower)) return "input";
+    if (isNavigationGestureDescription(description)) return "navigate";
+    return step.writes.length > 0 ? "save" : "action";
+  }
   if (isAutomaticEffectDescription(description)) return "automatic";
   const isUserGesture = isUserGestureDescription(description);
   if (!isUserGesture && isVisibleOutcomeDescription(description)) return "result";
@@ -1397,7 +1494,7 @@ function normalizedStepKind(
 }
 
 function isDirectUserGestureDescription(value: string): boolean {
-  return /^\s*(?:the\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:may\s+)?(?:clicks?|taps?|presses?|enters?|types?|writes?|chooses?|selects?|picks?|uploads?|attaches?|checks?|unchecks?|toggles?|drags?|drops?|opens?|navigates?|visits?|adds?|creates?|edits?|updates?|deletes?|removes?|saves?|submits?|schedules?|starts?|stops?|plays?|retries?|restarts?|finishes?|answers?|calculates?|exports?|downloads?|searches?|filters?|sorts?)\b/i.test(
+  return /^\s*(?:the\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:may\s+)?(?:clicks?|taps?|presses?|enters?|types?|writes?|chooses?|selects?|picks?|uploads?|attaches?|checks?|unchecks?|toggles?|drags?|drops?|opens?|navigates?|visits?|adds?|creates?|changes?|renames?|edits?|updates?|deletes?|removes?|saves?|submits?|schedules?|starts?|stops?|plays?|retries?|restarts?|finishes?|answers?|calculates?|exports?|downloads?|searches?|filters?|sorts?)\b/i.test(
     value,
   );
 }
@@ -1438,7 +1535,7 @@ function isUserGestureDescription(value: string): boolean {
   if (isAutomaticEffectDescription(normalized) || isVisibleOutcomeDescription(normalized)) {
     return false;
   }
-  return /\b(click|tap|press|enter|type|write|choose|select|pick|upload|attach|check|uncheck|toggle|drag|drop|open|go to|navigate|visit|add|create|edit|update|delete|remove|save|submit|schedule|start|stop|play|retry|restart|finish|answer|calculate|export|download|search|filter|sort)\b/i.test(
+  return /\b(click|tap|press|enter|type|write|choose|select|pick|upload|attach|check|uncheck|toggle|drag|drop|open|go to|navigate|visit|add|create|change|rename|edit|update|delete|remove|save|submit|schedule|start|stop|play|retry|restart|finish|answer|calculate|export|download|search|filter|sort)\b/i.test(
     normalized,
   );
 }
@@ -2082,6 +2179,7 @@ function inferControlKind(
   if (/choose|select|pick/.test(lower) && isFieldInputDescription(lower)) {
     return "combobox";
   }
+  if (isFieldInputDescription(lower)) return "textbox";
   if (/enter|type|write|search|filter/.test(lower)) return "textbox";
   if (/open|go to|navigate|view|review|overview|display|show/.test(lower)) {
     return "link";
@@ -2107,7 +2205,7 @@ function normalizeControlKind(
 function isFilterChoiceDescription(value: string): boolean {
   return (
     /\b(?:choose|select|pick)\b/i.test(value) &&
-    /\bfilter\b/i.test(value) &&
+    /\bfilters?\b/i.test(value) &&
     !/\b(?:enter|type|write|search)\b/i.test(value)
   );
 }

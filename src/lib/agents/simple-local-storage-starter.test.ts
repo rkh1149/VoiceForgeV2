@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createFallbackArchitecturePlan } from "../architecture";
 import { GOLDEN_REGRESSION_SPECS } from "../build/golden-regression-specs";
 import { computeSpecComplexity } from "../spec";
+import { ensureWorkflowContracts } from "../workflow-contract";
 import {
   canUseSimpleLocalStorageStarter,
   generateSimpleLocalStorageStarterApp,
@@ -51,5 +52,100 @@ describe("deterministic simple localStorage starter", () => {
     expect(
       canUseSimpleLocalStorageStarter({ spec: golden.spec, architecture }),
     ).toBe(false);
+  });
+
+  it("recompiles malformed AI controls before selecting the simple blueprint", () => {
+    const golden = GOLDEN_REGRESSION_SPECS.find(
+      (candidate) => candidate.id === "simple-local-storage",
+    );
+    if (!golden) throw new Error("Missing simple localStorage golden spec");
+    const spec = structuredClone(golden.spec);
+    const editWorkflow = spec.workflows.find((workflow) =>
+      /\bedit\b/i.test(workflow.name),
+    );
+    const completionWorkflow = spec.workflows.find((workflow) =>
+      /\bcompletion\b/i.test(workflow.name),
+    );
+    const filterWorkflow = spec.workflows.find((workflow) =>
+      /\bfilter\b/i.test(workflow.name),
+    );
+    if (!editWorkflow || !completionWorkflow || !filterWorkflow) {
+      throw new Error("Missing simple workflow fixtures");
+    }
+    editWorkflow.steps = [
+      "Open editing for an item.",
+      "Change the name.",
+      "Save the change.",
+      "Check that the revised name is not blank.",
+      "Update the saved item in the browser.",
+    ];
+    completionWorkflow.name = "Toggle completion";
+    completionWorkflow.steps = [
+      "Choose the completion control for an item.",
+      "Update its completed status.",
+      "Save the changed status in the browser.",
+      "Refresh the filtered view if needed.",
+    ];
+    filterWorkflow.name = "Filter list";
+    filterWorkflow.steps = [
+      "Select one of the three filters.",
+      "Display only items that match the selected status.",
+      "Show a clear empty state if the selected filter has no matching items.",
+    ];
+    const malformed = structuredClone(
+      createFallbackArchitecturePlan(
+        spec,
+        computeSpecComplexity(spec),
+      ),
+    );
+    const edit = malformed.workflowContracts.find((contract) =>
+      /\bedit\b/i.test(contract.name),
+    );
+    const filter = malformed.workflowContracts.find((contract) =>
+      /\bfilter\b/i.test(contract.name),
+    );
+    if (!edit || !filter) throw new Error("Missing simple CRUD contracts");
+    const editInput = edit.steps.find((step) => step.kind === "input");
+    const editSave = edit.steps.find((step) =>
+      edit.expectedSaves.some((save) => save.stepId === step.id),
+    );
+    const saveControl = edit.controls.find(
+      (control) => control.id === editSave?.controlId,
+    );
+    if (!editInput || !editSave || !saveControl) {
+      throw new Error("Missing edit controls");
+    }
+    edit.controls = edit.controls.filter(
+      (control) => control.id !== editInput.controlId,
+    );
+    editInput.controlId = saveControl.id;
+    editSave.controlId = "";
+    filter.controls[0].kind = "textbox";
+    filter.controls[0].accessibleName = "Select one of the three filters";
+    filter.controls[0].action = "Select one of the three filters.";
+    filter.steps[0].description = "Select one of the three filters.";
+
+    const normalized = ensureWorkflowContracts(spec, malformed);
+    const normalizedEdit = normalized.workflowContracts.find((contract) =>
+      /\bedit\b/i.test(contract.name),
+    );
+    const normalizedFilter = normalized.workflowContracts.find((contract) =>
+      /\bfilter\b/i.test(contract.name),
+    );
+    const normalizedSave = normalizedEdit?.steps.find((step) =>
+      normalizedEdit.expectedSaves.some((save) => save.stepId === step.id),
+    );
+    const normalizedInput = normalizedEdit?.steps.find(
+      (step) => step.kind === "input",
+    );
+
+    expect(normalizedFilter?.controls[0]).toMatchObject({ kind: "combobox" });
+    expect(normalizedInput?.controlId).not.toBe(normalizedSave?.controlId);
+    expect(
+      canUseSimpleLocalStorageStarter({
+        spec,
+        architecture: normalized,
+      }),
+    ).toBe(true);
   });
 });

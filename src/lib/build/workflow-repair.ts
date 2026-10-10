@@ -615,15 +615,6 @@ export function classifyWorkflowRepairFailure(input: {
       "The workflow save operation or returned durable reference is missing or broken.",
     );
   }
-  if (/\b(?:owner|editor|viewer|public)\b.*\b(?:permission|read-only|control)|voiceforge-role|canwrite|incorrect permissions/i.test(text)) {
-    return result(
-      "incorrect_permissions",
-      "role_control_or_write_guard",
-      "application_source",
-      "high",
-      "The failure concerns role-specific visibility or write access.",
-    );
-  }
   if (/ui_affordance:.*(?:does not exist|cannot reach|not reachable|target .* does not match)|missing route|hidden url|navigation/i.test(text)) {
     return result(
       "missing_route_or_navigation",
@@ -640,6 +631,15 @@ export function classifyWorkflowRepairFailure(input: {
       "application_source",
       "high",
       "The workflow cannot be started or completed through a visible control.",
+    );
+  }
+  if (/\b(?:owner|editor|viewer|public)\b.*\b(?:permission|read-only|control)|voiceforge-role|canwrite|incorrect permissions/i.test(text)) {
+    return result(
+      "incorrect_permissions",
+      "role_control_or_write_guard",
+      "application_source",
+      "high",
+      "The failure concerns role-specific visibility or write access.",
     );
   }
 

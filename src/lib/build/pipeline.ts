@@ -609,11 +609,13 @@ function workflowRepairVisibleFiles(
 function workflowRepairOwnsFailure(
   repair: WorkflowRepairPackage,
   fingerprint: FailureFingerprint,
+  currentChangedPaths: readonly string[] = [],
 ): boolean {
   const latestAttempt = repair.attempts.at(-1);
   const changedPaths = new Set([
     ...(latestAttempt?.filesWritten ?? []),
     ...(latestAttempt?.filesDeleted ?? []),
+    ...currentChangedPaths,
   ]);
   const sourcePaths = fingerprint.sourceLocations.map((location) =>
     location.replace(/:\d+(?::\d+)?$/, ""),
@@ -1636,6 +1638,7 @@ async function runTestGauntlet(input: {
 
     const validateFocusedWorkflowRepair = async (
       repair: WorkflowRepairPackage,
+      currentChangedPaths: readonly string[] = [],
     ): Promise<{
       ok: boolean;
       reason: string;
@@ -1698,14 +1701,30 @@ async function runTestGauntlet(input: {
         await recordFocusedResult("focused workflow unit tests", unit);
         repair.validation.unit = unit.ok ? "passed" : "failed";
         if (!unit.ok) {
-          return {
-            ok: false,
-            reason: `Focused unit validation failed in ${unitFiles.join(", ")}.`,
-            failedStep: "test",
-            failureFingerprint:
-              unit.failureFingerprint ??
-              createFailureFingerprint("test", unit.output),
-          };
+          const fingerprint =
+            unit.failureFingerprint ??
+            createFailureFingerprint("test", unit.output);
+          if (
+            repair.classification.targetSurface === "application_source" &&
+            !workflowRepairOwnsFailure(
+              repair,
+              fingerprint,
+              currentChangedPaths,
+            )
+          ) {
+            repair.validation.unit = "pending";
+            await log(
+              input.buildRunId,
+              "Focused unit validation found a pre-existing failure outside the interface repair. VoiceForge preserved the valid interface improvement and will repair the test in its responsible test phase.",
+            );
+          } else {
+            return {
+              ok: false,
+              reason: `Focused unit validation failed in ${unitFiles.join(", ")}.`,
+              failedStep: "test",
+              failureFingerprint: fingerprint,
+            };
+          }
         }
       } else {
         repair.validation.unit = "not_applicable";
@@ -2426,7 +2445,10 @@ async function runTestGauntlet(input: {
         applyCodegenResult(input.files, fix);
         await activeRunner.deleteFiles(fix.deletedFiles);
         await activeRunner.writeFiles(fix.files);
-        const focused = await validateFocusedWorkflowRepair(workflowRepair);
+        const focused = await validateFocusedWorkflowRepair(workflowRepair, [
+          ...fix.filesWritten,
+          ...fix.deletedFiles,
+        ]);
         const focusedProgress =
           !focused.ok &&
           focused.failedStep === "e2e" &&
@@ -3535,7 +3557,9 @@ export async function resumeBuildPipelineContinuation(
   if (
     storedArchitecture.workflowContractVersion !==
       architecture.workflowContractVersion ||
-    !storedArchitecture.workflowContracts?.length
+    !storedArchitecture.workflowContracts?.length ||
+    JSON.stringify(storedArchitecture.workflowContracts) !==
+      JSON.stringify(architecture.workflowContracts)
   ) {
     await db
       .update(architecturePlans)
@@ -3543,10 +3567,43 @@ export async function resumeBuildPipelineContinuation(
       .where(eq(architecturePlans.id, architectureRow.id));
   }
   const metadata = checkpoint.metadata;
-  const metrics = restoreBuildMetrics(metadata.metrics);
+  let metrics = restoreBuildMetrics(metadata.metrics);
   setBuildComplexityTier(metrics, computeSpecComplexity(spec).level);
+  let generated = restoreGeneratedResult(metadata.generated);
+  let migratedSimpleBlueprint = false;
 
   try {
+    if (
+      checkpoint.stage !== "publish_pending" &&
+      requirement.version === 1 &&
+      !app.githubRepoUrl &&
+      canUseSimpleLocalStorageStarter({ spec, architecture }) &&
+      !generated.phases.some(
+        (phase) => phase.id === "simple-local-storage-starter",
+      )
+    ) {
+      const template = await loadTemplate({
+        slug: app.slug,
+        name: app.name,
+        purpose: spec.purpose,
+        capabilities: buildTemplateCapabilities(spec, architecture),
+      });
+      const simpleGenerated = generateSimpleLocalStorageStarterApp({
+        spec,
+        architecture,
+      });
+      for (const path of generated.filesWritten) delete checkpoint.files[path];
+      Object.assign(checkpoint.files, template, simpleGenerated.files);
+      generated = simpleGenerated;
+      migratedSimpleBlueprint = true;
+      metrics = createBuildMetrics();
+      setBuildComplexityTier(metrics, computeSpecComplexity(spec).level);
+      recordGeneratedPhaseMetrics(metrics, generated.phases);
+      await log(
+        run.id,
+        "Upgraded the failed first build to the deterministic simple-app blueprint while preserving its durable build record…",
+      );
+    }
     const refreshedTemplateFiles = await refreshResumedTemplateFiles(
       checkpoint.files,
       {
@@ -3613,7 +3670,6 @@ export async function resumeBuildPipelineContinuation(
         ? "Resuming workflow reviews from the best saved source checkpoint…"
         : "Resuming checks from the saved source checkpoint…",
     );
-    const generated = restoreGeneratedResult(metadata.generated);
     const refreshedAcceptance = refreshDeterministicAcceptanceCompiler({
       spec,
       architecture,
@@ -3646,32 +3702,34 @@ export async function resumeBuildPipelineContinuation(
       });
       return;
     }
-    const debugBudget = options?.resetDebugBudget
+    const resetPipelineState =
+      options?.resetDebugBudget === true || migratedSimpleBlueprint;
+    const debugBudget = resetPipelineState
       ? createDebugBudget({
           maxRoundsPerStep: MAX_DEBUG_ROUNDS_PER_STEP,
           maxTotalRounds: MAX_TOTAL_DEBUG_ROUNDS,
         })
       : restoreDebugBudget(metadata.debugBudget);
-    const debugProgress = options?.resetDebugBudget
+    const debugProgress = resetPipelineState
       ? undefined
       : restoreDebugProgress(metadata.debugProgress);
     const seededPlatformEntities = restoreSeededPlatformEntities(
       metadata.seededPlatformEntities,
     );
-    const workflowRepairs = restoreWorkflowRepairPackages(
-      metadata.workflowRepairs,
-    );
+    const workflowRepairs = migratedSimpleBlueprint
+      ? []
+      : restoreWorkflowRepairPackages(metadata.workflowRepairs);
     const changeMode = Boolean(app.githubRepoUrl && requirement.version > 1);
     const reviewProgress = restoreReviewProgress(
-      metadata.reviewProgress,
+      migratedSimpleBlueprint ? undefined : metadata.reviewProgress,
       generated,
       changeMode,
     );
-    if (options?.resetDebugBudget) {
+    if (resetPipelineState) {
       reviewProgress.unchangedRoundsByDomain = {};
     }
     const recheckTestingCheckpoint =
-      checkpoint.stage === "testing" && options?.resetDebugBudget === true;
+      checkpoint.stage === "testing" && resetPipelineState;
     if (checkpoint.stage === "reviewing" || recheckTestingCheckpoint) {
       if (recheckTestingCheckpoint) {
         await log(

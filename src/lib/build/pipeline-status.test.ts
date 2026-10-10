@@ -74,5 +74,24 @@ describe("build pipeline app status fallbacks", () => {
     );
     expect(source).toContain("const debugBudgetStep = workflowRepair");
     expect(source).toContain('`${step}:${workflowRepair.id}`');
+    expect(source).toContain(
+      "Focused unit validation found a pre-existing failure outside the interface repair",
+    );
+  });
+
+  it("migrates failed first-build simple apps to the deterministic blueprint", () => {
+    const source = readFileSync(
+      new URL("./pipeline.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("migratedSimpleBlueprint");
+    expect(source).toContain("canUseSimpleLocalStorageStarter({ spec, architecture })");
+    expect(source).toContain(
+      "Upgraded the failed first build to the deterministic simple-app blueprint",
+    );
+    expect(source).toContain(
+      "migratedSimpleBlueprint ? undefined : metadata.reviewProgress",
+    );
   });
 });

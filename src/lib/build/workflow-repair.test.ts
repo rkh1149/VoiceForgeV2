@@ -823,6 +823,23 @@ describe("workflow-aware repairs", () => {
     expect(repair.baselineBlockingIssues).toHaveLength(2);
   });
 
+  it("does not mistake a role-scoped missing control for a permission defect", () => {
+    const classification = classifyWorkflowRepairFailure({
+      failedStep: "review_gate",
+      errorOutput:
+        'ui_affordance: Workflow "Filter list" expected a visible combobox for owner role, but the control was not found.',
+      blockingIssues: [
+        'ui_affordance: Workflow "Filter list" expected a visible combobox for owner role, but the control was not found.',
+      ],
+    });
+
+    expect(classification).toMatchObject({
+      category: "missing_control",
+      subtype: "workflow_action_not_discoverable",
+      targetSurface: "application_source",
+    });
+  });
+
   it("enforces the mutation allowlist even after diagnosis", () => {
     const repair = createWorkflowRepairPackage({
       spec,
