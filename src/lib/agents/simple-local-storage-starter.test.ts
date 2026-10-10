@@ -34,6 +34,9 @@ describe("deterministic simple localStorage starter", () => {
     expect(result.files["src/components/SimpleLocalApp.tsx"]).toContain(
       "data-vf-control",
     );
+    expect(result.files["src/components/SimpleLocalApp.tsx"]).not.toContain(
+      "contractAttributes(",
+    );
     expect(result.files["src/components/SimpleLocalApp.test.tsx"]).toContain(
       "validates, adds, edits, completes, filters, deletes, and restores records",
     );
@@ -132,6 +135,9 @@ describe("deterministic simple localStorage starter", () => {
     const normalizedFilter = normalized.workflowContracts.find((contract) =>
       /\bfilter\b/i.test(contract.name),
     );
+    const normalizedCompletion = normalized.workflowContracts.find((contract) =>
+      /\bcompletion\b/i.test(contract.name),
+    );
     const normalizedSave = normalizedEdit?.steps.find((step) =>
       normalizedEdit.expectedSaves.some((save) => save.stepId === step.id),
     );
@@ -146,6 +152,20 @@ describe("deterministic simple localStorage starter", () => {
         spec,
         architecture: normalized,
       }),
+    ).toBe(true);
+    const completionControlIds = new Set(
+      normalizedCompletion?.controls.map((control) => control.id) ?? [],
+    );
+    const completionHandoffs = normalized.workflowContracts.flatMap((contract) =>
+      contract.handoffs.filter(
+        (handoff) => handoff.consumerWorkflowId === normalizedCompletion?.id,
+      ),
+    );
+    expect(completionHandoffs.length).toBeGreaterThan(0);
+    expect(
+      completionHandoffs.every((handoff) =>
+        completionControlIds.has(handoff.consumerControlId),
+      ),
     ).toBe(true);
   });
 });

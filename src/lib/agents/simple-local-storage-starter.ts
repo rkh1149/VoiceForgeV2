@@ -93,7 +93,10 @@ export function generateSimpleLocalStorageStarterApp(input: {
 
   const files: FileMap = {
     "src/app/page.tsx": pageFile(),
-    "src/components/SimpleLocalApp.tsx": componentFile(),
+    "src/components/SimpleLocalApp.tsx": componentFile({
+      bindings,
+      entityKey: entity.key,
+    }),
     "src/components/SimpleLocalApp.test.tsx": componentTestFile(),
     "src/lib/simple-app-config.ts": configFile({
       spec: input.spec,
@@ -358,7 +361,10 @@ function isSimpleRecord(value: unknown): value is SimpleRecord {
 `;
 }
 
-function componentFile(): string {
+function componentFile(input: {
+  bindings: SimpleBindings;
+  entityKey: string;
+}): string {
   return `"use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -366,13 +372,11 @@ import {
   APP_NAME,
   APP_PURPOSE,
   CONTROLS,
-  ENTITY_KEY,
   ENTITY_LABEL,
   PRIMARY_FIELD_KEY,
   PRIMARY_FIELD_LABEL,
   TOGGLE_FIELD_KEY,
   validateName,
-  type ContractControl,
 } from "@/lib/simple-app-config";
 import {
   loadRecords,
@@ -502,14 +506,14 @@ export default function SimpleLocalApp() {
               value={name}
               onChange={(event) => setName(event.target.value)}
               aria-label={CONTROLS.createInput.accessibleName}
-              {...contractAttributes(CONTROLS.createInput)}
+              ${contractAttributeSource(input.bindings.createInput)}
               className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2"
             />
           </label>
           <button
             type="submit"
             aria-label={CONTROLS.createSave.accessibleName}
-            {...contractAttributes(CONTROLS.createSave)}
+            ${contractAttributeSource(input.bindings.createSave)}
             className="self-end rounded-md bg-emerald-700 px-4 py-2 font-semibold text-white hover:bg-emerald-800"
           >
             {CONTROLS.createSave.accessibleName}
@@ -523,7 +527,7 @@ export default function SimpleLocalApp() {
               value={filter}
               onChange={(event) => setFilter(event.target.value as Filter)}
               aria-label={CONTROLS.filter.accessibleName}
-              {...contractAttributes(CONTROLS.filter)}
+              ${contractAttributeSource(input.bindings.filter)}
               className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2"
             >
               <option value="all">All</option>
@@ -547,7 +551,7 @@ export default function SimpleLocalApp() {
           ) : (
             <ul className="mt-4 divide-y divide-slate-200 rounded-md border border-slate-200 bg-white">
               {visibleRecords.map((record) => (
-                <li key={record.id} data-vf-entity={ENTITY_KEY} data-vf-record={record.id} className="p-4">
+                <li key={record.id} data-vf-entity=${JSON.stringify(input.entityKey)} data-vf-record={record.id} className="p-4">
                   {editingId === record.id ? (
                     <div className="flex flex-col gap-3 sm:flex-row">
                       <span className="sr-only">{recordName(record)}</span>
@@ -555,10 +559,10 @@ export default function SimpleLocalApp() {
                         value={editName}
                         onChange={(event) => setEditName(event.target.value)}
                         aria-label={CONTROLS.editInput.accessibleName}
-                        {...contractAttributes(CONTROLS.editInput)}
+                        ${contractAttributeSource(input.bindings.editInput)}
                         className="min-w-0 flex-1 rounded-md border border-slate-300 px-3 py-2"
                       />
-                      <button type="button" onClick={() => saveEdit(record)} aria-label={CONTROLS.editSave.accessibleName} {...contractAttributes(CONTROLS.editSave)} className="rounded-md bg-emerald-700 px-3 py-2 text-white">
+                      <button type="button" onClick={() => saveEdit(record)} aria-label={CONTROLS.editSave.accessibleName} ${contractAttributeSource(input.bindings.editSave)} className="rounded-md bg-emerald-700 px-3 py-2 text-white">
                         {CONTROLS.editSave.accessibleName}
                       </button>
                       <button type="button" onClick={() => setEditingId(null)} className="rounded-md border border-slate-300 px-3 py-2">Cancel</button>
@@ -571,17 +575,17 @@ export default function SimpleLocalApp() {
                           checked={recordCompleted(record)}
                           onChange={() => toggleRecord(record)}
                           aria-label={CONTROLS.toggle.accessibleName}
-                          {...contractAttributes(CONTROLS.toggle)}
+                          ${contractAttributeSource(input.bindings.toggle)}
                           className="h-5 w-5"
                         />
                       )}
                       <span className={"min-w-0 flex-1 break-words " + (recordCompleted(record) ? "text-slate-500 line-through" : "")}>
                         {recordName(record)}
                       </span>
-                      <button type="button" onClick={() => beginEdit(record)} aria-label={CONTROLS.editOpen.accessibleName} {...contractAttributes(CONTROLS.editOpen)} className="rounded-md border border-slate-300 px-3 py-2">
+                      <button type="button" onClick={() => beginEdit(record)} aria-label={CONTROLS.editOpen.accessibleName} ${contractAttributeSource(input.bindings.editOpen)} className="rounded-md border border-slate-300 px-3 py-2">
                         {CONTROLS.editOpen.accessibleName}
                       </button>
-                      <button type="button" onClick={() => removeRecord(record)} aria-label={CONTROLS.remove.accessibleName} {...contractAttributes(CONTROLS.remove)} className="rounded-md border border-red-200 px-3 py-2 text-red-700">
+                      <button type="button" onClick={() => removeRecord(record)} aria-label={CONTROLS.remove.accessibleName} ${contractAttributeSource(input.bindings.remove)} className="rounded-md border border-red-200 px-3 py-2 text-red-700">
                         {CONTROLS.remove.accessibleName}
                       </button>
                     </div>
@@ -595,14 +599,12 @@ export default function SimpleLocalApp() {
     </main>
   );
 }
-
-function contractAttributes(control: ContractControl) {
-  return {
-    "data-vf-workflow": control.workflowId,
-    "data-vf-control": control.controlId,
-  };
-}
 `;
+}
+
+function contractAttributeSource(binding: ControlBinding | null): string {
+  if (!binding) return "";
+  return `data-vf-workflow=${JSON.stringify(binding.workflowId)} data-vf-control=${JSON.stringify(binding.controlId)}`;
 }
 
 function storageTestFile(): string {

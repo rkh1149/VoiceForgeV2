@@ -688,6 +688,17 @@ export function validateWorkflowContracts(
       const consumer = contracts.find(
         (candidate) => candidate.id === handoff.consumerWorkflowId,
       );
+      if (
+        consumer &&
+        handoff.consumerControlId &&
+        !consumer.controls.some(
+          (control) => control.id === handoff.consumerControlId,
+        )
+      ) {
+        blockingIssues.push(
+          `${label} handoff ${handoff.id} targets unknown consumer control ${handoff.consumerControlId}.`,
+        );
+      }
       const producedEntityKey = handoff.produces.split(".", 1)[0];
       if (
         consumer &&
@@ -1788,6 +1799,31 @@ function assignSourcesAndHandoffs(
     "testScenarios",
   );
 
+  // Interaction normalization can remove or replace controls after a handoff
+  // was first inferred. Rebind those stale references before reviewers and the
+  // acceptance compiler consume the finalized workflow graph.
+  for (const producer of contracts) {
+    producer.handoffs = producer.handoffs.map((handoff) => {
+      const consumer = contracts.find(
+        (candidate) => candidate.id === handoff.consumerWorkflowId,
+      );
+      if (
+        !consumer ||
+        !handoff.consumerControlId ||
+        consumer.controls.some(
+          (control) => control.id === handoff.consumerControlId,
+        )
+      ) {
+        return handoff;
+      }
+      return {
+        ...handoff,
+        consumerControlId:
+          selectHandoffConsumerControl(consumer, handoff.produces)?.id ?? "",
+      };
+    });
+  }
+
   for (const producer of contracts) {
     for (const handoff of producer.handoffs) {
       const consumer = contracts.find(
@@ -1848,7 +1884,9 @@ function assignSourcesAndHandoffs(
             storage: save.storage,
             consumerWorkflowId: consumer.id,
             consumerRoute: consumer.start.route,
-            consumerControlId: consumer.controls[0]?.id ?? "",
+            consumerControlId:
+              selectHandoffConsumerControl(consumer, save.producedReference)
+                ?.id ?? "",
             loadRule: `Load the saved ${save.entityName} record from ${save.storage} and make it available on ${consumer.start.screen}.`,
           });
         }
@@ -1860,6 +1898,26 @@ function assignSourcesAndHandoffs(
   }
 
   return contracts;
+}
+
+function selectHandoffConsumerControl(
+  consumer: WorkflowContract,
+  producedReference: string,
+): WorkflowContract["controls"][number] | undefined {
+  const entityKey = producedReference.split(".", 1)[0] ?? "";
+  const consumingStep = consumer.steps.find(
+    (step) =>
+      Boolean(step.controlId) &&
+      (step.reads.includes(entityKey) || step.writes.includes(entityKey)),
+  );
+  const firstInteractiveStep = consumer.steps.find((step) =>
+    Boolean(step.controlId),
+  );
+  const controlId = consumingStep?.controlId || firstInteractiveStep?.controlId;
+  return (
+    consumer.controls.find((control) => control.id === controlId) ??
+    consumer.controls[0]
+  );
 }
 
 function isGenericInferredHandoff(
