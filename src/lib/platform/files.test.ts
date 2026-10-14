@@ -3,6 +3,7 @@ import { PlatformDataError } from "./data";
 import {
   consumePlatformFileRateLimit,
   PLATFORM_FILES_MAX_FILE_BYTES,
+  PLATFORM_FILES_MAX_TOTAL_BYTES_PER_APP,
   PLATFORM_FILES_RATE_LIMIT_MAX_REQUESTS,
   PLATFORM_FILES_RATE_LIMIT_WINDOW_MS,
   resetPlatformFileRateLimitsForTests,
@@ -10,6 +11,10 @@ import {
 } from "./files";
 
 describe("platform file validation", () => {
+  it("allows each generated app up to 500 MB of active file storage", () => {
+    expect(PLATFORM_FILES_MAX_TOTAL_BYTES_PER_APP).toBe(500 * 1024 * 1024);
+  });
+
   it("normalizes names, content types, and data-url payloads", () => {
     const result = validatePlatformFileUpload({
       fileName: " receipts/July.txt ",

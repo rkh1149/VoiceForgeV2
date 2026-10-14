@@ -47,7 +47,7 @@ const ACTIONS = new Set<FileAction>([
 
 const MAX_FILE_BYTES = 3 * 1024 * 1024;
 const MAX_FILES_PER_APP = 250;
-const MAX_TOTAL_BYTES_PER_APP = 25 * 1024 * 1024;
+const MAX_TOTAL_BYTES_PER_APP = 500 * 1024 * 1024;
 const ALLOWED_CONTENT_TYPES = new Set([
   "application/json",
   "application/msword",
