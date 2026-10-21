@@ -194,7 +194,7 @@ export async function POST(req: Request) {
       );
     }
     if (gateBase && gateToken && usageId) {
-      void fetch(`${gateBase}/api/ai-usage`, {
+      await fetch(`${gateBase}/api/ai-usage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -343,9 +343,9 @@ export async function POST(req: Request) {
     researchCompleted = searched && Boolean(researchText.trim());
   }
 
-  // Report token usage (fire-and-forget; failures don't affect the user).
+  // Await the report so serverless runtimes do not terminate before usage is recorded.
   if (gateBase && gateToken && usageId) {
-    void fetch(`${gateBase}/api/ai-usage`, {
+    await fetch(`${gateBase}/api/ai-usage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
