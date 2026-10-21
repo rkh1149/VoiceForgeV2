@@ -131,13 +131,15 @@ export function aiUsageNote(spec: AppSpec): string {
 
 THIS APP HAS AI FEATURES. Use the locked platform endpoint for ALL of them:
 - TEXT: POST /api/ai with JSON {prompt: string, system?: string} → responds {text: string}, or {error: string} with status 400/429/502/503.
+- STRUCTURED TEXT: when the response must be parsed as JSON, POST {mode: "structured", prompt: string, system?: string}. This receives a larger bounded response budget, focused reasoning, complete-JSON validation, and one automatic retry for incomplete output.
+- RESEARCH: for architecture-approved web research, POST {mode: "research", prompt: string, system?: string}. It receives a larger research response budget and returns {text, citations, noSources}.
 - IMAGES: POST /api/ai with JSON {mode: "image", prompt: string} → responds {imageBase64: string} — a REAL PNG. Render it as <img src={\`data:image/png;base64,\${imageBase64}\`} alt="…" />. Image generation takes 5–20 seconds: show a clear loading state. Images have a SMALLER daily limit than text.
 - NEVER ask the text mode to produce an image, base64, SVG-as-text, or any binary data — language models cannot generate valid images; always use mode:"image" for pictures.
 - Do NOT store generated images in localStorage or platform-data JSON records. A single imageBase64 value can exceed storage quotas or the 64 KB platform-record limit. For shared/platform apps that need saved generated images, call uploadPlatformFileData({fileName, contentType:"image/png", dataBase64:imageBase64}) and save only the returned file id/reference in platform data; use downloadPlatformFile to render it later. For personal browser-only apps, keep at most the latest image in component state and offer a download link (anchor with the data URL and a download attribute).
 - Call the endpoint with fetch from client components; always show a loading state while waiting.
 - If the response is not ok, display the error message to the user politely (daily limits exist — 429 means "come back tomorrow").
 - Keep prompts under 4000 characters. Craft a good "system" string so text answers fit this app's purpose and audience.
-- Treat every AI response as unknown input. Import readAiTextResponse, parseStructuredAiText, and the aiText/aiNumber/aiArray helpers from the locked src/lib/voiceforge-ai.ts boundary. Validate structured output with a Zod schema and coerce form values before using string methods or saving. Never put JSON.parse(payload.text) directly into form state.
+- Treat every AI response as unknown input. Use mode:"structured" whenever code expects JSON. Import readAiTextResponse, parseStructuredAiText, and the aiText/aiNumber/aiArray helpers from the locked src/lib/voiceforge-ai.ts boundary. Validate structured output with a Zod schema and coerce form values before using string methods or saving. Never put JSON.parse(payload.text) directly into form state.
 - NEVER call OpenAI or any external AI service directly, never reference API keys, and never modify src/app/api/ai/route.ts.
 - In tests, mock global.fetch for /api/ai calls — never let tests hit the network.`;
 }

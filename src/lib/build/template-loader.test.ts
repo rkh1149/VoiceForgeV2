@@ -141,4 +141,30 @@ describe("template loader", () => {
     expect(files["src/components/voiceforge-reusable.tsx"]).toBeUndefined();
     expect(files["src/lib/voiceforge-modules.ts"]).toBeUndefined();
   });
+
+  it("includes the guarded AI proxy and its retry regression tests for AI apps", async () => {
+    const files = await loadTemplate({
+      slug: "structured-ai-app",
+      name: "Structured AI App",
+      purpose: "Generate validated structured information.",
+      capabilities: {
+        data: false,
+        files: false,
+        ai: true,
+        notifications: false,
+        integrations: false,
+        deviceLocation: false,
+        reusableComponents: false,
+        utilityModules: false,
+      },
+    });
+
+    expect(files["src/app/api/ai/route.ts"]).toContain(
+      'type TextMode = "text" | "structured" | "research"',
+    );
+    expect(files["src/app/api/ai/route.ts"]).toContain("MAX_RETRY_OUTPUT_TOKENS");
+    expect(files["src/app/api/ai/route.test.ts"]).toContain(
+      "retries an incomplete structured response once",
+    );
+  });
 });

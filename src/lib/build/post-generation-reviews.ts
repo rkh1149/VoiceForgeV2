@@ -64,6 +64,7 @@ const PROTECTED_TEMPLATE_FILES = new Set([
   "src/components/voiceforge-reusable.tsx",
   "src/components/voiceforge-google-map.tsx",
   "src/app/api/ai/route.ts",
+  "src/app/api/ai/route.test.ts",
   "src/app/api/data/route.ts",
   "src/app/api/files/route.ts",
   "src/app/api/notifications/route.ts",

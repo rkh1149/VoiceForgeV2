@@ -11,8 +11,10 @@ import { NextResponse } from "next/server";
 
 const MAX_PROMPT_CHARS = 4000;
 const MAX_SYSTEM_CHARS = 1000;
-const MAX_OUTPUT_TOKENS = 1000;
-const MAX_RESEARCH_OUTPUT_TOKENS = 3600;
+const MAX_OUTPUT_TOKENS = 4000;
+const MAX_STRUCTURED_OUTPUT_TOKENS = 6000;
+const MAX_RESEARCH_OUTPUT_TOKENS = 8000;
+const MAX_RETRY_OUTPUT_TOKENS = 8000;
 
 type AiRequestBody = {
   prompt?: unknown;
@@ -45,10 +47,48 @@ type ResponsesOutputItem = {
   action?: { sources?: SearchSource[] };
 };
 type ResponsesBody = {
+  status?: string;
+  incomplete_details?: { reason?: string };
   output_text?: string;
   output?: ResponsesOutputItem[];
   usage?: ResponsesUsage;
 };
+
+type TextMode = "text" | "structured" | "research";
+
+function responseText(data: ResponsesBody): string {
+  return data.output_text ??
+    (data.output ?? [])
+      .flatMap((item) => item.content ?? [])
+      .filter((content) => content.type === "output_text" && typeof content.text === "string")
+      .map((content) => content.text as string)
+      .join("");
+}
+
+function hasCompleteJson(text: string): boolean {
+  const cleaned = text
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  if (!cleaned) return false;
+  try {
+    JSON.parse(cleaned);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function needsTextRetry(mode: TextMode, data: ResponsesBody, text: string): boolean {
+  if (data.status === "incomplete" || !text.trim()) return true;
+  return mode === "structured" && !hasCompleteJson(text);
+}
+
+function outputBudget(mode: TextMode): number {
+  if (mode === "structured") return MAX_STRUCTURED_OUTPUT_TOKENS;
+  if (mode === "research") return MAX_RESEARCH_OUTPUT_TOKENS;
+  return MAX_OUTPUT_TOKENS;
+}
 
 export async function POST(req: Request) {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -72,6 +112,8 @@ export async function POST(req: Request) {
       ? "image"
       : body?.mode === "research"
         ? "research"
+        : body?.mode === "structured"
+          ? "structured"
         : "text";
   if (!prompt || prompt.length > MAX_PROMPT_CHARS) {
     return NextResponse.json(
@@ -170,57 +212,71 @@ export async function POST(req: Request) {
 
   // ---- text mode -------------------------------------------------------
   const model = process.env.AI_MODEL ?? "gpt-5.6-terra";
-  const aiRes = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      input: imageDataUrl
-        ? [
-            {
-              role: "user",
-              content: [
-                { type: "input_text", text: prompt },
-                {
-                  type: "input_image",
-                  image_url: imageDataUrl,
-                  detail: "high",
-                },
-              ],
-            },
-          ]
-        : prompt,
-      instructions: system,
-      max_output_tokens:
-        mode === "research" ? MAX_RESEARCH_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,
-      ...(mode === "research"
-        ? {
-            tools: [{ type: "web_search" }],
-            tool_choice: "required",
-            max_tool_calls: 3,
-            include: ["web_search_call.action.sources"],
-          }
-        : {}),
-    }),
-  });
-  const data = (await aiRes.json().catch(() => ({}))) as ResponsesBody;
+  const textMode = mode as TextMode;
+  const makeTextRequest = async (maxOutputTokens: number, retry: boolean) => {
+    const retryInstruction = retry
+      ? textMode === "structured"
+        ? "This is an automatic retry after an incomplete response. Return one complete JSON value only, with no markdown or commentary."
+        : "This is an automatic retry after an incomplete response. Return the complete final answer directly and concisely."
+      : "";
+    const instructions = [system, retryInstruction].filter(Boolean).join("\n\n") || undefined;
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        input: imageDataUrl
+          ? [
+              {
+                role: "user",
+                content: [
+                  { type: "input_text", text: prompt },
+                  {
+                    type: "input_image",
+                    image_url: imageDataUrl,
+                    detail: "high",
+                  },
+                ],
+              },
+            ]
+          : prompt,
+        instructions,
+        max_output_tokens: maxOutputTokens,
+        ...(model.startsWith("gpt-5")
+          ? { reasoning: { effort: textMode === "research" ? "medium" : "low" } }
+          : {}),
+        ...(textMode === "research"
+          ? {
+              tools: [{ type: "web_search" }],
+              tool_choice: "required",
+              max_tool_calls: 3,
+              include: ["web_search_call.action.sources"],
+            }
+          : {}),
+      }),
+    });
+    const responseData = (await response.json().catch(() => ({}))) as ResponsesBody;
+    return { response, data: responseData, text: responseText(responseData) };
+  };
+
+  const attempts = [await makeTextRequest(outputBudget(textMode), false)];
+  if (
+    attempts[0].response.ok &&
+    needsTextRetry(textMode, attempts[0].data, attempts[0].text)
+  ) {
+    attempts.push(await makeTextRequest(MAX_RETRY_OUTPUT_TOKENS, true));
+  }
+  const finalAttempt = attempts.at(-1)!;
+  const { response: aiRes, data, text } = finalAttempt;
   if (!aiRes.ok) {
     return NextResponse.json(
       { error: "The AI helper hit a problem. Please try again." },
       { status: 502 },
     );
   }
-
-  const text =
-    data.output_text ??
-    (data.output ?? [])
-      .flatMap((o) => o.content ?? [])
-      .filter((c) => c.type === "output_text" && typeof c.text === "string")
-      .map((c) => c.text as string)
-      .join("");
 
   const citations: Array<{ title: string; url: string; sourceNote?: string }> = [];
   let researchText = "";
@@ -297,10 +353,28 @@ export async function POST(req: Request) {
         phase: "report",
         usageId,
         model,
-        inputTokens: data.usage?.input_tokens ?? 0,
-        outputTokens: data.usage?.output_tokens ?? 0,
+        inputTokens: attempts.reduce(
+          (sum, attempt) => sum + (attempt.data.usage?.input_tokens ?? 0),
+          0,
+        ),
+        outputTokens: attempts.reduce(
+          (sum, attempt) => sum + (attempt.data.usage?.output_tokens ?? 0),
+          0,
+        ),
       }),
     }).catch(() => {});
+  }
+
+  if (needsTextRetry(textMode, data, text)) {
+    return NextResponse.json(
+      {
+        error:
+          data.incomplete_details?.reason === "max_output_tokens"
+            ? "The AI response was too long to complete. Please shorten the request and try again."
+            : "The AI response was incomplete after an automatic retry. Please try again.",
+      },
+      { status: 502 },
+    );
   }
 
   if (!researchCompleted) {

@@ -63,6 +63,7 @@ const PROTECTED_FILES = new Set([
   "src/components/voiceforge-reusable.tsx", // locked reusable UI components (Stage 10)
   "src/components/voiceforge-google-map.tsx", // locked Google Maps UI component (Stage 12C)
   "src/app/api/ai/route.ts", // locked AI endpoint (Stage 7)
+  "src/app/api/ai/route.test.ts", // locked AI endpoint regression tests
   "src/app/api/data/route.ts", // locked platform data endpoint (Stage 9B)
   "src/app/api/files/route.ts", // locked platform files endpoint (Stage 11A)
   "src/app/api/notifications/route.ts", // locked platform notification endpoint (Stage 11B)
@@ -84,6 +85,7 @@ const CAPABILITY_FILES: Record<keyof TemplateCapabilities, string[]> = {
   files: ["src/app/api/files/route.ts", "src/lib/platform-files.ts"],
   ai: [
     "src/app/api/ai/route.ts",
+    "src/app/api/ai/route.test.ts",
     "src/lib/voiceforge-ai.ts",
     "src/lib/voiceforge-ai.test.ts",
   ],
